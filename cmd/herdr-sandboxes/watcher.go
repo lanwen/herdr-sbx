@@ -15,6 +15,8 @@ import (
 
 var lifecycleReader = readLifecycle
 
+var lifecycleCatchupInterval = 30 * time.Second
+
 func watch(out io.Writer) error {
 	out = &lockedWriter{out: out}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -24,7 +26,7 @@ func watch(out io.Writer) error {
 	for {
 		p := inspect()
 		printChecks(out, p)
-		if p.Scope == "" || p.Socket == "" || !hasLevel(p.Checks, "Sandbox capability", ready) || !hasLevel(p.Checks, "Sandbox daemon", ready) || !hasLevel(p.Checks, "Docker authorization", ready) {
+		if p.Scope == "" || p.Socket == "" || !hasLevel(p.Checks, "Sandbox capability", ready) || !hasLevel(p.Checks, "Sandbox daemon", ready) || !hasLevel(p.Checks, "Sandbox inventory", ready) || hasBlocked(p.Checks, "Docker authorization") {
 			return errors.New("watch needs a running sandbox daemon and readable sandbox inventory")
 		}
 
@@ -36,6 +38,7 @@ func watch(out io.Writer) error {
 			scheduler.wait()
 			return errors.New("sandbox daemon scope changed; restart the lifecycle watch")
 		}
+		scheduler.beginStream()
 		err := lifecycleReader(ctx, p.Socket, scheduler.enqueue)
 		if ctx.Err() != nil {
 			scheduler.wait()
@@ -75,6 +78,8 @@ type lifecycleScheduler struct {
 	mu      sync.Mutex
 	retired map[string]bool
 	deletes map[string]lifecycleEvent
+	lastSeq *uint64
+	catchup bool
 	queue   chan lifecycleEvent
 	jobs    sync.WaitGroup
 }
@@ -95,6 +100,15 @@ func (s *lifecycleScheduler) enqueue(event lifecycleEvent) bool {
 		return true
 	}
 	s.mu.Lock()
+	if event.Seq != nil {
+		if s.lastSeq != nil && *event.Seq > *s.lastSeq && *event.Seq-*s.lastSeq > 1 {
+			s.catchup = true
+		}
+		if s.lastSeq == nil || *event.Seq > *s.lastSeq {
+			seq := *event.Seq
+			s.lastSeq = &seq
+		}
+	}
 	if action == "deleted" {
 		s.retired[event.SandboxID] = true
 		s.deletes[event.SandboxID] = event
@@ -109,10 +123,18 @@ func (s *lifecycleScheduler) enqueue(event lifecycleEvent) bool {
 	}
 }
 
+func (s *lifecycleScheduler) beginStream() {
+	s.mu.Lock()
+	s.lastSeq = nil
+	s.mu.Unlock()
+}
+
 func (s *lifecycleScheduler) run() {
 	defer s.jobs.Done()
-	retry := time.NewTicker(time.Second)
-	defer retry.Stop()
+	deleteRetry := time.NewTicker(time.Second)
+	defer deleteRetry.Stop()
+	catchup := time.NewTicker(lifecycleCatchupInterval)
+	defer catchup.Stop()
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -120,9 +142,25 @@ func (s *lifecycleScheduler) run() {
 		case event := <-s.queue:
 			s.handle(event)
 			s.processDeletes()
-		case <-retry.C:
+			s.processCatchup(false)
+		case <-deleteRetry.C:
 			s.processDeletes()
+		case <-catchup.C:
+			s.processCatchup(true)
 		}
+	}
+}
+
+func (s *lifecycleScheduler) processCatchup(periodic bool) {
+	s.mu.Lock()
+	needed := s.catchup
+	s.catchup = false
+	s.mu.Unlock()
+	if !periodic && !needed {
+		return
+	}
+	if err := reconcileContext(s.ctx, s.out); err != nil && !errors.Is(err, context.Canceled) {
+		fmt.Fprintln(s.out, "Lifecycle catch-up failed:", err)
 	}
 }
 
@@ -135,10 +173,12 @@ func (s *lifecycleScheduler) handle(event lifecycleEvent) {
 	case "sync", "complete":
 		fmt.Fprintln(s.out, "Initial sandbox lifecycle state received.")
 	case "started", "created":
-		if s.isRetired(event.SandboxID) || !s.stillRunning(event) {
+		if !s.current(event) {
 			return
 		}
-		if err := reconcileContext(s.ctx, s.out); err != nil && !errors.Is(err, context.Canceled) {
+		if err := reconcileMatching(s.ctx, s.out, func(sb sandbox) bool {
+			return sb.ID == event.SandboxID && sb.Name == event.SandboxName
+		}, func(sandbox) bool { return s.current(event) }); err != nil && !errors.Is(err, context.Canceled) {
 			fmt.Fprintln(s.out, "Lifecycle registration failed:", err)
 		}
 		if s.isRetired(event.SandboxID) {
@@ -158,17 +198,11 @@ func (s *lifecycleScheduler) isRetired(id string) bool {
 }
 
 func (s *lifecycleScheduler) stillRunning(event lifecycleEvent) bool {
-	sandboxes, err := inventory(s.socket)
-	if err != nil {
-		fmt.Fprintln(s.out, "Lifecycle registration deferred: cannot recheck sandbox identity:", err)
-		return false
-	}
-	for _, sb := range sandboxes {
-		if sb.ID == event.SandboxID && strings.EqualFold(sb.Status, "running") {
-			return true
-		}
-	}
-	return false
+	return sandboxRunning(s.socket, sandbox{ID: event.SandboxID, Name: event.SandboxName})
+}
+
+func (s *lifecycleScheduler) current(event lifecycleEvent) bool {
+	return !s.isRetired(event.SandboxID) && event.SandboxName != "" && s.stillRunning(event)
 }
 
 func (s *lifecycleScheduler) processDeletes() {
@@ -210,7 +244,11 @@ func (s *lifecycleScheduler) removeDeleted(event lifecycleEvent) bool {
 			break
 		}
 	}
-	if item == nil || item.ProfileID == "" || item.Pending {
+	if item == nil {
+		return true
+	}
+	if item.ProfileID == "" || item.Pending {
+		fmt.Fprintln(s.out, "Lifecycle deletion retained an unresolved registration intent; inspect the Herdr machine catalog before retrying.")
 		return true
 	}
 
@@ -224,6 +262,9 @@ func (s *lifecycleScheduler) removeDeleted(event lifecycleEvent) bool {
 		fmt.Fprintln(s.out, "Lifecycle deletion deferred:", err)
 		return false
 	}
+	if machineByID(machines, item.ProfileID) == nil {
+		return s.clearDeleted(&st, event.SandboxID, item.Label, "machine was already absent")
+	}
 	if ownedMachineByID(machines, item.ProfileID, item.Label, item.Target) == nil {
 		fmt.Fprintln(s.out, "Lifecycle deletion retained state: saved machine is no longer the owned profile.")
 		return true
@@ -233,14 +274,18 @@ func (s *lifecycleScheduler) removeDeleted(event lifecycleEvent) bool {
 		fmt.Fprintln(s.out, "Lifecycle deletion deferred:", commandError(err, removed))
 		return false
 	}
-	if err := removeTracked(&st, s.scope, event.SandboxID); err != nil {
+	return s.clearDeleted(&st, event.SandboxID, item.Label, "removed its owned Herdr machine")
+}
+
+func (s *lifecycleScheduler) clearDeleted(st *state, sandboxID, label, detail string) bool {
+	if err := removeTracked(st, s.scope, sandboxID); err != nil {
 		fmt.Fprintln(s.out, "Lifecycle deletion retained state:", err)
 		return false
 	}
-	if err := saveState(st); err != nil {
+	if err := saveState(*st); err != nil {
 		fmt.Fprintln(s.out, "Lifecycle deletion retained state:", err)
 		return false
 	}
-	fmt.Fprintf(s.out, "%s deleted; removed its owned Herdr machine.\n", item.Label)
+	fmt.Fprintf(s.out, "%s deleted; %s.\n", label, detail)
 	return true
 }

@@ -224,7 +224,8 @@ func inspect() prerequisites {
 		if _, err := inventory(socketPath); err != nil {
 			checks = append(checks, inventoryFailureChecks(err, "")...)
 		} else {
-			checks = append(checks, check{"Docker authorization", ready, "local sandbox inventory is readable", ""})
+			checks = append(checks, check{"Sandbox inventory", ready, "local sandbox inventory is readable", ""})
+			checks = append(checks, check{"Docker authorization", unknown, "inventory access does not confirm Docker sign-in", "Sign in with `sbx login` if Docker operations require it."})
 		}
 	}
 
@@ -321,6 +322,10 @@ func reconcile(out io.Writer) error {
 }
 
 func reconcileContext(ctx context.Context, out io.Writer) error {
+	return reconcileMatching(ctx, out, nil, nil)
+}
+
+func reconcileMatching(ctx context.Context, out io.Writer, match func(sandbox) bool, current func(sandbox) bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -332,7 +337,7 @@ func reconcileContext(ctx context.Context, out io.Writer) error {
 	if hasBlocked(p.Checks, "Sandbox capability") || hasBlocked(p.Checks, "Sandbox daemon") || hasBlocked(p.Checks, "Docker authorization") || hasBlocked(p.Checks, "Sandbox SSH") {
 		return errors.New("fix the blocked prerequisites before registering sandboxes")
 	}
-	if !hasLevel(p.Checks, "Sandbox capability", ready) || !hasLevel(p.Checks, "Sandbox daemon", ready) || !hasLevel(p.Checks, "Docker authorization", ready) || !hasLevel(p.Checks, "Sandbox SSH", ready) {
+	if !hasLevel(p.Checks, "Sandbox capability", ready) || !hasLevel(p.Checks, "Sandbox daemon", ready) || !hasLevel(p.Checks, "Sandbox inventory", ready) || !hasLevel(p.Checks, "Sandbox SSH", ready) {
 		return errors.New("complete the prerequisite checks before registering sandboxes")
 	}
 	unlock, err := lockState()
@@ -368,6 +373,9 @@ func reconcileContext(ctx context.Context, out io.Writer) error {
 		if !strings.EqualFold(sb.Status, "running") {
 			continue
 		}
+		if match != nil && !match(sb) {
+			continue
+		}
 		if sb.ID == "" || sb.Name == "" {
 			results = append(results, result{sb.Name, "failed", "sandbox has no stable identity"})
 			continue
@@ -385,7 +393,11 @@ func reconcileContext(ctx context.Context, out io.Writer) error {
 			results = append(results, result{sb.Name, "ownership conflict", "previous registration is unresolved; inspect the machine catalog before retrying"})
 			continue
 		}
-		outcome, saved := registerPreparedContext(ctx, p.Scope, &st, machines, sb)
+		registrationCurrent := func() bool { return sandboxRunning(p.Socket, sb) }
+		if current != nil {
+			registrationCurrent = func() bool { return current(sb) }
+		}
+		outcome, saved := registerPreparedContext(ctx, p.Scope, &st, machines, sb, registrationCurrent)
 		results = append(results, result{sb.Name, outcome.Status, outcome.Detail})
 		if saved != nil {
 			trackedByID[sb.ID] = *saved
@@ -401,11 +413,14 @@ func reconcileContext(ctx context.Context, out io.Writer) error {
 }
 
 func registerPrepared(scope string, st *state, machines []machine, sb sandbox) (result, *tracked) {
-	return registerPreparedContext(context.Background(), scope, st, machines, sb)
+	return registerPreparedContext(context.Background(), scope, st, machines, sb, nil)
 }
 
-func registerPreparedContext(ctx context.Context, scope string, st *state, machines []machine, sb sandbox) (result, *tracked) {
+func registerPreparedContext(ctx context.Context, scope string, st *state, machines []machine, sb sandbox, current func() bool) (result, *tracked) {
 	target := sb.Name + ".sbx"
+	if current != nil && !current() {
+		return result{sb.Name, "stale", "sandbox changed before registration"}, nil
+	}
 	for _, m := range machines {
 		if m.Label == sb.Name || m.Target == target {
 			return result{sb.Name, "ownership conflict", "a manual or untracked machine uses this label or target"}, nil
@@ -419,11 +434,20 @@ func registerPreparedContext(ctx context.Context, scope string, st *state, machi
 	if version := versionFrom(versionOutput); version == "" || compareVersion(version, minHerdrVersion) < 0 {
 		return result{sb.Name, "setup required", "remote Herdr is missing or too old"}, nil
 	}
+	if current != nil && !current() {
+		return result{sb.Name, "stale", "sandbox changed before registration"}, nil
+	}
 
 	pending := tracked{SandboxID: sb.ID, Label: sb.Name, Target: target, Pending: true}
 	st.Scopes[scope] = append(st.Scopes[scope], pending)
 	if err := saveState(*st); err != nil {
 		return result{sb.Name, "failed", err.Error()}, nil
+	}
+	if current != nil && !current() {
+		if err := removeTracked(st, scope, pending.SandboxID); err != nil || saveState(*st) != nil {
+			return result{sb.Name, "ownership conflict", "sandbox changed and registration intent could not be cleared"}, &pending
+		}
+		return result{sb.Name, "stale", "sandbox changed before machine registration"}, nil
 	}
 
 	addOutput, addErr := runBoundedContext(ctx, 30*time.Second, herdrBinary(), "machine", "add", "--label", sb.Name, target)
@@ -461,7 +485,23 @@ func registerPreparedContext(ctx context.Context, scope string, st *state, machi
 	if err := saveState(*st); err != nil {
 		return result{sb.Name, "ownership conflict", "machine was registered but ownership could not be saved"}, &pending
 	}
+	if current != nil && !current() {
+		return result{sb.Name, "stale", "sandbox changed after machine registration; cleanup is pending"}, &pending
+	}
 	return readinessResult(ctx, sb.Name, pending.ProfileID, false), &pending
+}
+
+func sandboxRunning(socket string, expected sandbox) bool {
+	sandboxes, err := inventory(socket)
+	if err != nil {
+		return false
+	}
+	for _, sb := range sandboxes {
+		if sb.ID == expected.ID && sb.Name == expected.Name && strings.EqualFold(sb.Status, "running") {
+			return true
+		}
+	}
+	return false
 }
 
 func readinessResult(ctx context.Context, name, profileID string, alreadyKnown bool) result {
@@ -683,6 +723,15 @@ func ownedMachineByID(machines []machine, id, label, target string) *machine {
 	for _, machine := range machines {
 		if machine.ID == id && machine.Label == label && machine.Target == target && usesDefaultSession(machine.Session) {
 			return &machine
+		}
+	}
+	return nil
+}
+
+func machineByID(machines []machine, id string) *machine {
+	for i := range machines {
+		if machines[i].ID == id {
+			return &machines[i]
 		}
 	}
 	return nil

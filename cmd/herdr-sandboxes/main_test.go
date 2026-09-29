@@ -615,7 +615,7 @@ func TestLifecycleQueueKeepsDeletionWhenFull(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	scheduler := newLifecycleScheduler(ctx, "scope", "/tmp/sandboxd.sock", ioDiscard{})
-	if !scheduler.enqueue(lifecycleEvent{Type: "sandbox.lifecycle", Action: "started", SandboxID: "hold"}) {
+	if !scheduler.enqueue(lifecycleEvent{Type: "sandbox.lifecycle", Action: "started", SandboxID: "hold", SandboxName: "hold"}) {
 		t.Fatal("initial event was rejected")
 	}
 	<-entered
@@ -635,6 +635,121 @@ func TestLifecycleQueueKeepsDeletionWhenFull(t *testing.T) {
 	}
 	cancel()
 	scheduler.wait()
+}
+
+func TestRegistrationStopsBeforeMachineAddWhenSandboxChanges(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	t.Setenv("HERDR_BIN_PATH", "herdr")
+	var adds, checks int
+	withRunner(t, func(_ context.Context, name string, args ...string) (string, error) {
+		switch name + " " + strings.Join(args, " ") {
+		case "ssh -o BatchMode=yes -o ConnectTimeout=8 demo.sbx herdr --version":
+			return "herdr 0.9.1\n", nil
+		case "herdr machine add --label demo demo.sbx":
+			adds++
+			return "Saved SSH machine machine-1. Remote server is ready.\n", nil
+		default:
+			return "", errors.New("unexpected command: " + name + " " + strings.Join(args, " "))
+		}
+	})
+	st := state{Version: 1, Scopes: map[string][]tracked{}}
+	got, saved := registerPreparedContext(context.Background(), "scope", &st, nil, sandbox{ID: "old", Name: "demo", Status: "running"}, func() bool {
+		checks++
+		return checks == 1
+	})
+	if got.Status != "stale" || saved != nil || adds != 0 || len(st.Scopes["scope"]) != 0 {
+		t.Fatalf("result = %#v, saved = %#v, adds = %d, state = %#v", got, saved, adds, st.Scopes)
+	}
+}
+
+func TestRegistrationPersistsTrustedProfileWhenSandboxChangesAfterAdd(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	t.Setenv("HERDR_BIN_PATH", "herdr")
+	withRunner(t, func(_ context.Context, name string, args ...string) (string, error) {
+		switch name + " " + strings.Join(args, " ") {
+		case "ssh -o BatchMode=yes -o ConnectTimeout=8 demo.sbx herdr --version":
+			return "herdr 0.9.1\n", nil
+		case "herdr machine add --label demo demo.sbx":
+			return "Saved SSH machine machine-1. Remote server is ready.\n", nil
+		case "herdr machine list --json":
+			return `[{"profile_id":"machine-1","label":"demo","ssh_target":"demo.sbx","remote_session":"default"}]`, nil
+		default:
+			return "", errors.New("unexpected command: " + name + " " + strings.Join(args, " "))
+		}
+	})
+	checks := 0
+	st := state{Version: 1, Scopes: map[string][]tracked{}}
+	got, saved := registerPreparedContext(context.Background(), "scope", &st, nil, sandbox{ID: "old", Name: "demo", Status: "running"}, func() bool {
+		checks++
+		return checks < 4
+	})
+	items := st.Scopes["scope"]
+	if got.Status != "stale" || saved == nil || len(items) != 1 || items[0].ProfileID != "machine-1" || items[0].Pending {
+		t.Fatalf("result = %#v, saved = %#v, state = %#v", got, saved, items)
+	}
+}
+
+func TestLifecycleGapRequestsCatchupWithoutCrossStreamComparison(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	scheduler := newLifecycleScheduler(ctx, "scope", "/tmp/sandboxd.sock", ioDiscard{})
+	cancel()
+	scheduler.wait()
+	first, third := uint64(1), uint64(3)
+	scheduler.enqueue(lifecycleEvent{Type: "sandbox.lifecycle", Action: "sync", Seq: &first})
+	scheduler.enqueue(lifecycleEvent{Type: "sandbox.lifecycle", Action: "sync", Seq: &third})
+	scheduler.mu.Lock()
+	gap := scheduler.catchup
+	scheduler.mu.Unlock()
+	if !gap {
+		t.Fatal("sequence gap did not request catch-up")
+	}
+	scheduler.beginStream()
+	scheduler.mu.Lock()
+	reset := scheduler.lastSeq == nil
+	scheduler.mu.Unlock()
+	if !reset {
+		t.Fatal("new stream retained the previous sequence")
+	}
+}
+
+func TestLifecycleDeletionKeepsPendingIntentVisible(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	st := state{Version: 1, Scopes: map[string][]tracked{"scope": {{SandboxID: "old", Label: "demo", Target: "demo.sbx", Pending: true}}}}
+	if err := saveState(st); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	scheduler := newLifecycleScheduler(context.Background(), "scope", "/tmp/sandboxd.sock", &output)
+	if !scheduler.removeDeleted(lifecycleEvent{Action: "deleted", SandboxID: "old"}) || !strings.Contains(output.String(), "unresolved registration intent") {
+		t.Fatalf("output = %s", output.String())
+	}
+	st, err := loadState()
+	if err != nil || len(st.Scopes["scope"]) != 1 {
+		t.Fatalf("state = %#v, err = %v", st, err)
+	}
+}
+
+func TestLifecycleDeletionClearsStateWhenOwnedProfileIsAlreadyAbsent(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	t.Setenv("HERDR_BIN_PATH", "herdr")
+	st := state{Version: 1, Scopes: map[string][]tracked{"scope": {{SandboxID: "old", Label: "demo", Target: "demo.sbx", ProfileID: "machine-1"}}}}
+	if err := saveState(st); err != nil {
+		t.Fatal(err)
+	}
+	withRunner(t, func(_ context.Context, name string, args ...string) (string, error) {
+		if name == "herdr" && strings.Join(args, " ") == "machine list --json" {
+			return "[]", nil
+		}
+		return "", errors.New("unexpected command")
+	})
+	scheduler := newLifecycleScheduler(context.Background(), "scope", "/tmp/sandboxd.sock", ioDiscard{})
+	if !scheduler.removeDeleted(lifecycleEvent{Action: "deleted", SandboxID: "old"}) {
+		t.Fatal("absent profile did not clear state")
+	}
+	st, err := loadState()
+	if err != nil || len(st.Scopes["scope"]) != 0 {
+		t.Fatalf("state = %#v, err = %v", st, err)
+	}
 }
 
 func withRunner(t *testing.T, replacement func(context.Context, string, ...string) (string, error)) {

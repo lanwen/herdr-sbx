@@ -9,7 +9,7 @@ go build -o bin/herdr-sandboxes ./cmd/herdr-sandboxes
 herdr plugin link .
 ```
 
-Open **Docker Sandboxes status** from Herdr's plugin actions. The panel's **Check again** command only observes local binaries, daemon status, Docker authorization, and the effective SSH configuration. It does not start the daemon, sign in, configure SSH, connect to a sandbox, or install software.
+Open **Docker Sandboxes status** from Herdr's plugin actions. The panel's **Check again** command only observes local binaries, daemon status, sandbox inventory, Docker authorization errors, and the effective SSH configuration. A readable inventory alone does not prove Docker sign-in. It does not start the daemon, sign in, configure SSH, connect to a sandbox, or install software.
 
 The panel offers **Start daemon**, **Sign in to Docker**, and **Set up sandbox SSH** as separate, interactive terminal actions. Each runs only after you choose it, then refreshes the status panel. The plugin does not store Docker credentials or SSH keys.
 
