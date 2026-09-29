@@ -26,7 +26,7 @@ func watch(out io.Writer) error {
 	for {
 		p := inspect()
 		printChecks(out, p)
-		if p.Scope == "" || p.Socket == "" || !hasLevel(p.Checks, "Sandbox capability", ready) || !hasLevel(p.Checks, "Sandbox daemon", ready) || !hasLevel(p.Checks, "Sandbox inventory", ready) || hasBlocked(p.Checks, "Docker authorization") {
+		if p.Scope == "" || p.Socket == "" || !hasLevel(p.Checks, "Sandbox capability", ready) || !hasLevel(p.Checks, "Sandbox daemon", ready) || hasBlocked(p.Checks, "Docker authorization") {
 			return errors.New("watch needs a running sandbox daemon and readable sandbox inventory")
 		}
 

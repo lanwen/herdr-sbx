@@ -51,7 +51,7 @@ func daemonRequest(ctx context.Context, socket, path string, timeout time.Durati
 
 func daemonClient(socket string) *http.Client {
 	dialer := net.Dialer{}
-	return &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+	return &http.Client{Transport: &http.Transport{DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return dialer.DialContext(ctx, "unix", socket)
 	}}}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -750,6 +751,91 @@ func TestLifecycleDeletionClearsStateWhenOwnedProfileIsAlreadyAbsent(t *testing.
 	if err != nil || len(st.Scopes["scope"]) != 0 {
 		t.Fatalf("state = %#v, err = %v", st, err)
 	}
+}
+
+func TestRegistrationDoesNotReportReadyAfterFinalIdentityChange(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	t.Setenv("HERDR_BIN_PATH", "herdr")
+	withRunner(t, func(_ context.Context, name string, args ...string) (string, error) {
+		switch name + " " + strings.Join(args, " ") {
+		case "ssh -o BatchMode=yes -o ConnectTimeout=8 demo.sbx herdr --version":
+			return "herdr 0.9.1\n", nil
+		case "herdr machine add --label demo demo.sbx":
+			return "Saved SSH machine machine-1. Remote server is ready.\n", nil
+		case "herdr machine list --json":
+			return `[{"profile_id":"machine-1","label":"demo","ssh_target":"demo.sbx","remote_session":"default"}]`, nil
+		case "herdr --machine machine-1 status server":
+			return "running\n", nil
+		default:
+			return "", errors.New("unexpected command: " + name + " " + strings.Join(args, " "))
+		}
+	})
+	checks := 0
+	st := state{Version: 1, Scopes: map[string][]tracked{}}
+	got, _ := registerPreparedContext(context.Background(), "scope", &st, nil, sandbox{ID: "old", Name: "demo", Status: "running"}, func() bool {
+		checks++
+		return checks < 5
+	})
+	if got.Status != "stale" || !strings.Contains(got.Detail, "remote readiness") {
+		t.Fatalf("result = %#v", got)
+	}
+}
+
+func TestInspectShowsUnresolvedDeletedRegistration(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	t.Setenv("HERDR_BIN_PATH", "herdr")
+	socket := "/tmp/sandboxd.sock"
+	if err := saveState(state{Version: 1, Scopes: map[string][]tracked{scopeID(socket): {{SandboxID: "old", Label: "demo", Target: "demo.sbx", Pending: true}}}}); err != nil {
+		t.Fatal(err)
+	}
+	withInspectionRunner(t, socket)
+	p := inspect()
+	if !hasLevel(p.Checks, "Registration ownership", unknown) {
+		t.Fatalf("checks = %#v", p.Checks)
+	}
+}
+
+func TestEmptyInventoryIsNotReady(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "herdr")
+	withInspectionRunner(t, "/tmp/sandboxd.sock")
+	original := inventory
+	inventory = func(string) ([]sandbox, error) { return nil, nil }
+	t.Cleanup(func() { inventory = original })
+	p := inspect()
+	if !hasLevel(p.Checks, "Sandbox inventory", unknown) || hasLevel(p.Checks, "Sandbox inventory", ready) {
+		t.Fatalf("checks = %#v", p.Checks)
+	}
+}
+
+func TestDaemonClientDoesNotKeepIdleConnections(t *testing.T) {
+	transport, ok := daemonClient("/tmp/sandboxd.sock").Transport.(*http.Transport)
+	if !ok || !transport.DisableKeepAlives {
+		t.Fatalf("transport = %#v", transport)
+	}
+}
+
+func withInspectionRunner(t *testing.T, socket string) {
+	t.Helper()
+	withRunner(t, func(_ context.Context, name string, args ...string) (string, error) {
+		switch name + " " + strings.Join(args, " ") {
+		case "herdr --version":
+			return "herdr 0.9.1\n", nil
+		case "sbx --version":
+			return "", errors.New("unknown flag")
+		case "sbx version":
+			return "sbx version: v0.45.1\n", nil
+		case "ssh -V":
+			return "OpenSSH_9.9\n", nil
+		case "sbx daemon status --help", "sbx ls --help":
+			return "--json\n", nil
+		case "sbx daemon status --json":
+			return `{"status":"running","socket":"` + socket + `"}`, nil
+		case "ssh -G herdr-sandbox-probe.sbx":
+			return "proxycommand sbx ssh proxy %n\n", nil
+		default:
+			return "", errors.New("unexpected command: " + name + " " + strings.Join(args, " "))
+		}
+	})
 }
 
 func withRunner(t *testing.T, replacement func(context.Context, string, ...string) (string, error)) {

@@ -221,13 +221,17 @@ func inspect() prerequisites {
 	if !daemonRunning {
 		checks = append(checks, check{"Docker authorization", unknown, "not checked while the sandbox daemon is stopped", "Start the daemon, then check again."})
 	} else {
-		if _, err := inventory(socketPath); err != nil {
+		if sandboxes, err := inventory(socketPath); err != nil {
 			checks = append(checks, inventoryFailureChecks(err, "")...)
+		} else if len(sandboxes) == 0 {
+			checks = append(checks, check{"Sandbox inventory", unknown, "empty inventory may be incomplete", "Check Docker Sandboxes, then check again."})
+			checks = append(checks, check{"Docker authorization", unknown, "not checked because the empty inventory is ambiguous", "Sign in with `sbx login` if Docker operations require it."})
 		} else {
 			checks = append(checks, check{"Sandbox inventory", ready, "local sandbox inventory is readable", ""})
 			checks = append(checks, check{"Docker authorization", unknown, "inventory access does not confirm Docker sign-in", "Sign in with `sbx login` if Docker operations require it."})
 		}
 	}
+	checks = append(checks, unresolvedOwnershipChecks(scope)...)
 
 	sshOutput, sshErr := runShort("ssh", "-G", "herdr-sandbox-probe.sbx")
 	if sshErr != nil {
@@ -242,6 +246,22 @@ func inspect() prerequisites {
 	checks = append(checks, check{"Remote readiness", unknown, "checked only during explicit registration", "Choose Register prepared running sandboxes to verify a remote Herdr server."})
 
 	return prerequisites{Checks: checks, Scope: scope, Socket: socketPath}
+}
+
+func unresolvedOwnershipChecks(scope string) []check {
+	if scope == "" {
+		return nil
+	}
+	st, err := loadState()
+	if err != nil {
+		return []check{{"Registration ownership", unknown, "saved registration state could not be read", "Inspect plugin state before registering more sandboxes."}}
+	}
+	for _, item := range st.Scopes[scope] {
+		if item.Pending && item.ProfileID == "" {
+			return []check{{"Registration ownership", unknown, "an unresolved registration intent remains for " + item.Label, "Inspect the Herdr machine catalog before retrying."}}
+		}
+	}
+	return nil
 }
 
 func sandboxCapabilityCheck(sbxCheck check) check {
@@ -380,10 +400,14 @@ func reconcileMatching(ctx context.Context, out io.Writer, match func(sandbox) b
 			results = append(results, result{sb.Name, "failed", "sandbox has no stable identity"})
 			continue
 		}
+		registrationCurrent := func() bool { return sandboxRunning(p.Socket, sb) }
+		if current != nil {
+			registrationCurrent = func() bool { return current(sb) }
+		}
 		item, known := trackedByID[sb.ID]
 		if known && item.ProfileID != "" {
 			if ownedMachineByID(machines, item.ProfileID, item.Label, item.Target) != nil {
-				results = append(results, readinessResult(ctx, sb.Name, item.ProfileID, true))
+				results = append(results, readinessResult(ctx, sb.Name, item.ProfileID, true, registrationCurrent))
 				continue
 			}
 			results = append(results, result{sb.Name, "ownership conflict", "saved machine is missing; it was not recreated"})
@@ -392,10 +416,6 @@ func reconcileMatching(ctx context.Context, out io.Writer, match func(sandbox) b
 		if known && item.Pending {
 			results = append(results, result{sb.Name, "ownership conflict", "previous registration is unresolved; inspect the machine catalog before retrying"})
 			continue
-		}
-		registrationCurrent := func() bool { return sandboxRunning(p.Socket, sb) }
-		if current != nil {
-			registrationCurrent = func() bool { return current(sb) }
 		}
 		outcome, saved := registerPreparedContext(ctx, p.Scope, &st, machines, sb, registrationCurrent)
 		results = append(results, result{sb.Name, outcome.Status, outcome.Detail})
@@ -488,7 +508,7 @@ func registerPreparedContext(ctx context.Context, scope string, st *state, machi
 	if current != nil && !current() {
 		return result{sb.Name, "stale", "sandbox changed after machine registration; cleanup is pending"}, &pending
 	}
-	return readinessResult(ctx, sb.Name, pending.ProfileID, false), &pending
+	return readinessResult(ctx, sb.Name, pending.ProfileID, false, current), &pending
 }
 
 func sandboxRunning(socket string, expected sandbox) bool {
@@ -504,10 +524,13 @@ func sandboxRunning(socket string, expected sandbox) bool {
 	return false
 }
 
-func readinessResult(ctx context.Context, name, profileID string, alreadyKnown bool) result {
+func readinessResult(ctx context.Context, name, profileID string, alreadyKnown bool, current func() bool) result {
 	statusOutput, err := runBoundedContext(ctx, 15*time.Second, herdrBinary(), "--machine", profileID, "status", "server")
 	if err != nil {
 		return result{name, "failed", "saved machine is not ready: " + commandError(err, statusOutput) + ". Retry registration when the remote server is available."}
+	}
+	if current != nil && !current() {
+		return result{name, "stale", "sandbox changed after remote readiness; cleanup is pending"}
 	}
 	if alreadyKnown {
 		return result{name, "ready", "already registered and reachable"}
