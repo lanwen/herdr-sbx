@@ -477,7 +477,7 @@ func TestRepairCancellationRefreshesWithoutRetry(t *testing.T) {
 	})
 	original := interactiveRun
 	t.Cleanup(func() { interactiveRun = original })
-	interactiveRun = func(string, ...string) error { return errors.New("signal: interrupt") }
+	interactiveRun = func(string, ...string) error { return errInteractiveCanceled }
 	var output bytes.Buffer
 	if err := repair("login", &output); err != nil {
 		t.Fatal(err)

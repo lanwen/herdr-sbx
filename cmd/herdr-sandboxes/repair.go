@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"strings"
 )
 
 var interactiveRun = runInteractive
@@ -30,7 +29,7 @@ func repair(kind string, out io.Writer) error {
 
 	fmt.Fprintln(out, title+". Follow any prompts in this terminal.")
 	if err := interactiveRun("sbx", sbxArgs(args...)...); err != nil {
-		if errors.Is(err, errInteractiveCanceled) || strings.Contains(strings.ToLower(err.Error()), "interrupt") {
+		if errors.Is(err, errInteractiveCanceled) {
 			fmt.Fprintln(out, title+" canceled.")
 		} else {
 			fmt.Fprintln(out, title+" failed:", err)

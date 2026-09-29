@@ -32,6 +32,8 @@ func watch(out io.Writer) error {
 		if scheduler == nil {
 			scheduler = newLifecycleScheduler(ctx, p.Scope, p.Socket, out)
 		} else if scheduler.scope != p.Scope || scheduler.socket != p.Socket {
+			stop()
+			scheduler.wait()
 			return errors.New("sandbox daemon scope changed; restart the lifecycle watch")
 		}
 		err := lifecycleReader(ctx, p.Socket, scheduler.enqueue)
@@ -47,6 +49,7 @@ func watch(out io.Writer) error {
 		}
 		select {
 		case <-ctx.Done():
+			scheduler.wait()
 			return nil
 		case <-time.After(time.Second):
 		}
