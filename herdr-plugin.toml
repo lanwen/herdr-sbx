@@ -1,0 +1,33 @@
+id = "herdr.docker-sandboxes"
+name = "Docker Sandboxes"
+version = "0.1.0"
+min_herdr_version = "0.9.1"
+description = "Inspect local Docker Sandbox readiness and register prepared sandboxes."
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["go", "build", "-o", "bin/herdr-sandboxes", "./cmd/herdr-sandboxes"]
+
+[[panes]]
+id = "status"
+title = "Docker Sandboxes"
+placement = "overlay"
+command = ["./bin/herdr-sandboxes", "panel"]
+
+[[actions]]
+id = "open-status"
+title = "Docker Sandboxes status"
+description = "Open the Docker Sandboxes status panel."
+command = ["./bin/herdr-sandboxes", "open-status"]
+
+[[actions]]
+id = "check-again"
+title = "Check Docker Sandboxes prerequisites"
+description = "Inspect prerequisites without changing Docker Sandboxes or SSH setup."
+command = ["./bin/herdr-sandboxes", "check"]
+
+[[actions]]
+id = "reconcile"
+title = "Register prepared Docker Sandboxes"
+description = "Register running sandboxes that already have a compatible Herdr installation."
+command = ["./bin/herdr-sandboxes", "reconcile"]
