@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -78,7 +79,7 @@ func TestReconcileRegistersOnceAndPersistsOwnership(t *testing.T) {
 			return "herdr 0.9.1\n", nil
 		case "herdr machine add --label demo demo.sbx":
 			adds++
-			return "", nil
+			return "Saved SSH machine machine-1. Remote server is ready.\n", nil
 		case "herdr --machine machine-1 status server":
 			return "running\n", nil
 		case "herdr machine list --json":
@@ -86,7 +87,7 @@ func TestReconcileRegistersOnceAndPersistsOwnership(t *testing.T) {
 			if adds == 0 {
 				return "[]", nil
 			}
-			return `[{"profile_id":"machine-1","label":"demo","ssh_target":"demo.sbx"}]`, nil
+			return `[{"profile_id":"machine-1","label":"demo","ssh_target":"demo.sbx","remote_session":"default"}]`, nil
 		default:
 			return "", errors.New("unexpected command: " + call)
 		}
@@ -128,9 +129,12 @@ func TestParsersAcceptCLIResultEnvelopes(t *testing.T) {
 	if err != nil || len(sandboxes) != 1 || sandboxes[0].ID != "s1" {
 		t.Fatalf("sandboxes = %#v, err = %v", sandboxes, err)
 	}
-	machines, err := parseMachines(`{"result":{"machines":[{"id":"m1","label":"demo","target":"demo.sbx"}]}}`)
+	machines, err := parseMachines(`{"result":{"machines":[{"id":"m1","label":"demo","target":"demo.sbx","remote_session":"default"}]}}`)
 	if err != nil || len(machines) != 1 || machines[0].ID != "m1" {
 		t.Fatalf("machines = %#v, err = %v", machines, err)
+	}
+	if ownedMachineByID(machines, "m1", "demo", "demo.sbx") == nil || ownedMachineByID([]machine{{ID: "m1", Label: "demo", Target: "demo.sbx", Session: "other"}}, "m1", "demo", "demo.sbx") != nil {
+		t.Fatal("machine ownership did not require the expected target and default session")
 	}
 	var daemon map[string]any
 	if err := decodeJSON("warning: local settings unavailable\n{\"status\":\"stopped\"}\n", &daemon); err != nil || daemon["status"] != "stopped" {
@@ -178,12 +182,12 @@ func TestReadinessFailureKeepsOwnedProfileForRetry(t *testing.T) {
 			return "herdr 0.9.1\n", nil
 		case "herdr machine add --label demo demo.sbx":
 			adds++
-			return "", nil
+			return "Saved SSH machine machine-1. Remote server is ready.\n", nil
 		case "herdr machine list --json":
 			if adds == 0 {
 				return "[]", nil
 			}
-			return `[{"profile_id":"machine-1","label":"demo","ssh_target":"demo.sbx"}]`, nil
+			return `[{"profile_id":"machine-1","label":"demo","ssh_target":"demo.sbx","remote_session":"default"}]`, nil
 		case "herdr --machine machine-1 status server":
 			readinessChecks++
 			if readinessChecks == 1 {
@@ -274,6 +278,106 @@ func TestCatalogCapacityFailureClearsIntentForRetry(t *testing.T) {
 	}
 	if adds != 2 {
 		t.Fatalf("machine add calls = %d, want retry", adds)
+	}
+}
+
+func TestFailedAddNeverAdoptsManualProfileAfterward(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "herdr")
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	var adds, readinessChecks int
+	withRunner(t, func(_ context.Context, name string, args ...string) (string, error) {
+		call := name + " " + strings.Join(args, " ")
+		switch call {
+		case "herdr --version":
+			return "herdr 0.9.1\n", nil
+		case "sbx --version":
+			return "", errors.New("unknown flag")
+		case "sbx version":
+			return "sbx version: v0.45.1\n", nil
+		case "ssh -V":
+			return "OpenSSH_9.9\n", nil
+		case "sbx daemon status --help", "sbx ls --help":
+			return "--json\n", nil
+		case "sbx daemon status --json":
+			return `{"status":"running","socket":"/tmp/sandboxd.sock"}`, nil
+		case "sbx ls --json":
+			return `[{"uuid":"sandbox-1","name":"demo","status":"running"}]`, nil
+		case "ssh -G herdr-sandbox-probe.sbx":
+			return "proxycommand sbx ssh proxy %n\n", nil
+		case "ssh -o BatchMode=yes -o ConnectTimeout=8 demo.sbx herdr --version":
+			return "herdr 0.9.1\n", nil
+		case "herdr machine list --json":
+			if adds == 0 {
+				return "[]", nil
+			}
+			return `[{"profile_id":"manual-1","label":"demo","ssh_target":"demo.sbx","remote_session":"default"}]`, nil
+		case "herdr machine add --label demo demo.sbx":
+			adds++
+			return "connection closed", errors.New("connection closed")
+		case "herdr --machine manual-1 status server":
+			readinessChecks++
+			return "", nil
+		default:
+			return "", errors.New("unexpected command: " + call)
+		}
+	})
+
+	var first bytes.Buffer
+	if err := reconcile(&first); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(first.String(), "outcome is uncertain") {
+		t.Fatalf("first reconciliation = %s", first.String())
+	}
+	var second bytes.Buffer
+	if err := reconcile(&second); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(second.String(), "OWNERSHIP CONFLICT") || adds != 1 || readinessChecks != 0 {
+		t.Fatalf("second reconciliation = %s, adds = %d, readiness = %d", second.String(), adds, readinessChecks)
+	}
+	st, err := loadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := st.Scopes[scopeID("/tmp/sandboxd.sock")][0]
+	if !item.Pending || item.ProfileID != "" {
+		t.Fatalf("manual machine was adopted: %#v", item)
+	}
+}
+
+func TestProfilePersistenceFailureRemainsOwnershipConflict(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", stateDir)
+	t.Setenv("HERDR_BIN_PATH", "herdr")
+	var readinessChecks int
+	withRunner(t, func(_ context.Context, name string, args ...string) (string, error) {
+		call := name + " " + strings.Join(args, " ")
+		switch call {
+		case "ssh -o BatchMode=yes -o ConnectTimeout=8 demo.sbx herdr --version":
+			return "herdr 0.9.1\n", nil
+		case "herdr machine add --label demo demo.sbx":
+			if err := os.Rename(stateDir, stateDir+"-moved"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(stateDir, []byte("not a directory"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			return "Saved SSH machine machine-1. Remote server is ready.\n", nil
+		case "herdr machine list --json":
+			return `[{"profile_id":"machine-1","label":"demo","ssh_target":"demo.sbx","remote_session":"default"}]`, nil
+		case "herdr --machine machine-1 status server":
+			readinessChecks++
+			return "running\n", nil
+		default:
+			return "", errors.New("unexpected command: " + call)
+		}
+	})
+
+	st := state{Version: 1, Scopes: map[string][]tracked{}}
+	got, saved := registerPrepared("scope", &st, nil, sandbox{ID: "sandbox-1", Name: "demo", Status: "running"})
+	if got.Status != "ownership conflict" || saved == nil || readinessChecks != 0 {
+		t.Fatalf("result = %#v, saved = %#v, readiness = %d", got, saved, readinessChecks)
 	}
 }
 

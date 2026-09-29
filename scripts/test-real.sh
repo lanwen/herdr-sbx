@@ -24,11 +24,12 @@ esac
 
 export HOME="$HERDR_SANDBOX_TEST_ROOT/home"
 export XDG_CONFIG_HOME="$HERDR_SANDBOX_TEST_ROOT/config"
+export XDG_STATE_HOME="$HERDR_SANDBOX_TEST_ROOT/state"
 export HERDR_CONFIG_PATH="$XDG_CONFIG_HOME/herdr/config.toml"
 export HERDR_PLUGIN_STATE_DIR="$HERDR_SANDBOX_TEST_ROOT/plugin-state"
 unset HERDR_SOCKET_PATH HERDR_ENV HERDR_PLUGIN_ID HERDR_PLUGIN_ROOT HERDR_PLUGIN_CONFIG_DIR
 
-mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$HERDR_PLUGIN_STATE_DIR"
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$HERDR_PLUGIN_STATE_DIR"
 
 server_pid=""
 cleanup() {
@@ -43,7 +44,7 @@ go build -o bin/herdr-sandboxes ./cmd/herdr-sandboxes
 server_pid=$!
 
 attempt=0
-until "$HERDR_BIN_PATH" status server >/dev/null 2>&1; do
+until "$HERDR_BIN_PATH" status server --json 2>/dev/null | grep -E '"running"[[:space:]]*:[[:space:]]*true' >/dev/null; do
   attempt=$((attempt + 1))
   if [ "$attempt" -eq 20 ]; then
     echo "Isolated Herdr server did not start." >&2

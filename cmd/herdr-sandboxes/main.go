@@ -50,9 +50,10 @@ type sandbox struct {
 }
 
 type machine struct {
-	ID     string
-	Label  string
-	Target string
+	ID      string
+	Label   string
+	Target  string
+	Session string
 }
 
 type tracked struct {
@@ -155,7 +156,7 @@ func inspect() prerequisites {
 	sbxCheck := executableCheck("sbx", "sbx", minSBXVersion)
 	checks = append(checks, sbxCheck)
 	checks = append(checks, executableCheck("OpenSSH", "ssh", ""))
-	checks = append(checks, sandboxCapabilityCheck(sbxCheck.Level == ready))
+	checks = append(checks, sandboxCapabilityCheck(sbxCheck))
 
 	scope := ""
 	daemonRunning := false
@@ -210,9 +211,15 @@ func inspect() prerequisites {
 	return prerequisites{Checks: checks, Scope: scope}
 }
 
-func sandboxCapabilityCheck(sbxReady bool) check {
-	if !sbxReady {
+func sandboxCapabilityCheck(sbxCheck check) check {
+	if sbxCheck.Level == blocked {
+		if !strings.HasPrefix(sbxCheck.Detail, "requires ") {
+			return check{"Sandbox capability", blocked, "Docker Sandboxes is not available", "Install Docker Sandboxes, then check again."}
+		}
 		return check{"Sandbox capability", blocked, "requires sbx " + minSBXVersion + " or later", "Update Docker Sandboxes, then check again."}
+	}
+	if sbxCheck.Level != ready {
+		return check{"Sandbox capability", unknown, "Docker Sandboxes version is unavailable", "Install or update Docker Sandboxes, then check again."}
 	}
 	daemonHelp, daemonErr := runShort("sbx", "daemon", "status", "--help")
 	listHelp, listErr := runShort("sbx", "ls", "--help")
@@ -225,7 +232,7 @@ func sandboxCapabilityCheck(sbxReady bool) check {
 func inventoryFailureChecks(err error, output string) []check {
 	detail := commandError(err, output)
 	lower := strings.ToLower(detail)
-	if strings.Contains(lower, "login") || strings.Contains(lower, "authoriz") || strings.Contains(lower, "sign in") || strings.Contains(lower, "credential") {
+	if strings.Contains(lower, "docker login service unavailable") || strings.Contains(lower, "not logged in") || strings.Contains(lower, "authentication required") || strings.Contains(lower, "unauthorized") {
 		return []check{{"Docker authorization", blocked, detail, "Sign in with `sbx login`, then check again."}}
 	}
 	if strings.Contains(lower, "daemon") || strings.Contains(lower, "socket") || strings.Contains(lower, "connection refused") || strings.Contains(lower, "backend") {
@@ -261,10 +268,20 @@ func executableCheck(name, binary, minimum string) check {
 		return check{name, ready, "available", ""}
 	}
 	version := versionFrom(output)
-	if minimum != "" && (version == "" || compareVersion(version, minimum) < 0) {
-		return check{name, blocked, "requires " + minimum + " or later; found " + statusOr(version, "an unrecognised version"), "Update Herdr, then check again."}
+	if minimum != "" && version == "" {
+		return check{name, unknown, "version was not recognised", "Install or update " + toolName(name) + ", then check again."}
+	}
+	if minimum != "" && compareVersion(version, minimum) < 0 {
+		return check{name, blocked, "requires " + minimum + " or later; found " + version, "Update " + toolName(name) + ", then check again."}
 	}
 	return check{name, ready, statusOr(version, strings.TrimSpace(output)), ""}
+}
+
+func toolName(name string) string {
+	if name == "sbx" {
+		return "Docker Sandboxes"
+	}
+	return name
 }
 
 func reconcile(out io.Writer) error {
@@ -322,7 +339,7 @@ func reconcile(out io.Writer) error {
 		}
 		item, known := trackedByID[sb.ID]
 		if known && item.ProfileID != "" {
-			if findMachineByID(machines, item.ProfileID) != nil {
+			if ownedMachineByID(machines, item.ProfileID, item.Label, item.Target) != nil {
 				results = append(results, readinessResult(sb.Name, item.ProfileID, true))
 				continue
 			}
@@ -330,23 +347,7 @@ func reconcile(out io.Writer) error {
 			continue
 		}
 		if known && item.Pending {
-			match := findMachine(machines, item.Label, item.Target)
-			if match == nil {
-				results = append(results, result{sb.Name, "ownership conflict", "previous registration is unresolved; inspect the machine catalog before retrying"})
-				continue
-			}
-			item.ProfileID = match.ID
-			item.Pending = false
-			if err := replaceTracked(&st, p.Scope, item); err != nil {
-				results = append(results, result{sb.Name, "ownership conflict", "identified a machine but could not save ownership"})
-				continue
-			}
-			if err := saveState(st); err != nil {
-				results = append(results, result{sb.Name, "ownership conflict", "identified a machine but could not save ownership"})
-				continue
-			}
-			trackedByID[sb.ID] = item
-			results = append(results, readinessResult(sb.Name, item.ProfileID, false))
+			results = append(results, result{sb.Name, "ownership conflict", "previous registration is unresolved; inspect the machine catalog before retrying"})
 			continue
 		}
 		outcome, saved := registerPrepared(p.Scope, &st, machines, sb)
@@ -387,32 +388,33 @@ func registerPrepared(scope string, st *state, machines []machine, sb sandbox) (
 	}
 
 	addOutput, addErr := runBounded(30*time.Second, herdrBinary(), "machine", "add", "--label", sb.Name, target)
-	listOutput, listErr := runShort(herdrBinary(), "machine", "list", "--json")
-	if listErr != nil {
-		if addErr != nil {
-			return result{sb.Name, "ownership conflict", "registration outcome is uncertain: " + commandError(addErr, addOutput)}, &pending
-		}
-		return result{sb.Name, "ownership conflict", "registration completed but could not inspect ownership"}, &pending
-	}
-	after, parseErr := parseMachines(listOutput)
-	if parseErr != nil {
-		if addErr != nil {
-			return result{sb.Name, "ownership conflict", "registration outcome is uncertain: " + commandError(addErr, addOutput)}, &pending
-		}
-		return result{sb.Name, "ownership conflict", "registration completed but machine list was not recognised"}, &pending
-	}
-	match := findMachine(after, sb.Name, target)
-	if match == nil {
-		if addErr != nil {
-			if removeTracked(st, scope, pending.SandboxID) == nil {
-				saveState(*st)
+	if addErr != nil {
+		if deterministicAddFailure(addOutput) {
+			if err := removeTracked(st, scope, pending.SandboxID); err != nil {
+				return result{sb.Name, "ownership conflict", "machine add failed and its intent could not be cleared"}, &pending
+			}
+			if err := saveState(*st); err != nil {
+				return result{sb.Name, "ownership conflict", "machine add failed and its cleared intent could not be saved"}, &pending
 			}
 			return addFailureResult(sb.Name, addErr, addOutput), nil
 		}
-		return result{sb.Name, "ownership conflict", "registration did not yield one identifiable owned machine"}, &pending
+		return result{sb.Name, "ownership conflict", "registration outcome is uncertain: " + commandError(addErr, addOutput)}, &pending
 	}
 
-	pending.ProfileID = match.ID
+	profileID := machineIDFromAdd(addOutput)
+	if profileID == "" {
+		return result{sb.Name, "ownership conflict", "registration succeeded but did not return a trusted machine ID"}, &pending
+	}
+	listOutput, listErr := runShort(herdrBinary(), "machine", "list", "--json")
+	if listErr != nil {
+		return result{sb.Name, "ownership conflict", "registration completed but could not inspect the returned machine ID"}, &pending
+	}
+	after, parseErr := parseMachines(listOutput)
+	if parseErr != nil || ownedMachineByID(after, profileID, sb.Name, target) == nil {
+		return result{sb.Name, "ownership conflict", "registration did not yield the returned owned machine"}, &pending
+	}
+
+	pending.ProfileID = profileID
 	pending.Pending = false
 	if err := replaceTracked(st, scope, pending); err != nil {
 		return result{sb.Name, "ownership conflict", "machine was registered but ownership could not be saved"}, &pending
@@ -583,7 +585,7 @@ func parseMachines(raw string) ([]machine, error) {
 	}
 	result := make([]machine, 0, len(items))
 	for _, item := range items {
-		result = append(result, machine{ID: first(item, "profile_id", "id"), Label: first(item, "label", "name"), Target: first(item, "ssh_target", "target", "host")})
+		result = append(result, machine{ID: first(item, "profile_id", "id"), Label: first(item, "label", "name"), Target: first(item, "ssh_target", "target", "host"), Session: first(item, "remote_session", "session")})
 	}
 	return result, nil
 }
@@ -634,26 +636,17 @@ func decodeJSON(raw string, destination any) error {
 	return json.NewDecoder(strings.NewReader(raw[start:])).Decode(destination)
 }
 
-func findMachine(machines []machine, label, target string) *machine {
-	matches := []machine{}
-	for _, m := range machines {
-		if m.Label == label && m.Target == target && m.ID != "" {
-			matches = append(matches, m)
-		}
-	}
-	if len(matches) != 1 {
-		return nil
-	}
-	return &matches[0]
-}
-
-func findMachineByID(machines []machine, id string) *machine {
-	for _, m := range machines {
-		if m.ID == id {
-			return &m
+func ownedMachineByID(machines []machine, id, label, target string) *machine {
+	for _, machine := range machines {
+		if machine.ID == id && machine.Label == label && machine.Target == target && usesDefaultSession(machine.Session) {
+			return &machine
 		}
 	}
 	return nil
+}
+
+func usesDefaultSession(session string) bool {
+	return strings.EqualFold(session, "default")
 }
 
 func hasBlocked(checks []check, name string) bool {
@@ -721,6 +714,7 @@ func commandError(err error, output string) string {
 }
 
 var semver = regexp.MustCompile(`(?m)(?:^|\s|v)(\d+)\.(\d+)\.(\d+)(?:\s|$|[-+])`)
+var machineAdd = regexp.MustCompile(`(?m)^Saved SSH machine ([^[:space:]]+)\. Remote server is ready\.$`)
 
 func versionFrom(value string) string {
 	match := semver.FindStringSubmatch(value)
@@ -728,6 +722,19 @@ func versionFrom(value string) string {
 		return match[1] + "." + match[2] + "." + match[3]
 	}
 	return ""
+}
+
+func machineIDFromAdd(output string) string {
+	match := machineAdd.FindStringSubmatch(strings.TrimSpace(output))
+	if len(match) == 2 {
+		return match[1]
+	}
+	return ""
+}
+
+func deterministicAddFailure(output string) bool {
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "capacity") || strings.Contains(lower, "catalog full") || strings.Contains(lower, "maximum") || strings.Contains(lower, "limit")
 }
 
 func compareVersion(left, right string) int {
