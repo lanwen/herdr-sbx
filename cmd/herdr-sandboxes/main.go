@@ -18,7 +18,10 @@ import (
 	"time"
 )
 
-const minHerdrVersion = "0.9.1"
+const (
+	minHerdrVersion = "0.9.1"
+	minSBXVersion   = "0.45.1"
+)
 
 type level string
 
@@ -149,8 +152,10 @@ func inspect() prerequisites {
 	checks := []check{}
 	herdr := herdrBinary()
 	checks = append(checks, executableCheck("Herdr", herdr, minHerdrVersion))
-	checks = append(checks, executableCheck("sbx", "sbx", ""))
+	sbxCheck := executableCheck("sbx", "sbx", minSBXVersion)
+	checks = append(checks, sbxCheck)
 	checks = append(checks, executableCheck("OpenSSH", "ssh", ""))
+	checks = append(checks, sandboxCapabilityCheck(sbxCheck.Level == ready))
 
 	scope := ""
 	daemonRunning := false
@@ -181,9 +186,10 @@ func inspect() prerequisites {
 	} else {
 		listOutput, listErr := runSBX("ls", "--json")
 		if listErr != nil {
-			checks = append(checks, check{"Docker authorization", unknown, commandError(listErr, listOutput), "Sign in with `sbx login` if Docker Sandboxes requests it, then check again."})
+			checks = append(checks, inventoryFailureChecks(listErr, listOutput)...)
 		} else if _, err := parseSandboxes(listOutput); err != nil {
-			checks = append(checks, check{"Docker authorization", unknown, "sandbox inventory response was not recognised", "Check Docker Sandboxes access, then check again."})
+			checks = append(checks, check{"Sandbox inventory", unknown, "returned an unrecognised response", "Check the Docker Sandboxes backend, then check again."})
+			checks = append(checks, check{"Docker authorization", unknown, "not established because inventory was not recognised", "Check Docker authorization, then check again."})
 		} else {
 			checks = append(checks, check{"Docker authorization", ready, "local sandbox inventory is readable", ""})
 		}
@@ -192,13 +198,46 @@ func inspect() prerequisites {
 	sshOutput, sshErr := runShort("ssh", "-G", "herdr-sandbox-probe.sbx")
 	if sshErr != nil {
 		checks = append(checks, check{"Sandbox SSH", unknown, commandError(sshErr, sshOutput), "Run `sbx setup ssh` only if you want Docker Sandboxes to configure SSH."})
-	} else if strings.Contains(sshOutput, "proxycommand none") || !strings.Contains(sshOutput, "proxycommand ") {
+	} else if proxy := sshSetting(sshOutput, "proxycommand"); proxy == "" || proxy == "none" {
 		checks = append(checks, check{"Sandbox SSH", blocked, "no managed sandbox SSH proxy is configured", "Run `sbx setup ssh`, then check again."})
+	} else if !strings.Contains(proxy, "sbx ssh proxy") {
+		checks = append(checks, check{"Sandbox SSH", unknown, "an SSH proxy is configured but is not verified as Docker Sandboxes", "Run `sbx setup ssh` or inspect the effective SSH configuration."})
 	} else {
 		checks = append(checks, check{"Sandbox SSH", ready, "managed sandbox SSH proxy is configured", ""})
 	}
+	checks = append(checks, check{"Remote readiness", unknown, "checked only during explicit registration", "Choose Register prepared running sandboxes to verify a remote Herdr server."})
 
 	return prerequisites{Checks: checks, Scope: scope}
+}
+
+func sandboxCapabilityCheck(sbxReady bool) check {
+	if !sbxReady {
+		return check{"Sandbox capability", blocked, "requires sbx " + minSBXVersion + " or later", "Update Docker Sandboxes, then check again."}
+	}
+	daemonHelp, daemonErr := runShort("sbx", "daemon", "status", "--help")
+	listHelp, listErr := runShort("sbx", "ls", "--help")
+	if daemonErr != nil || listErr != nil || !strings.Contains(daemonHelp, "--json") || !strings.Contains(listHelp, "--json") {
+		return check{"Sandbox capability", blocked, "requires JSON daemon status and sandbox inventory commands", "Update Docker Sandboxes to " + minSBXVersion + " or later, then check again."}
+	}
+	return check{"Sandbox capability", ready, "JSON daemon status and inventory are available", ""}
+}
+
+func inventoryFailureChecks(err error, output string) []check {
+	detail := commandError(err, output)
+	lower := strings.ToLower(detail)
+	if strings.Contains(lower, "login") || strings.Contains(lower, "authoriz") || strings.Contains(lower, "sign in") || strings.Contains(lower, "credential") {
+		return []check{{"Docker authorization", blocked, detail, "Sign in with `sbx login`, then check again."}}
+	}
+	if strings.Contains(lower, "daemon") || strings.Contains(lower, "socket") || strings.Contains(lower, "connection refused") || strings.Contains(lower, "backend") {
+		return []check{
+			{"Sandbox inventory", unknown, detail, "Check the Docker Sandboxes daemon, then check again."},
+			{"Docker authorization", unknown, "not checked because the sandbox backend is unavailable", "Restore daemon access, then check again."},
+		}
+	}
+	return []check{
+		{"Sandbox inventory", unknown, detail, "Check the Docker Sandboxes backend, then check again."},
+		{"Docker authorization", unknown, "not checked because sandbox inventory failed", "Check Docker authorization after inventory recovers."},
+	}
 }
 
 func executableCheck(name, binary, minimum string) check {
@@ -234,10 +273,10 @@ func reconcile(out io.Writer) error {
 	if p.Scope == "" {
 		return errors.New("cannot identify the local sandbox daemon scope")
 	}
-	if hasBlocked(p.Checks, "Sandbox daemon") || hasBlocked(p.Checks, "Docker authorization") || hasBlocked(p.Checks, "Sandbox SSH") {
+	if hasBlocked(p.Checks, "Sandbox capability") || hasBlocked(p.Checks, "Sandbox daemon") || hasBlocked(p.Checks, "Docker authorization") || hasBlocked(p.Checks, "Sandbox SSH") {
 		return errors.New("fix the blocked prerequisites before registering sandboxes")
 	}
-	if !hasLevel(p.Checks, "Sandbox daemon", ready) || !hasLevel(p.Checks, "Docker authorization", ready) || !hasLevel(p.Checks, "Sandbox SSH", ready) {
+	if !hasLevel(p.Checks, "Sandbox capability", ready) || !hasLevel(p.Checks, "Sandbox daemon", ready) || !hasLevel(p.Checks, "Docker authorization", ready) || !hasLevel(p.Checks, "Sandbox SSH", ready) {
 		return errors.New("complete the prerequisite checks before registering sandboxes")
 	}
 	unlock, err := lockState()
@@ -284,22 +323,33 @@ func reconcile(out io.Writer) error {
 		item, known := trackedByID[sb.ID]
 		if known && item.ProfileID != "" {
 			if findMachineByID(machines, item.ProfileID) != nil {
-				output, err := runBounded(15*time.Second, herdrBinary(), "--machine", item.ProfileID, "status", "server")
-				if err != nil {
-					results = append(results, result{sb.Name, "failed", "saved machine is not ready: " + commandError(err, output)})
-				} else {
-					results = append(results, result{sb.Name, "ready", "already registered and reachable"})
-				}
+				results = append(results, readinessResult(sb.Name, item.ProfileID, true))
 				continue
 			}
 			results = append(results, result{sb.Name, "ownership conflict", "saved machine is missing; it was not recreated"})
 			continue
 		}
 		if known && item.Pending {
-			results = append(results, result{sb.Name, "ownership conflict", "previous registration is unresolved"})
+			match := findMachine(machines, item.Label, item.Target)
+			if match == nil {
+				results = append(results, result{sb.Name, "ownership conflict", "previous registration is unresolved; inspect the machine catalog before retrying"})
+				continue
+			}
+			item.ProfileID = match.ID
+			item.Pending = false
+			if err := replaceTracked(&st, p.Scope, item); err != nil {
+				results = append(results, result{sb.Name, "ownership conflict", "identified a machine but could not save ownership"})
+				continue
+			}
+			if err := saveState(st); err != nil {
+				results = append(results, result{sb.Name, "ownership conflict", "identified a machine but could not save ownership"})
+				continue
+			}
+			trackedByID[sb.ID] = item
+			results = append(results, readinessResult(sb.Name, item.ProfileID, false))
 			continue
 		}
-		outcome, saved := registerPrepared(p.Scope, st, machines, sb)
+		outcome, saved := registerPrepared(p.Scope, &st, machines, sb)
 		results = append(results, result{sb.Name, outcome.Status, outcome.Detail})
 		if saved != nil {
 			trackedByID[sb.ID] = *saved
@@ -314,7 +364,7 @@ func reconcile(out io.Writer) error {
 	return nil
 }
 
-func registerPrepared(scope string, st state, machines []machine, sb sandbox) (result, *tracked) {
+func registerPrepared(scope string, st *state, machines []machine, sb sandbox) (result, *tracked) {
 	target := sb.Name + ".sbx"
 	for _, m := range machines {
 		if m.Label == sb.Name || m.Target == target {
@@ -332,38 +382,85 @@ func registerPrepared(scope string, st state, machines []machine, sb sandbox) (r
 
 	pending := tracked{SandboxID: sb.ID, Label: sb.Name, Target: target, Pending: true}
 	st.Scopes[scope] = append(st.Scopes[scope], pending)
-	if err := saveState(st); err != nil {
+	if err := saveState(*st); err != nil {
 		return result{sb.Name, "failed", err.Error()}, nil
 	}
 
-	addOutput, err := runBounded(30*time.Second, herdrBinary(), "machine", "add", "--label", sb.Name, target)
-	if err != nil {
-		return result{sb.Name, "ownership conflict", "registration outcome is uncertain: " + commandError(err, addOutput)}, &pending
-	}
-	listOutput, err := runShort(herdrBinary(), "machine", "list", "--json")
-	if err != nil {
+	addOutput, addErr := runBounded(30*time.Second, herdrBinary(), "machine", "add", "--label", sb.Name, target)
+	listOutput, listErr := runShort(herdrBinary(), "machine", "list", "--json")
+	if listErr != nil {
+		if addErr != nil {
+			return result{sb.Name, "ownership conflict", "registration outcome is uncertain: " + commandError(addErr, addOutput)}, &pending
+		}
 		return result{sb.Name, "ownership conflict", "registration completed but could not inspect ownership"}, &pending
 	}
-	after, err := parseMachines(listOutput)
-	if err != nil {
+	after, parseErr := parseMachines(listOutput)
+	if parseErr != nil {
+		if addErr != nil {
+			return result{sb.Name, "ownership conflict", "registration outcome is uncertain: " + commandError(addErr, addOutput)}, &pending
+		}
 		return result{sb.Name, "ownership conflict", "registration completed but machine list was not recognised"}, &pending
 	}
 	match := findMachine(after, sb.Name, target)
 	if match == nil {
+		if addErr != nil {
+			if removeTracked(st, scope, pending.SandboxID) == nil {
+				saveState(*st)
+			}
+			return addFailureResult(sb.Name, addErr, addOutput), nil
+		}
 		return result{sb.Name, "ownership conflict", "registration did not yield one identifiable owned machine"}, &pending
-	}
-	statusOutput, err := runBounded(15*time.Second, herdrBinary(), "--machine", match.ID, "status", "server")
-	if err != nil {
-		return result{sb.Name, "failed", "machine was added but readiness failed: " + commandError(err, statusOutput)}, &pending
 	}
 
 	pending.ProfileID = match.ID
 	pending.Pending = false
-	st.Scopes[scope][len(st.Scopes[scope])-1] = pending
-	if err := saveState(st); err != nil {
-		return result{sb.Name, "ownership conflict", "machine is ready but ownership could not be saved"}, &pending
+	if err := replaceTracked(st, scope, pending); err != nil {
+		return result{sb.Name, "ownership conflict", "machine was registered but ownership could not be saved"}, &pending
 	}
-	return result{sb.Name, "ready", "registered and reachable"}, &pending
+	if err := saveState(*st); err != nil {
+		return result{sb.Name, "ownership conflict", "machine was registered but ownership could not be saved"}, &pending
+	}
+	return readinessResult(sb.Name, pending.ProfileID, false), &pending
+}
+
+func readinessResult(name, profileID string, alreadyKnown bool) result {
+	statusOutput, err := runBounded(15*time.Second, herdrBinary(), "--machine", profileID, "status", "server")
+	if err != nil {
+		return result{name, "failed", "saved machine is not ready: " + commandError(err, statusOutput) + ". Retry registration when the remote server is available."}
+	}
+	if alreadyKnown {
+		return result{name, "ready", "already registered and reachable"}
+	}
+	return result{name, "ready", "registered and reachable"}
+}
+
+func addFailureResult(name string, err error, output string) result {
+	detail := commandError(err, output)
+	lower := strings.ToLower(detail)
+	if strings.Contains(lower, "capacity") || strings.Contains(lower, "catalog full") || strings.Contains(lower, "maximum") || strings.Contains(lower, "limit") {
+		return result{name, "catalog full", "Herdr cannot save another machine: " + detail + ". Remove an unused machine, then retry."}
+	}
+	return result{name, "failed", "machine add failed: " + detail + ". Retry after correcting the reported problem."}
+}
+
+func replaceTracked(st *state, scope string, next tracked) error {
+	for i, item := range st.Scopes[scope] {
+		if item.SandboxID == next.SandboxID {
+			st.Scopes[scope][i] = next
+			return nil
+		}
+	}
+	return errors.New("registration intent is missing")
+}
+
+func removeTracked(st *state, scope, sandboxID string) error {
+	for i, item := range st.Scopes[scope] {
+		if item.SandboxID == sandboxID {
+			st.Scopes[scope] = append(st.Scopes[scope][:i], st.Scopes[scope][i+1:]...)
+			return nil
+		}
+	}
+	return errors.New("registration intent is missing")
 }
 
 func openPanel() error {
@@ -682,4 +779,14 @@ func statusOr(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func sshSetting(output, key string) string {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 1 && fields[0] == key {
+			return strings.Join(fields[1:], " ")
+		}
+	}
+	return ""
 }
