@@ -6,7 +6,9 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestInspectDoesNotListWhenDaemonStopped(t *testing.T) {
@@ -411,11 +413,242 @@ func TestSBXMinimumVersionIsEnforced(t *testing.T) {
 	}
 }
 
+func TestRepairRunsOnlyTheChosenInteractiveCommandThenRefreshes(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "herdr")
+	var statusChecks int
+	withRunner(t, func(_ context.Context, name string, args ...string) (string, error) {
+		switch name + " " + strings.Join(args, " ") {
+		case "herdr --version":
+			return "herdr 0.9.1\n", nil
+		case "sbx --version":
+			return "", errors.New("unknown flag")
+		case "sbx version":
+			return "sbx version: v0.45.1\n", nil
+		case "ssh -V":
+			return "OpenSSH_9.9\n", nil
+		case "sbx daemon status --help", "sbx ls --help":
+			return "--json\n", nil
+		case "sbx daemon status --json":
+			statusChecks++
+			return `{"status":"running","socket":"/tmp/sandboxd.sock"}`, nil
+		case "ssh -G herdr-sandbox-probe.sbx":
+			return "proxycommand sbx ssh proxy %n\n", nil
+		default:
+			return "", errors.New("unexpected command: " + name + " " + strings.Join(args, " "))
+		}
+	})
+	original := interactiveRun
+	t.Cleanup(func() { interactiveRun = original })
+	var got string
+	interactiveRun = func(name string, args ...string) error {
+		got = name + " " + strings.Join(args, " ")
+		return nil
+	}
+
+	var output bytes.Buffer
+	if err := repair("ssh", &output); err != nil {
+		t.Fatal(err)
+	}
+	if got != "sbx setup ssh" || statusChecks != 1 || !strings.Contains(output.String(), "finished.") || !strings.Contains(output.String(), "Refreshing status") {
+		t.Fatalf("command = %q, checks = %d, output = %s", got, statusChecks, output.String())
+	}
+}
+
+func TestRepairCancellationRefreshesWithoutRetry(t *testing.T) {
+	withRunner(t, func(_ context.Context, name string, args ...string) (string, error) {
+		switch name + " " + strings.Join(args, " ") {
+		case "herdr --version":
+			return "herdr 0.9.1\n", nil
+		case "sbx --version":
+			return "", errors.New("unknown flag")
+		case "sbx version":
+			return "sbx version: v0.45.1\n", nil
+		case "ssh -V":
+			return "OpenSSH_9.9\n", nil
+		case "sbx daemon status --help", "sbx ls --help":
+			return "--json\n", nil
+		case "sbx daemon status --json":
+			return `{"status":"stopped","socket":"/tmp/sandboxd.sock"}`, nil
+		case "ssh -G herdr-sandbox-probe.sbx":
+			return "proxycommand sbx ssh proxy %n\n", nil
+		default:
+			return "", errors.New("unexpected command")
+		}
+	})
+	original := interactiveRun
+	t.Cleanup(func() { interactiveRun = original })
+	interactiveRun = func(string, ...string) error { return errors.New("signal: interrupt") }
+	var output bytes.Buffer
+	if err := repair("login", &output); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "canceled") || !strings.Contains(output.String(), "Refreshing status") {
+		t.Fatalf("output = %s", output.String())
+	}
+}
+
+func TestLifecycleReaderAcceptsInitialReplayAndUnknownFields(t *testing.T) {
+	var got []lifecycleEvent
+	stream := "{\"type\":\"sandbox.lifecycle\",\"action\":\"started\",\"sandbox_id\":\"s1\",\"sandbox_name\":\"demo\",\"extra\":true}\n" +
+		"{\"type\":\"sandbox.lifecycle\",\"action\":\"sync\",\"unknown\":\"ok\"}\n"
+	if err := readLifecycleLines(strings.NewReader(stream), func(event lifecycleEvent) bool {
+		got = append(got, event)
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Action != "started" || got[0].SandboxID != "s1" || got[1].Action != "sync" {
+		t.Fatalf("events = %#v", got)
+	}
+}
+
+func TestLifecycleSchedulerIgnoresOtherEventTypes(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	scheduler := newLifecycleScheduler(ctx, "scope", "/tmp/sandboxd.sock", ioDiscard{})
+	if !scheduler.enqueue(lifecycleEvent{Type: "other.event", Action: "deleted", SandboxID: "sandbox-1"}) {
+		t.Fatal("unknown event type was rejected")
+	}
+	scheduler.mu.Lock()
+	_, retired := scheduler.retired["sandbox-1"]
+	_, pending := scheduler.deletes["sandbox-1"]
+	scheduler.mu.Unlock()
+	cancel()
+	scheduler.wait()
+	if retired || pending {
+		t.Fatal("unknown event type changed lifecycle state")
+	}
+}
+
+func TestLifecycleDeletionRemovesOnlyOwnedProfileInItsScope(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	t.Setenv("HERDR_BIN_PATH", "herdr")
+	st := state{Version: 1, Scopes: map[string][]tracked{
+		"scope-a": {{SandboxID: "sandbox-1", Label: "demo", Target: "demo.sbx", ProfileID: "machine-1"}},
+		"scope-b": {{SandboxID: "sandbox-1", Label: "other", Target: "other.sbx", ProfileID: "machine-2"}},
+	}}
+	if err := saveState(st); err != nil {
+		t.Fatal(err)
+	}
+	var removes []string
+	withRunner(t, func(_ context.Context, name string, args ...string) (string, error) {
+		switch name + " " + strings.Join(args, " ") {
+		case "herdr machine list --json":
+			return `[{"profile_id":"machine-1","label":"demo","ssh_target":"demo.sbx","remote_session":"default"}]`, nil
+		case "herdr machine remove machine-1":
+			removes = append(removes, strings.Join(args, " "))
+			return "", nil
+		default:
+			return "", errors.New("unexpected command: " + name + " " + strings.Join(args, " "))
+		}
+	})
+	scheduler := newLifecycleScheduler(context.Background(), "scope-a", "/tmp/sandboxd.sock", ioDiscard{})
+	scheduler.removeDeleted(lifecycleEvent{Action: "deleted", SandboxID: "sandbox-1", SandboxName: "demo"})
+	if len(removes) != 1 {
+		t.Fatalf("removes = %#v", removes)
+	}
+	st, err := loadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Scopes["scope-a"]) != 0 || len(st.Scopes["scope-b"]) != 1 {
+		t.Fatalf("state = %#v", st.Scopes)
+	}
+}
+
+func TestLifecycleDeletionRetainsMismatchedProfile(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	t.Setenv("HERDR_BIN_PATH", "herdr")
+	st := state{Version: 1, Scopes: map[string][]tracked{"scope": {{SandboxID: "sandbox-1", Label: "demo", Target: "demo.sbx", ProfileID: "machine-1"}}}}
+	if err := saveState(st); err != nil {
+		t.Fatal(err)
+	}
+	withRunner(t, func(_ context.Context, name string, args ...string) (string, error) {
+		if name == "herdr" && strings.Join(args, " ") == "machine list --json" {
+			return `[{"profile_id":"machine-1","label":"manual","ssh_target":"manual.example","remote_session":"default"}]`, nil
+		}
+		t.Fatal("unexpected command: " + name + " " + strings.Join(args, " "))
+		return "", nil
+	})
+	var output bytes.Buffer
+	scheduler := newLifecycleScheduler(context.Background(), "scope", "/tmp/sandboxd.sock", &output)
+	scheduler.removeDeleted(lifecycleEvent{Action: "deleted", SandboxID: "sandbox-1"})
+	if !strings.Contains(output.String(), "retained state") {
+		t.Fatalf("output = %s", output.String())
+	}
+	st, err := loadState()
+	if err != nil || len(st.Scopes["scope"]) != 1 {
+		t.Fatalf("state = %#v, err = %v", st, err)
+	}
+}
+
+func TestLifecycleQueueKeepsDeletionWhenFull(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	t.Setenv("HERDR_BIN_PATH", "herdr")
+	st := state{Version: 1, Scopes: map[string][]tracked{"scope": {{SandboxID: "sandbox-1", Label: "demo", Target: "demo.sbx", ProfileID: "machine-1"}}}}
+	if err := saveState(st); err != nil {
+		t.Fatal(err)
+	}
+	removed := make(chan struct{}, 1)
+	withRunner(t, func(_ context.Context, name string, args ...string) (string, error) {
+		switch name + " " + strings.Join(args, " ") {
+		case "herdr machine list --json":
+			return `[{"profile_id":"machine-1","label":"demo","ssh_target":"demo.sbx","remote_session":"default"}]`, nil
+		case "herdr machine remove machine-1":
+			removed <- struct{}{}
+			return "", nil
+		default:
+			return "", errors.New("unexpected command: " + name + " " + strings.Join(args, " "))
+		}
+	})
+	originalInventory := inventory
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	inventory = func(string) ([]sandbox, error) {
+		once.Do(func() {
+			entered <- struct{}{}
+			<-release
+		})
+		return nil, nil
+	}
+	t.Cleanup(func() { inventory = originalInventory })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	scheduler := newLifecycleScheduler(ctx, "scope", "/tmp/sandboxd.sock", ioDiscard{})
+	if !scheduler.enqueue(lifecycleEvent{Type: "sandbox.lifecycle", Action: "started", SandboxID: "hold"}) {
+		t.Fatal("initial event was rejected")
+	}
+	<-entered
+	for i := 0; i < cap(scheduler.queue); i++ {
+		if !scheduler.enqueue(lifecycleEvent{Type: "sandbox.lifecycle", Action: "started", SandboxID: "queued-" + strings.Repeat("x", i+1)}) {
+			t.Fatal("queue filled before expected")
+		}
+	}
+	if scheduler.enqueue(lifecycleEvent{Type: "sandbox.lifecycle", Action: "deleted", SandboxID: "sandbox-1"}) {
+		t.Fatal("full queue accepted deletion")
+	}
+	close(release)
+	select {
+	case <-removed:
+	case <-time.After(time.Second):
+		t.Fatal("deletion was lost after queue overflow")
+	}
+	cancel()
+	scheduler.wait()
+}
+
 func withRunner(t *testing.T, replacement func(context.Context, string, ...string) (string, error)) {
 	t.Helper()
 	original := run
+	originalInventory := inventory
 	run = replacement
-	t.Cleanup(func() { run = original })
+	inventory = func(string) ([]sandbox, error) {
+		return []sandbox{{ID: "sandbox-1", Name: "demo", Status: "running"}}, nil
+	}
+	t.Cleanup(func() {
+		run = original
+		inventory = originalInventory
+	})
 }
 
 type testWriter struct{ t *testing.T }

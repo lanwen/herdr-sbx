@@ -14,6 +14,12 @@ title = "Docker Sandboxes"
 placement = "overlay"
 command = ["./bin/herdr-sandboxes", "panel"]
 
+[[panes]]
+id = "watch"
+title = "Docker Sandboxes lifecycle"
+placement = "tab"
+command = ["./bin/herdr-sandboxes", "watch"]
+
 [[actions]]
 id = "open-status"
 title = "Docker Sandboxes status"
@@ -31,3 +37,9 @@ id = "reconcile"
 title = "Register prepared Docker Sandboxes"
 description = "Register running sandboxes that already have a compatible Herdr installation."
 command = ["./bin/herdr-sandboxes", "reconcile"]
+
+[[actions]]
+id = "watch"
+title = "Watch Docker Sandbox lifecycle"
+description = "Open a foreground lifecycle watcher. Stop it with Ctrl-C."
+command = ["./bin/herdr-sandboxes", "open-watch"]
