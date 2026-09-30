@@ -1,0 +1,176 @@
+#!/bin/sh
+set -eu
+
+: "${HERDR_WORKER_TEST_ROOT:?Set a new temporary test root}"
+: "${HERDR_BIN_PATH:=herdr}"
+
+case "$HERDR_WORKER_TEST_ROOT" in
+  /tmp/*|/private/tmp/*) ;;
+  *) echo "HERDR_WORKER_TEST_ROOT must be under a temporary directory." >&2; exit 2 ;;
+esac
+
+command -v python3 >/dev/null
+python3 - "$HERDR_WORKER_TEST_ROOT" <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+parent = root.parent.resolve(strict=True)
+temporary = pathlib.Path('/tmp').resolve()
+if parent != temporary and temporary not in parent.parents:
+    raise SystemExit('Test root must resolve under the temporary directory.')
+root.mkdir(mode=0o700)
+PY
+
+export HOME="$HERDR_WORKER_TEST_ROOT/home"
+export XDG_CONFIG_HOME="$HERDR_WORKER_TEST_ROOT/config"
+export XDG_STATE_HOME="$HERDR_WORKER_TEST_ROOT/state"
+export XDG_DATA_HOME="$HERDR_WORKER_TEST_ROOT/data"
+export XDG_CACHE_HOME="$HERDR_WORKER_TEST_ROOT/cache"
+export XDG_RUNTIME_DIR="$HERDR_WORKER_TEST_ROOT/runtime"
+export HERDR_CONFIG_PATH="$XDG_CONFIG_HOME/herdr/config.toml"
+export HERDR_PLUGIN_STATE_DIR="$HERDR_WORKER_TEST_ROOT/plugin-state"
+unset HERDR_SOCKET_PATH HERDR_CLIENT_SOCKET_PATH HERDR_SESSION HERDR_ENV
+unset HERDR_PLUGIN_ID HERDR_PLUGIN_ROOT HERDR_PLUGIN_CONFIG_DIR
+unset HERDR_PANE HERDR_PANE_ID HERDR_TAB HERDR_TAB_ID HERDR_WORKSPACE HERDR_WORKSPACE_ID
+unset HERDR_PLUGIN_EVENT HERDR_PLUGIN_ACTION HERDR_PLUGIN_CONTEXT HERDR_CONTEXT
+test_suffix=$(printf '%s' "$HERDR_WORKER_TEST_ROOT" | cksum | awk '{print $1}')
+first_session="hsbx-${test_suffix}-one"
+second_session="hsbx-${test_suffix}-two"
+export HERDR_WORKER_TEST_SOCKET="$HERDR_WORKER_TEST_ROOT/sandboxd.sock"
+
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR" "$HERDR_PLUGIN_STATE_DIR" "$HERDR_WORKER_TEST_ROOT/tools"
+chmod 700 "$HOME" "$XDG_RUNTIME_DIR"
+ln -s "$(pwd)/scripts/test-worker-sbx.sh" "$HERDR_WORKER_TEST_ROOT/tools/sbx"
+chmod 700 scripts/test-worker-sbx.sh
+export PATH="$HERDR_WORKER_TEST_ROOT/tools:$PATH"
+
+first_pid=""
+second_pid=""
+daemon_pid=""
+worker_pid=""
+cleanup() {
+  [ -z "$worker_pid" ] || kill "$worker_pid" >/dev/null 2>&1 || true
+  [ -z "$first_pid" ] || HERDR_SESSION="$first_session" "$HERDR_BIN_PATH" server stop >/dev/null 2>&1 || kill "$first_pid" >/dev/null 2>&1 || true
+  [ -z "$second_pid" ] || HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" server stop >/dev/null 2>&1 || kill "$second_pid" >/dev/null 2>&1 || true
+  [ -z "$daemon_pid" ] || kill "$daemon_pid" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT INT TERM
+
+python3 - "$HERDR_WORKER_TEST_SOCKET" <<'PY' &
+import os, socket, sys, threading, time
+path = sys.argv[1]
+try:
+    os.unlink(path)
+except FileNotFoundError:
+    pass
+listener = socket.socket(socket.AF_UNIX)
+listener.bind(path)
+listener.listen()
+def serve(conn):
+    try:
+        request = conn.recv(4096)
+        if b'/events?' in request:
+            conn.sendall(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n')
+            while True:
+                time.sleep(1)
+        else:
+            conn.sendall(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]')
+    finally:
+        conn.close()
+while True:
+    conn, _ = listener.accept()
+    threading.Thread(target=serve, args=(conn,), daemon=True).start()
+PY
+daemon_pid=$!
+
+wait_for_server() {
+  session=$1
+  attempts=0
+  until HERDR_SESSION="$session" "$HERDR_BIN_PATH" status server --json 2>/dev/null | grep -E '"running"[[:space:]]*:[[:space:]]*true' >/dev/null; do
+    attempts=$((attempts + 1))
+    [ "$attempts" -lt 20 ] || { echo "Isolated Herdr server $session did not start." >&2; exit 1; }
+    sleep 1
+  done
+}
+
+assert_worker_locked() {
+  HERDR_SESSION="$second_session" python3 - "$HERDR_WORKER_TEST_ROOT/herdr-sandboxes" <<'PY'
+import subprocess, sys
+result = subprocess.run([sys.argv[1], 'worker'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=2)
+if result.returncode == 0 or 'already active' not in result.stdout:
+    raise SystemExit('expected the detached worker lock:\n' + result.stdout)
+PY
+}
+
+assert_worker_stopped() {
+  HERDR_SESSION="$second_session" python3 - "$HERDR_WORKER_TEST_ROOT/herdr-sandboxes" <<'PY'
+import subprocess, sys
+result = subprocess.run([sys.argv[1], 'worker'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=2)
+if result.returncode == 0 or 'already active' in result.stdout:
+    raise SystemExit('expected the detached worker to have exited:\n' + result.stdout)
+PY
+}
+
+start_worker() {
+  HERDR_SESSION="$1" "$HERDR_WORKER_TEST_ROOT/herdr-sandboxes" worker >"$HERDR_WORKER_TEST_ROOT/worker.log" 2>&1 &
+  worker_pid=$!
+  attempts=0
+  until grep -F 'worker started' "$HERDR_WORKER_TEST_ROOT/worker.log" >/dev/null; do
+    attempts=$((attempts + 1))
+    if ! kill -0 "$worker_pid" >/dev/null 2>&1 || [ "$attempts" -eq 10 ]; then
+      cat "$HERDR_WORKER_TEST_ROOT/worker.log" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+wait_for_worker_exit() {
+  attempts=0
+  while kill -0 "$worker_pid" >/dev/null 2>&1; do
+    attempts=$((attempts + 1))
+    [ "$attempts" -lt 15 ] || { echo 'Worker did not exit within 15 seconds.' >&2; exit 1; }
+    sleep 1
+  done
+  wait "$worker_pid"
+  worker_pid=""
+}
+
+go build -o "$HERDR_WORKER_TEST_ROOT/herdr-sandboxes" ./cmd/herdr-sandboxes
+HERDR_SESSION="$first_session" "$HERDR_BIN_PATH" server >"$HERDR_WORKER_TEST_ROOT/first.log" 2>&1 &
+first_pid=$!
+HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" server >"$HERDR_WORKER_TEST_ROOT/second.log" 2>&1 &
+second_pid=$!
+wait_for_server "$first_session"
+wait_for_server "$second_session"
+
+HERDR_SESSION="$first_session" "$HERDR_BIN_PATH" plugin link . >/dev/null
+HERDR_SESSION="$first_session" "$HERDR_BIN_PATH" plugin enable herdr.docker-sandboxes >/dev/null
+start_worker "$first_session"
+assert_worker_locked
+
+HERDR_SESSION="$first_session" "$HERDR_BIN_PATH" server stop >/dev/null
+sleep 6
+assert_worker_locked
+
+HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin disable herdr.docker-sandboxes >/dev/null
+wait_for_worker_exit
+assert_worker_stopped
+
+HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin link . >/dev/null
+HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin enable herdr.docker-sandboxes >/dev/null
+start_worker "$second_session"
+assert_worker_locked
+HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin uninstall herdr.docker-sandboxes >/dev/null
+wait_for_worker_exit
+assert_worker_stopped
+HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin list --plugin herdr.docker-sandboxes --json | python3 -c 'import json,sys; value=json.load(sys.stdin); assert isinstance(value,dict), repr(value); value=value.get("result",value); assert isinstance(value,dict), repr(value); rows=value.get("plugins"); assert isinstance(rows,list), repr(value); assert all(isinstance(row,dict) and isinstance(row.get("plugin_id",row.get("id")),str) for row in rows), repr(rows); assert all(row.get("plugin_id",row.get("id")) != "herdr.docker-sandboxes" for row in rows), repr(rows)'
+
+HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin link . >/dev/null
+HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin enable herdr.docker-sandboxes >/dev/null
+start_worker "$second_session"
+assert_worker_locked
+HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" server stop >/dev/null
+wait_for_worker_exit
+assert_worker_stopped
+
+printf '%s\n' 'Isolated two-server worker lifetime gate passed.'

@@ -1,0 +1,135 @@
+package herdr
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"regexp"
+	"strings"
+	"time"
+)
+
+var savedMachine = regexp.MustCompile(`(?m)^Saved SSH machine ([^[:space:]]+)\. Remote server is ready\.$`)
+
+// Machine is a catalog entry returned by Herdr.
+type Machine struct {
+	ID      string
+	Label   string
+	Target  string
+	Session string
+}
+
+// ListMachines reads the local machine catalog and accepts supported JSON
+// result envelopes.
+func (c *Client) ListMachines(ctx context.Context) ([]Machine, string, error) {
+	output, err := c.command(ctx, 5*time.Second, true, "machine", "list", "--json")
+	if err != nil {
+		return nil, output, err
+	}
+	machines, err := parseMachines(output)
+	return machines, output, err
+}
+
+// AddMachine creates a machine and returns the ID explicitly acknowledged by
+// Herdr's output. Callers must still verify that ID by re-reading the catalog.
+func (c *Client) AddMachine(ctx context.Context, label, target string) (string, string, error) {
+	output, err := c.command(ctx, 30*time.Second, true, "machine", "add", "--label", label, target)
+	if err != nil {
+		return "", output, err
+	}
+	match := savedMachine.FindStringSubmatch(strings.TrimSpace(output))
+	if len(match) != 2 {
+		return "", output, nil
+	}
+	return match[1], output, nil
+}
+
+// RenameMachine changes the label of a previously verified owned profile.
+func (c *Client) RenameMachine(ctx context.Context, id, label string) (string, error) {
+	return c.command(ctx, 5*time.Second, true, "machine", "rename", id, "--label", label)
+}
+
+// RemoveMachine removes the specified catalog profile.
+func (c *Client) RemoveMachine(ctx context.Context, id string) (string, error) {
+	return c.command(ctx, 15*time.Second, true, "machine", "remove", id)
+}
+
+// MachineStatus checks whether the selected remote machine's server responds.
+func (c *Client) MachineStatus(ctx context.Context, id string) (string, error) {
+	return c.command(ctx, 15*time.Second, true, "--machine", id, "status", "server")
+}
+
+func parseMachines(raw string) ([]Machine, error) {
+	items, err := objects(raw, "machines", "profiles")
+	if err != nil {
+		return nil, fmt.Errorf("read Herdr machine list: %w", err)
+	}
+	machines := make([]Machine, 0, len(items))
+	for _, item := range items {
+		machines = append(machines, Machine{
+			ID:      first(item, "profile_id", "id"),
+			Label:   first(item, "label", "name"),
+			Target:  first(item, "ssh_target", "target", "host"),
+			Session: first(item, "remote_session", "session"),
+		})
+	}
+	return machines, nil
+}
+
+func objects(raw string, keys ...string) ([]map[string]any, error) {
+	var value any
+	if err := decodeJSON(raw, &value); err != nil {
+		return nil, err
+	}
+	if object, ok := value.(map[string]any); ok {
+		if nested, ok := object["result"]; ok {
+			value = nested
+		}
+	}
+	if object, ok := value.(map[string]any); ok {
+		for _, key := range keys {
+			if nested, ok := object[key]; ok {
+				value = nested
+				break
+			}
+		}
+	}
+	array, ok := value.([]any)
+	if !ok {
+		return nil, errors.New("expected a list")
+	}
+	result := make([]map[string]any, 0, len(array))
+	for _, item := range array {
+		object, ok := item.(map[string]any)
+		if !ok {
+			return nil, errors.New("list contains a non-object")
+		}
+		result = append(result, object)
+	}
+	return result, nil
+}
+
+func decodeJSON(raw string, destination any) error {
+	start := strings.IndexAny(raw, "{[")
+	if start < 0 {
+		return errors.New("no JSON value")
+	}
+	return json.NewDecoder(strings.NewReader(raw[start:])).Decode(destination)
+}
+
+func first(item map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := text(item[key]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func text(value any) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}

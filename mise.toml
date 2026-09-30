@@ -1,0 +1,48 @@
+[tools]
+go = "1.27.1"
+
+[tasks.deps]
+description = "Download pinned Go modules"
+run = "go mod download"
+
+[tasks.build]
+description = "Build the linked plugin executable"
+run = "go build -o bin/herdr-sandboxes ./cmd/herdr-sandboxes"
+
+[tasks.fmt]
+description = "Format Go source"
+run = "gofmt -w cmd internal"
+
+[tasks.test]
+description = "Run tests with isolated HOME and Herdr state"
+run = "python3 scripts/test-go.py test -timeout 60s ./... -count=1"
+
+[tasks.test-race]
+description = "Run isolated tests with the Go race detector"
+run = "python3 scripts/test-go.py test -race -timeout 60s ./... -count=1"
+
+[tasks.vet]
+description = "Run Go static checks"
+run = "python3 scripts/test-go.py vet ./..."
+
+[tasks.check]
+description = "Run isolated race tests and static checks"
+depends = ["test-race", "vet"]
+
+[tasks.test-panel]
+description = "Exercise the panel in a PTY with fake external commands"
+run = 'GO_BIN="$(command -v go)" python3 scripts/test-panel-pty.py'
+
+[tasks.test-worker]
+description = "Exercise worker lifetime against two isolated Herdr servers and a fake sandbox daemon"
+run = '''
+test_root=$(mktemp -d /tmp/herdr-sbx-worker-gate.XXXXXX)
+trap 'rm -rf "$test_root"' EXIT
+export GOMODCACHE="$(go env GOMODCACHE)"
+export GOCACHE="${GOCACHE:-$test_root/go-cache}"
+HERDR_WORKER_TEST_ROOT="$test_root/fixture" sh scripts/test-worker-lifetime.sh
+'''
+
+[tasks.test-real]
+description = "Opt-in: requires a dedicated authenticated disposable sandbox fixture"
+run = "sh scripts/test-real.sh"

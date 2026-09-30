@@ -2,7 +2,7 @@ id = "herdr.docker-sandboxes"
 name = "Docker Sandboxes"
 version = "0.1.0"
 min_herdr_version = "0.9.1"
-description = "Inspect local Docker Sandbox readiness and register prepared sandboxes."
+description = "Inspect local sandbox readiness, prepare missing guest Herdr, and register machines."
 platforms = ["linux", "macos"]
 
 [[build]]
@@ -11,7 +11,9 @@ command = ["go", "build", "-o", "bin/herdr-sandboxes", "./cmd/herdr-sandboxes"]
 [[panes]]
 id = "status"
 title = "Docker Sandboxes"
-placement = "overlay"
+placement = "popup"
+width = 110
+height = 32
 command = ["./bin/herdr-sandboxes", "panel"]
 
 [[panes]]
@@ -20,11 +22,29 @@ title = "Docker Sandboxes lifecycle"
 placement = "tab"
 command = ["./bin/herdr-sandboxes", "watch"]
 
+[[panes]]
+id = "worker"
+title = "Docker Sandboxes worker"
+placement = "tab"
+command = ["./bin/herdr-sandboxes", "worker"]
+
 [[actions]]
 id = "open-status"
 title = "Docker Sandboxes status"
-description = "Open the Docker Sandboxes status panel."
+description = "Open the Docker Sandboxes status panel in a 110 by 32 cell popup."
 command = ["./bin/herdr-sandboxes", "open-status"]
+
+[[actions]]
+id = "open-status-tab"
+title = "Docker Sandboxes status tab"
+description = "Open the Docker Sandboxes status panel in a tab."
+command = ["./bin/herdr-sandboxes", "open-status-tab"]
+
+[[actions]]
+id = "open-status-split"
+title = "Docker Sandboxes status split"
+description = "Open the Docker Sandboxes status panel in a split."
+command = ["./bin/herdr-sandboxes", "open-status-split"]
 
 [[actions]]
 id = "check-again"
@@ -34,12 +54,18 @@ command = ["./bin/herdr-sandboxes", "check"]
 
 [[actions]]
 id = "reconcile"
-title = "Register prepared Docker Sandboxes"
-description = "Register running sandboxes that already have a compatible Herdr installation."
+title = "Prepare and register Docker Sandboxes"
+description = "Register running sandboxes and prepare a missing compatible guest Herdr installation."
 command = ["./bin/herdr-sandboxes", "reconcile"]
 
 [[actions]]
 id = "watch"
 title = "Watch Docker Sandbox lifecycle"
-description = "Open a foreground lifecycle watcher. Stop it with Ctrl-C."
+description = "Open a foreground lifecycle watcher that prepares missing guest Herdr installations. Stop it with Ctrl-C."
 command = ["./bin/herdr-sandboxes", "open-watch"]
+
+[[actions]]
+id = "start-worker"
+title = "Start Docker Sandboxes worker"
+description = "Start one lifecycle worker for this local Herdr server."
+command = ["./bin/herdr-sandboxes", "start-worker"]
