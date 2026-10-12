@@ -48,7 +48,7 @@ try:
     else:
         os.kill(pid, 9); raise SystemExit("panel did not exit")
     text = output.decode(errors="replace")
-    if "Docker Sandboxes" not in text or "Sandbox daemon" not in text or "Check again" not in text:
+    if "lanwen/herdr-sbx" not in text or "Sandbox daemon" not in text or "Check again" not in text:
         raise SystemExit("panel did not render expected status:\n" + text)
     commands = log.read_text()
     for forbidden in ("daemon start", " login", "setup ssh"):

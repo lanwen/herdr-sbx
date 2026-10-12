@@ -1,4 +1,8 @@
-# Docker Sandboxes for Herdr
+# lanwen/herdr-sbx
+
+The display name is `lanwen/herdr-sbx` and the plugin ID is `lanwen.herdr-sbx` (Herdr IDs do not allow slashes).
+
+If replacing the former `herdr.docker-sandboxes` link, unlink that ID before linking this checkout again. The new ID uses fresh plugin state. Existing Herdr machine profiles remain in the catalog; remove obsolete sandbox profiles before registering them again, because the new plugin will not adopt untracked machines.
 
 This Herdr plugin checks local Docker Sandboxes prerequisites, installs missing guest Herdr, and keeps owned machine entries aligned with sandbox lifecycle changes.
 
@@ -13,7 +17,7 @@ herdr plugin link .
 
 Mise pins the Go version and provides development tasks. Herdr's plugin build still uses `go build` directly, so linking needs Go on `PATH` but does not require mise.
 
-Open **Docker Sandboxes status** with `herdr plugin action invoke open-status --plugin herdr.docker-sandboxes`. The default action opens a 110-column by 32-row popup (subject to Herdr’s terminal-size limits). Tab and split actions remain available as `open-status-tab` and `open-status-split`. The panel's **Check again** command only observes local binaries, daemon status, sandbox inventory, Docker sign-in through the Authentication result of `sbx diagnose --json`, and the effective SSH configuration. Diagnostics may take up to 35 seconds; unavailable or inconclusive results remain UNKNOWN. An unrelated diagnostic failure does not invalidate a successful authentication check. Diagnostics are not uploaded. It does not start the daemon, sign in, configure SSH, connect to a sandbox, or install software.
+Open **lanwen/herdr-sbx status** with `herdr plugin action invoke open-status --plugin lanwen.herdr-sbx`. The default action opens a 110-column by 32-row popup (subject to Herdr’s terminal-size limits). Tab and split actions remain available as `open-status-tab` and `open-status-split`. The panel's **Check again** command only observes local binaries, daemon status, sandbox inventory, Docker sign-in through the Authentication result of `sbx diagnose --json`, and the effective SSH configuration. Diagnostics may take up to 35 seconds; unavailable or inconclusive results remain UNKNOWN. An unrelated diagnostic failure does not invalidate a successful authentication check. Diagnostics are not uploaded. It does not start the daemon, sign in, configure SSH, connect to a sandbox, or install software.
 
 The panel offers **Start daemon**, **Sign in to Docker**, and **Set up sandbox SSH** as separate, interactive terminal actions. Each runs only after you choose it, then refreshes the status panel. The plugin does not store Docker credentials or SSH keys.
 
@@ -40,9 +44,13 @@ The optional guest-download strategy remains available through **n**, Enter in t
 Cleanup runs after success, failure, or cancellation and before machine registration. A crash can leave temporary access active until the next panel opening, registration, or worker activation. Pending cleanup is shown in the panel and blocks new registration. Before removing an owned rule, cleanup verifies its scope, decision, HTTP targets and methods still match the created request. A changed rule needs manual inspection. The policy API has no conditional deletion, so an edit racing between verification and removal cannot be prevented. If a create response was lost, the plugin cannot prove ownership of a matching rule: inspect the reported sandbox ID and destination manually. It never removes a rule merely because its destination matches. Installation has a single internal strategy entry point; future installation approaches can replace it without changing discovery or registration.
 
 
-Use **Watch Docker Sandbox lifecycle** to open a foreground watcher. It registers a started, prepared sandbox after rechecking its stable identity. Stopped sandbox registrations remain available for ordinary SSH reconnects. A deletion removes only the matching profile that the plugin recorded as its own. Press Ctrl-C to stop the watcher.
+Use **Watch lanwen/herdr-sbx lifecycle** to open a foreground watcher. It registers a started, prepared sandbox after rechecking its stable identity. Stopped sandbox registrations remain available for ordinary SSH reconnects. A deletion removes only the matching profile that the plugin recorded as its own. Press Ctrl-C to stop the watcher.
 
-**Start Docker Sandboxes worker** starts one detached lifecycle worker. It reconnects after a sandbox daemon interruption, tolerates a short local server handoff, and exits when the plugin is disabled or the final local server remains stopped. Closing the panel does not stop it. If the worker process crashes, use this action again; Herdr does not supervise its restart.
+Press **b**, Enter in the panel to start the background worker, or run `herdr plugin action invoke start-worker --plugin lanwen.herdr-sbx` from a Herdr terminal.
+
+**Start lanwen/herdr-sbx worker** starts one detached lifecycle worker. It reconnects after a sandbox daemon interruption, tolerates a short local server handoff, and exits when the plugin is disabled or the final local server remains stopped. Closing the panel does not stop it. If the worker process crashes, use this action again; Herdr does not supervise its restart.
+
+The panel shows **Worker: STARTING / RUNNING / RECONNECTING / STOPPED** and the last successful lifecycle sync or catch-up time. Press **c**, Enter or reopen the panel to refresh it. Running means the event stream is active; individual sandbox readiness is shown separately. Reconnecting includes the latest failure reason. The worker lock detects exits even if the process could not save its final status. An older active worker without status reporting shows **UNKNOWN** until restarted. Foreground watchers do not change the background worker indicator.
 
 The status panel separates the last sandbox observation from connection and installation results. Old results are marked stale. **Retry Herdr preparation** lets you choose a sandbox from a numbered list and retries it without waiting for the automatic retry cooldown; **Check again** remains observational.
 
@@ -93,3 +101,13 @@ Start with the package that owns the behavior you want to change:
 Commands call the panel, checks, registration or lifecycle packages. Those packages use the sbx and Herdr clients for external communication and the store for durable state. The two clients do not depend on each other. Each prerequisite stage has its own file under `internal/precheck`; `inspect.go` shows the check order.
 
 Tests live beside the code they exercise. Transport tests use fake command execution or local HTTP peers; workflow tests cover ownership and interruption recovery. Process and shell tests exercise installation and cancellation in temporary directories. The scripts under `scripts/` cover the panel, worker lifetime and the separately gated real sandbox fixture.
+
+### Worker status from the terminal
+
+Run `./bin/herdr-sandboxes status` from this checkout to print the worker state, last successful sync and connection detail. It does not contact Docker, start a worker or check prerequisites. A stopped worker is a valid result (exit 0); unreadable state returns an error (exit 1).
+
+The command uses `HERDR_PLUGIN_STATE_DIR` when provided, otherwise `${XDG_STATE_HOME:-$HOME/.local/state}/herdr/plugins/lanwen.herdr-sbx`. For a custom Herdr state location, pass its plugin state directory explicitly. The same command is exposed as `herdr plugin action invoke status --plugin lanwen.herdr-sbx` after re-linking the updated manifest.
+
+For a new guest server, registration resolves the sandbox project directory and starts Herdr there before adding the machine. It verifies the initial workspace instead of creating a second one. Existing running sessions keep their workspaces. An interrupted startup retains its intended directory for retry; a guest that cannot honor it reports a setup error rather than silently creating another workspace.
+
+To verify this with an isolated local Herdr server: `SBX_TEST_HERDR_BINARY="$(command -v herdr)" mise exec -- python3 scripts/test-go.py test ./internal/herdr -run TestProjectBootstrapRealServer -v -count=1`. The test uses temporary configuration and state, never the normal session.

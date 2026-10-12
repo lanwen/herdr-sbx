@@ -10,11 +10,11 @@ import (
 
 func TestStatusPopupSizing(t *testing.T) {
 	t.Setenv("HERDR_BIN_PATH", "herdr")
-	t.Setenv("HERDR_PLUGIN_ID", "herdr.docker-sandboxes")
+	t.Setenv("HERDR_PLUGIN_ID", "lanwen.herdr-sbx")
 	calls := 0
 	client := New(process.Runner{Execute: func(_ context.Context, cmd process.Command) (string, error) {
 		calls++
-		want := "plugin pane open --plugin herdr.docker-sandboxes --entrypoint status --placement popup --focus --width 110 --height 32"
+		want := "plugin pane open --plugin lanwen.herdr-sbx --entrypoint status --placement popup --focus --width 110 --height 32"
 		if cmd.Name != "herdr" || strings.Join(cmd.Args, " ") != want {
 			t.Fatalf("unexpected popup command: %#v", cmd)
 		}

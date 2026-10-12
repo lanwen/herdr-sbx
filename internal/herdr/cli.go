@@ -45,7 +45,7 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 func (c *Client) OpenPane(ctx context.Context, entrypoint, placement string) error {
 	plugin := os.Getenv("HERDR_PLUGIN_ID")
 	if plugin == "" {
-		plugin = "herdr.docker-sandboxes"
+		plugin = "lanwen.herdr-sbx"
 	}
 	args := []string{"plugin", "pane", "open", "--plugin", plugin, "--entrypoint", entrypoint, "--placement", placement, "--focus"}
 	if placement == "popup" {

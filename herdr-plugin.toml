@@ -1,5 +1,5 @@
-id = "herdr.docker-sandboxes"
-name = "Docker Sandboxes"
+id = "lanwen.herdr-sbx"
+name = "lanwen/herdr-sbx"
 version = "0.1.0"
 min_herdr_version = "0.9.1"
 description = "Inspect local sandbox readiness, prepare missing guest Herdr, and register machines."
@@ -10,7 +10,7 @@ command = ["go", "build", "-o", "bin/herdr-sandboxes", "./cmd/herdr-sandboxes"]
 
 [[panes]]
 id = "status"
-title = "Docker Sandboxes"
+title = "lanwen/herdr-sbx"
 placement = "popup"
 width = 110
 height = 32
@@ -18,54 +18,60 @@ command = ["./bin/herdr-sandboxes", "panel"]
 
 [[panes]]
 id = "watch"
-title = "Docker Sandboxes lifecycle"
+title = "lanwen/herdr-sbx lifecycle"
 placement = "tab"
 command = ["./bin/herdr-sandboxes", "watch"]
 
 [[panes]]
 id = "worker"
-title = "Docker Sandboxes worker"
+title = "lanwen/herdr-sbx worker"
 placement = "tab"
 command = ["./bin/herdr-sandboxes", "worker"]
 
 [[actions]]
 id = "open-status"
-title = "Docker Sandboxes status"
+title = "lanwen/herdr-sbx status"
 description = "Open the Docker Sandboxes status panel in a 110 by 32 cell popup."
 command = ["./bin/herdr-sandboxes", "open-status"]
 
 [[actions]]
 id = "open-status-tab"
-title = "Docker Sandboxes status tab"
+title = "lanwen/herdr-sbx status tab"
 description = "Open the Docker Sandboxes status panel in a tab."
 command = ["./bin/herdr-sandboxes", "open-status-tab"]
 
 [[actions]]
 id = "open-status-split"
-title = "Docker Sandboxes status split"
+title = "lanwen/herdr-sbx status split"
 description = "Open the Docker Sandboxes status panel in a split."
 command = ["./bin/herdr-sandboxes", "open-status-split"]
 
 [[actions]]
 id = "check-again"
-title = "Check Docker Sandboxes prerequisites"
+title = "Check lanwen/herdr-sbx prerequisites"
 description = "Inspect prerequisites without changing Docker Sandboxes or SSH setup."
 command = ["./bin/herdr-sandboxes", "check"]
 
 [[actions]]
 id = "reconcile"
-title = "Prepare and register Docker Sandboxes"
+title = "Prepare and register lanwen/herdr-sbx"
 description = "Register running sandboxes and prepare a missing compatible guest Herdr installation."
 command = ["./bin/herdr-sandboxes", "reconcile"]
 
 [[actions]]
 id = "watch"
-title = "Watch Docker Sandbox lifecycle"
+title = "Watch lanwen/herdr-sbx lifecycle"
 description = "Open a foreground lifecycle watcher that prepares missing guest Herdr installations. Stop it with Ctrl-C."
 command = ["./bin/herdr-sandboxes", "open-watch"]
 
 [[actions]]
 id = "start-worker"
-title = "Start Docker Sandboxes worker"
+title = "Start lanwen/herdr-sbx worker"
 description = "Start one lifecycle worker for this local Herdr server."
 command = ["./bin/herdr-sandboxes", "start-worker"]
+
+[[actions]]
+id = "status"
+title = "lanwen/herdr-sbx worker status"
+description = "Report background worker status and last successful sync without checking prerequisites."
+command = ["./bin/herdr-sandboxes", "status"]

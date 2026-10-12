@@ -144,7 +144,7 @@ wait_for_server "$first_session"
 wait_for_server "$second_session"
 
 HERDR_SESSION="$first_session" "$HERDR_BIN_PATH" plugin link . >/dev/null
-HERDR_SESSION="$first_session" "$HERDR_BIN_PATH" plugin enable herdr.docker-sandboxes >/dev/null
+HERDR_SESSION="$first_session" "$HERDR_BIN_PATH" plugin enable lanwen.herdr-sbx >/dev/null
 start_worker "$first_session"
 assert_worker_locked
 
@@ -152,21 +152,21 @@ HERDR_SESSION="$first_session" "$HERDR_BIN_PATH" server stop >/dev/null
 sleep 6
 assert_worker_locked
 
-HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin disable herdr.docker-sandboxes >/dev/null
+HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin disable lanwen.herdr-sbx >/dev/null
 wait_for_worker_exit
 assert_worker_stopped
 
 HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin link . >/dev/null
-HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin enable herdr.docker-sandboxes >/dev/null
+HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin enable lanwen.herdr-sbx >/dev/null
 start_worker "$second_session"
 assert_worker_locked
-HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin uninstall herdr.docker-sandboxes >/dev/null
+HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin uninstall lanwen.herdr-sbx >/dev/null
 wait_for_worker_exit
 assert_worker_stopped
-HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin list --plugin herdr.docker-sandboxes --json | python3 -c 'import json,sys; value=json.load(sys.stdin); assert isinstance(value,dict), repr(value); value=value.get("result",value); assert isinstance(value,dict), repr(value); rows=value.get("plugins"); assert isinstance(rows,list), repr(value); assert all(isinstance(row,dict) and isinstance(row.get("plugin_id",row.get("id")),str) for row in rows), repr(rows); assert all(row.get("plugin_id",row.get("id")) != "herdr.docker-sandboxes" for row in rows), repr(rows)'
+HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin list --plugin lanwen.herdr-sbx --json | python3 -c 'import json,sys; value=json.load(sys.stdin); assert isinstance(value,dict), repr(value); value=value.get("result",value); assert isinstance(value,dict), repr(value); rows=value.get("plugins"); assert isinstance(rows,list), repr(value); assert all(isinstance(row,dict) and isinstance(row.get("plugin_id",row.get("id")),str) for row in rows), repr(rows); assert all(row.get("plugin_id",row.get("id")) != "lanwen.herdr-sbx" for row in rows), repr(rows)'
 
 HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin link . >/dev/null
-HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin enable herdr.docker-sandboxes >/dev/null
+HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin enable lanwen.herdr-sbx >/dev/null
 start_worker "$second_session"
 assert_worker_locked
 HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" server stop >/dev/null

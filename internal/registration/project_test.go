@@ -14,7 +14,7 @@ import (
 )
 
 func TestProjectWorkspaceRegistration(t *testing.T) {
-	for _, scenario := range []string{"new", "existing pane", "upgrade", "no project", "invalid directory", "missing directory", "ambiguous created", "ambiguous absent", "rejected", "replacement during resolve", "replacement during create", "cancel during resolve"} {
+	for _, scenario := range []string{"new", "fresh server", "existing pane", "upgrade", "no project", "invalid directory", "missing directory", "ambiguous created", "ambiguous absent", "rejected", "replacement during resolve", "replacement during create", "cancel during resolve"} {
 		t.Run(scenario, func(t *testing.T) {
 			fixture := newRegistrationFixture(t, "[]")
 			const cwd = "/guest/project spaces ' $(touch nope) "
@@ -24,6 +24,7 @@ func TestProjectWorkspaceRegistration(t *testing.T) {
 			}
 			setFixtureInventory(fixture, sandbox)
 			adds, creates, resolves := 0, 0, 0
+			bootstrapWorkspaces := 0
 			label, renames := sandboxMachineLabel("demo"), 0
 			if scenario == "upgrade" {
 				label = "demo"
@@ -33,6 +34,14 @@ func TestProjectWorkspaceRegistration(t *testing.T) {
 			defer cancel()
 			fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
 				joined := strings.Join(command.Args, " ")
+				if command.Name == "ssh" && strings.Contains(joined, "--session default status server --json") {
+					return fmt.Sprintf(`{"result":{"running":%t}}`, scenario != "fresh server"), nil
+				}
+				if command.Name == "ssh" && strings.Contains(joined, "HERDR_STARTUP_CWD=") {
+					bootstrapWorkspaces++
+					paneExists = true
+					return fmt.Sprintf(`{"result":{"panes":[{"workspace_id":"w1","cwd":%q}]}}`, cwd), nil
+				}
 				switch command.Name + " " + joined {
 				case "herdr --version":
 					return "herdr 0.9.1", nil
@@ -60,6 +69,9 @@ func TestProjectWorkspaceRegistration(t *testing.T) {
 					label = sandboxMachineLabel("demo")
 					return "renamed", nil
 				case "herdr machine add --label sbx · demo demo.sbx":
+					if scenario == "fresh server" && !paneExists {
+						bootstrapWorkspaces++
+					}
 					adds++
 					return "Saved SSH machine machine-1. Remote server is ready.", nil
 				case "herdr --machine machine-1 status server":
@@ -139,6 +151,10 @@ func TestProjectWorkspaceRegistration(t *testing.T) {
 				t.Fatalf("ownership lost: adds=%d item=%#v", adds, item)
 			}
 			switch scenario {
+			case "fresh server":
+				if bootstrapWorkspaces+creates != 1 {
+					t.Fatalf("new machine opened %d workspaces: %d bootstrap and %d project", bootstrapWorkspaces+creates, bootstrapWorkspaces, creates)
+				}
 			case "new", "upgrade", "existing pane":
 				if !item.ProjectWorkspaceDone {
 					t.Fatalf("not completed: %s", output.String())
@@ -207,4 +223,51 @@ func TestProjectWorkspaceRegistration(t *testing.T) {
 func setFixtureInventory(fixture *registrationFixture, sandbox sbx.Sandbox) {
 	data, _ := json.Marshal([]map[string]string{{"uuid": sandbox.ID, "name": sandbox.Name, "status": sandbox.Status, "workspace": sandbox.Workspace}})
 	fixture.inventory = string(data)
+}
+
+func TestInitialProjectStartupRetriesSavedIntent(t *testing.T) {
+	f := newRegistrationFixture(t, "[]")
+	sb := sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running", Workspace: "/host/project"}
+	const cwd = "/guest/project"
+	probes, resolves, starts := 0, 0, 0
+	f.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
+		joined := strings.Join(command.Args, " ")
+		switch {
+		case command.Name == "ssh" && strings.Contains(joined, "--session default status server --json"):
+			probes++
+			return `{"result":{"running":false}}`, nil
+		case command.Name == "sbx" && joined == "exec demo -- pwd -P":
+			resolves++
+			return cwd + "\n", nil
+		case command.Name == "ssh" && strings.Contains(joined, "HERDR_STARTUP_CWD="):
+			starts++
+			saved, err := store.LoadState()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(saved.Scopes["scope"]) != 1 || saved.Scopes["scope"][0].ProjectWorkspacePending != cwd {
+				t.Fatal("startup intent was not saved before server launch")
+			}
+			if starts == 1 {
+				return "", errors.New("SSH disconnected after server start")
+			}
+			return `{"result":{"panes":[{"workspace_id":"w1","cwd":"/guest/project"}]}}`, nil
+		default:
+			return "", fmt.Errorf("unexpected command: %s %s", command.Name, joined)
+		}
+	}
+	f.rebuildClients()
+	st := store.State{Version: 1, Scopes: map[string][]store.Tracked{}}
+	current := func() bool { return true }
+	if _, err := f.service.prepareInitialProjectWorkspace(context.Background(), "scope", &st, sb, current); err == nil {
+		t.Fatal("startup failure ignored")
+	}
+	st, err := store.LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.service.prepareInitialProjectWorkspace(context.Background(), "scope", &st, sb, current)
+	if err != nil || got != cwd || probes != 1 || resolves != 1 || starts != 2 || len(st.Scopes["scope"]) != 1 {
+		t.Fatalf("cwd=%q err=%v probes=%d resolves=%d starts=%d state=%#v", got, err, probes, resolves, starts, st)
+	}
 }

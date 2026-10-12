@@ -25,6 +25,10 @@ func (svc *Service) Watch(out io.Writer) error {
 }
 
 func (svc *Service) watchContext(ctx context.Context, out io.Writer) error {
+	return svc.watchWithStatus(ctx, out, nil)
+}
+
+func (svc *Service) watchWithStatus(ctx context.Context, out io.Writer, report func(string, string, bool)) error {
 	out = &lockedWriter{out: out}
 	schedulerCtx, stopScheduler := context.WithCancel(ctx)
 	var scheduler *lifecycleScheduler
@@ -56,15 +60,29 @@ func (svc *Service) watchContext(ctx context.Context, out io.Writer) error {
 
 		fmt.Fprintln(out, "Watching sandbox lifecycle. Press Ctrl-C to stop.")
 		if scheduler == nil {
-			scheduler = svc.newScheduler(schedulerCtx, p.Scope, p.Socket, out)
+			scheduler = svc.newScheduler(schedulerCtx, p.Scope, p.Socket, out, report)
 		} else if scheduler.scope != p.Scope || scheduler.socket != p.Socket {
 			return errors.New("sandbox daemon scope changed; restart the lifecycle watch")
 		}
 		scheduler.beginStream()
-		err := svc.sbx.ReadLifecycle(ctx, p.Socket, scheduler.enqueue)
+		streamReported := false
+		err := svc.sbx.ReadLifecycle(ctx, p.Socket, func(event sbx.LifecycleEvent) bool {
+			if report != nil && !streamReported && (event.Type == "sandbox.lifecycle" || event.Type == "sync") {
+				streamReported = true
+				report("running", "Following sandbox lifecycle events.", false)
+			}
+			return scheduler.enqueue(event)
+		})
 		if ctx.Err() != nil {
 			fmt.Fprintln(out, "Lifecycle watch stopped.")
 			return nil
+		}
+		if report != nil {
+			detail := "Sandbox event stream ended; reconnecting."
+			if err != nil {
+				detail = err.Error()
+			}
+			report("reconnecting", detail, false)
 		}
 		if err != nil && !errors.Is(err, context.Canceled) {
 			if err := store.MarkScopeStale(scheduler.scope, "sandbox lifecycle stream interrupted"); err != nil {
@@ -99,6 +117,7 @@ func (w *lockedWriter) Write(p []byte) (int, error) {
 }
 
 type lifecycleScheduler struct {
+	report  func(string, string, bool)
 	owner   *Service
 	ctx     context.Context
 	scope   string
@@ -113,8 +132,8 @@ type lifecycleScheduler struct {
 	jobs    sync.WaitGroup
 }
 
-func (owner *Service) newScheduler(ctx context.Context, scope, socket string, out io.Writer) *lifecycleScheduler {
-	s := &lifecycleScheduler{owner: owner, ctx: ctx, scope: scope, socket: socket, out: out, retired: map[string]bool{}, deletes: map[string]sbx.LifecycleEvent{}, queue: make(chan sbx.LifecycleEvent, 128)}
+func (owner *Service) newScheduler(ctx context.Context, scope, socket string, out io.Writer, report func(string, string, bool)) *lifecycleScheduler {
+	s := &lifecycleScheduler{report: report, owner: owner, ctx: ctx, scope: scope, socket: socket, out: out, retired: map[string]bool{}, deletes: map[string]sbx.LifecycleEvent{}, queue: make(chan sbx.LifecycleEvent, 128)}
 	s.jobs.Add(1)
 	go s.run()
 	return s
@@ -199,8 +218,13 @@ func (s *lifecycleScheduler) processCatchup(periodic bool) {
 			s.owner.warnBlocking(s.ctx, s.out, s.scope+"/catch-up", "Sandbox catch-up is unavailable. Known machines were preserved.")
 			fmt.Fprintln(s.out, "Lifecycle catch-up failed:", err)
 		}
-	} else if err := store.ClearWarning(s.scope + "/catch-up"); err != nil {
-		fmt.Fprintln(s.out, "Sandbox warning state was not saved:", err)
+	} else {
+		if s.report != nil {
+			s.report("", "", true)
+		}
+		if err := store.ClearWarning(s.scope + "/catch-up"); err != nil {
+			fmt.Fprintln(s.out, "Sandbox warning state was not saved:", err)
+		}
 	}
 	s.recoverMissedDeletes()
 }
@@ -212,6 +236,9 @@ func (s *lifecycleScheduler) wait() {
 func (s *lifecycleScheduler) handle(event sbx.LifecycleEvent) {
 	switch strings.ToLower(event.Action) {
 	case "sync", "complete":
+		if s.report != nil {
+			s.report("", "", true)
+		}
 		if err := store.ClearWarning(s.scope + "/stream"); err != nil {
 			fmt.Fprintln(s.out, "Sandbox warning state was not saved:", err)
 		}

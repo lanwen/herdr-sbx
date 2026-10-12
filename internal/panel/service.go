@@ -36,7 +36,7 @@ func (s *Service) Run(in io.Reader, out io.Writer) error {
 	firstActivation := true
 	for {
 		fmt.Fprint(out, "\x1b[2J\x1b[H")
-		fmt.Fprintln(out, "Docker Sandboxes")
+		fmt.Fprintln(out, "lanwen/herdr-sbx")
 		fmt.Fprintln(out)
 		prerequisites := s.registration.Inspect()
 		if firstActivation {
@@ -45,6 +45,7 @@ func (s *Service) Run(in io.Reader, out io.Writer) error {
 				fmt.Fprintln(out, "Temporary access cleanup:", err)
 			}
 		}
+		printWorkerStatus(out)
 		PrintChecks(out, prerequisites)
 		printSandboxStatuses(out, prerequisites.Scope)
 		fmt.Fprintln(out, "")
@@ -54,6 +55,7 @@ func (s *Service) Run(in io.Reader, out io.Writer) error {
 		fmt.Fprintln(out, "d  Start daemon")
 		fmt.Fprintln(out, "l  Sign in to Docker")
 		fmt.Fprintln(out, "s  Set up sandbox SSH")
+		fmt.Fprintln(out, "b  Start background worker")
 		fmt.Fprintln(out, "w  Watch sandbox lifecycle")
 		fmt.Fprintln(out, "t  Retry Herdr preparation for one sandbox")
 		fmt.Fprintln(out, "n  Temporarily allow downloads and install Herdr")
@@ -82,6 +84,13 @@ func (s *Service) Run(in io.Reader, out io.Writer) error {
 			s.repair("login", reader, out)
 		case "s":
 			s.repair("ssh", reader, out)
+		case "b":
+			if err := s.lifecycle.StartWorker(); err != nil {
+				fmt.Fprintln(out, "Worker start failed:", err)
+			} else {
+				fmt.Fprintln(out, "Worker start requested. Press c to check its status.")
+			}
+			waitForReturn(reader, out)
 		case "w":
 			return s.lifecycle.Watch(out)
 		case "t":
@@ -107,4 +116,7 @@ func (s *Service) Run(in io.Reader, out io.Writer) error {
 }
 
 // Check prints the passive prerequisite snapshot without making repairs.
-func (s *Service) Check(out io.Writer) { PrintChecks(out, s.registration.Inspect()) }
+func (s *Service) Check(out io.Writer) {
+	printWorkerStatus(out)
+	PrintChecks(out, s.registration.Inspect())
+}

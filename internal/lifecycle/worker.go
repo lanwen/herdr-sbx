@@ -44,11 +44,19 @@ func (s *Service) StartWorker() error {
 // Worker supervises a lifecycle watch for as long as this plugin is enabled
 // and the local Herdr server remains available across handoffs.
 func (s *Service) Worker(out io.Writer) error {
+	out = &lockedWriter{out: out}
 	unlock, err := store.LockWorker()
 	if err != nil {
 		return errors.New("a Docker Sandboxes lifecycle worker is already active")
 	}
 	defer unlock()
+	report := func(state, detail string, synced bool) {
+		if err := store.RecordWorkerStatus(state, detail, synced); err != nil {
+			fmt.Fprintln(out, "Worker status was not saved:", err)
+		}
+	}
+	report("starting", "Checking prerequisites and connecting to sandbox events.", false)
+	defer report("stopped", "Worker exited.", false)
 	s.herdr.RebindSocket(os.Getenv("HERDR_SOCKET_PATH"))
 	defer s.herdr.RebindSocket("")
 	if !s.workerAlive() {
@@ -67,11 +75,12 @@ func (s *Service) Worker(out io.Writer) error {
 	}()
 	fmt.Fprintln(out, "Docker Sandboxes worker started. It stops when the local Herdr server stops.")
 	for {
-		err := s.watchContext(ctx, out)
+		err := s.watchWithStatus(ctx, out, report)
 		if ctx.Err() != nil || !s.workerAlive() {
 			return nil
 		}
 		if err != nil {
+			report("reconnecting", err.Error(), false)
 			fmt.Fprintln(out, "Docker Sandboxes worker reconnecting:", err)
 		}
 		select {

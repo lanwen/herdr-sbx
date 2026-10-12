@@ -16,7 +16,7 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-const rootUsage = "usage: herdr-sandboxes [panel|check|open-status|open-status-tab|open-status-split|repair|reconcile|watch|worker|start-worker|retry-preparation]"
+const rootUsage = "usage: herdr-sandboxes [panel|status|check|open-status|open-status-tab|open-status-split|repair|reconcile|watch|worker|start-worker|retry-preparation]"
 
 func commands() *cli.Command {
 	runner := process.Runner{}
@@ -41,6 +41,12 @@ func commands() *cli.Command {
 			return ui.Run(os.Stdin, os.Stdout)
 		},
 		Commands: []*cli.Command{
+			command("status", "Show background worker status and last successful sync", func(_ context.Context, cmd *cli.Command) error {
+				if cmd.Args().Len() != 0 {
+					return errors.New("usage: herdr-sandboxes status")
+				}
+				return panel.PrintWorkerStatus(cmd.Root().Writer)
+			}),
 			command("panel", "Show status and interactive actions", func(_ context.Context, _ *cli.Command) error {
 				return ui.Run(os.Stdin, os.Stdout)
 			}),

@@ -103,11 +103,15 @@ func StatePath() (string, error) {
 	dir := os.Getenv("HERDR_PLUGIN_STATE_DIR")
 	if dir == "" {
 		var err error
-		dir, err = os.UserConfigDir()
-		if err != nil {
-			return "", err
+		dir = os.Getenv("XDG_STATE_HOME")
+		if dir == "" {
+			dir, err = os.UserHomeDir()
+			if err != nil {
+				return "", err
+			}
+			dir = filepath.Join(dir, ".local", "state")
 		}
-		dir = filepath.Join(dir, "herdr-docker-sandboxes")
+		dir = filepath.Join(dir, "herdr", "plugins", "lanwen.herdr-sbx")
 	}
 	return filepath.Join(dir, "state.json"), nil
 }

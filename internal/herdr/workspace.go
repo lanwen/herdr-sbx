@@ -26,15 +26,20 @@ func (c *Client) Panes(ctx context.Context, machineID string) ([]Pane, string, e
 	if err != nil {
 		return nil, output, err
 	}
+	panes, err := parsePanes(output)
+	return panes, output, err
+}
+
+func parsePanes(output string) ([]Pane, error) {
 	items, err := objects(output, "panes")
 	if err != nil {
-		return nil, output, err
+		return nil, err
 	}
 	panes := make([]Pane, 0, len(items))
 	for _, item := range items {
 		panes = append(panes, Pane{WorkspaceID: text(item["workspace_id"]), CWD: rawText(item["cwd"])})
 	}
-	return panes, output, nil
+	return panes, nil
 }
 
 // CreateWorkspace asks Herdr to create a labeled project workspace. The

@@ -45,3 +45,27 @@ func printSandboxStatuses(out io.Writer, scope string) {
 		fmt.Fprintf(out, "%-24s observed: %-10s connection: %-18s %s\n", status.Name, status.Observed, connection, status.Detail)
 	}
 }
+
+func printWorkerStatus(out io.Writer) {
+	if err := PrintWorkerStatus(out); err != nil {
+		fmt.Fprintln(out, "Worker: UNKNOWN —", err)
+	}
+	fmt.Fprintln(out, "Press b to start the worker; c to refresh status.")
+	fmt.Fprintln(out)
+}
+
+// PrintWorkerStatus reports only worker health; it never probes or repairs
+// sandbox prerequisites. Read failures are returned to command callers.
+func PrintWorkerStatus(out io.Writer) error {
+	status, err := store.ReadWorkerStatus()
+	if err != nil {
+		return err
+	}
+	sync := "not yet"
+	if !status.LastSync.IsZero() {
+		sync = status.LastSync.Local().Format("2006-01-02 15:04:05 MST")
+	}
+	fmt.Fprintf(out, "Worker: %s | Last successful sync: %s\n", strings.ToUpper(status.State), sync)
+	fmt.Fprintln(out, status.Detail)
+	return nil
+}

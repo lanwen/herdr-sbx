@@ -3,6 +3,7 @@ package registration
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/lanwen/herdr-sbx/internal/store"
 )
@@ -25,7 +26,11 @@ func (s *Service) RemoveDeletedSandbox(ctx context.Context, scope, socket, sandb
 		return DeletionResult{Retry: true}, err
 	}
 	defer unlock()
+	return s.removeDeletedSandbox(ctx, scope, socket, sandboxID)
+}
 
+// removeDeletedSandbox requires the caller to hold the state lock.
+func (s *Service) removeDeletedSandbox(ctx context.Context, scope, socket, sandboxID string) (DeletionResult, error) {
 	st, err := store.LoadState()
 	if err != nil {
 		return DeletionResult{Retry: true}, err
@@ -70,6 +75,16 @@ func (s *Service) RemoveDeletedSandbox(ctx context.Context, scope, socket, sandb
 }
 
 func (s *Service) clearDeleted(st *store.State, scope, sandboxID, name, detail string) (DeletionResult, error) {
+	// Clear the display cache first so a failed write keeps the ownership
+	// record available for a later cleanup retry.
+	if err := store.UpdateStatusStore(func(status *store.StatusStore) {
+		key := store.StatusKey(scope, sandboxID)
+		delete(status.Sandboxes, key)
+		delete(status.Preparation, key)
+		delete(status.PreparationErrors, key)
+	}); err != nil {
+		return DeletionResult{Retry: true}, err
+	}
 	if err := removeTracked(st, scope, sandboxID); err != nil {
 		return DeletionResult{Retry: true}, err
 	}
@@ -77,4 +92,37 @@ func (s *Service) clearDeleted(st *store.State, scope, sandboxID, name, detail s
 		return DeletionResult{Retry: true}, err
 	}
 	return DeletionResult{Detail: fmt.Sprintf("%s deleted; %s.", name, detail)}, nil
+}
+
+// recoverDeletedSandboxes also catches deletions missed while the watcher was
+// stopped. Inventory omissions alone are not proof: removal rechecks identity
+// with the daemon and validates the saved Herdr profile under the state lock.
+func (s *Service) recoverDeletedSandboxes(ctx context.Context, out io.Writer, scope, socket string) error {
+	sandboxes, err := s.inventory(ctx, socket)
+	if err != nil {
+		return fmt.Errorf("list sandboxes for deletion recovery: %w", err)
+	}
+	present := make(map[string]bool, len(sandboxes))
+	for _, sandbox := range sandboxes {
+		present[sandbox.ID] = true
+	}
+	st, err := store.LoadState()
+	if err != nil {
+		return err
+	}
+	for _, item := range st.Scopes[scope] {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if present[item.SandboxID] || item.Pending || item.ProfileID == "" || SandboxName(item) == "" {
+			continue
+		}
+		result, err := s.removeDeletedSandbox(ctx, scope, socket, item.SandboxID)
+		if err != nil {
+			fmt.Fprintln(out, "Sandbox deletion deferred:", err)
+		} else if result.Detail != "" {
+			fmt.Fprintln(out, result.Detail)
+		}
+	}
+	return nil
 }

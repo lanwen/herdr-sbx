@@ -39,7 +39,7 @@ func newLifecycleFixture(t *testing.T) *lifecycleFixture {
 	t.Helper()
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	t.Setenv("HERDR_BIN_PATH", "herdr")
-	t.Setenv("HERDR_PLUGIN_ID", "herdr.docker-sandboxes")
+	t.Setenv("HERDR_PLUGIN_ID", "lanwen.herdr-sbx")
 	t.Setenv("HERDR_SANDBOXES_SBX_APP_NAME", "")
 	bin := t.TempDir()
 	for _, name := range []string{"herdr", "sbx", "ssh"} {
@@ -144,6 +144,78 @@ func TestCatchupRecoversConfirmedDeletionWhenInventoryIsAmbiguous(t *testing.T) 
 	}
 }
 
+// The panel's r action invokes Reconcile without starting a lifecycle watcher.
+func TestManualReconcileRemovesDeletedSandbox(t *testing.T) {
+	for _, inventory := range []string{`[]`, `[{"uuid":"other","name":"other","status":"stopped"}]`} {
+		t.Run(inventory, func(t *testing.T) {
+			f := newLifecycleFixture(t)
+			f.save(ownedRegistration())
+			if err := store.RecordSandboxStatus(f.scope, sbx.Sandbox{ID: "old", Name: "demo", Status: "running"}, "ready", "registered", false); err != nil {
+				t.Fatal(err)
+			}
+			original := f.request
+			f.request = func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path == "/sandbox" {
+					return lifecycleResponse(200, inventory), nil
+				}
+				return original(r)
+			}
+			var output strings.Builder
+			// Empty inventory can still block registration; confirmed deletion
+			// must be recovered independently of that prerequisite.
+			_ = f.service.registrations.Reconcile(&output)
+			if len(f.removed) != 1 {
+				t.Fatalf("deleted sandbox machine remains after refresh: removed=%v output=%s", f.removed, output.String())
+			}
+			f.assertCount(0)
+			snapshot, err := store.Snapshot(f.scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, status := range snapshot.Sandboxes {
+				if status.SandboxID == "old" {
+					t.Fatalf("deleted sandbox remains in panel status: %#v", status)
+				}
+			}
+		})
+	}
+}
+
+func TestManualReconcilePreservesUnconfirmedOrUnownedMachines(t *testing.T) {
+	for _, scenario := range []string{"stopped", "unknown absence", "changed profile", "pending intent", "other scope"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newLifecycleFixture(t)
+			item := ownedRegistration()
+			switch scenario {
+			case "stopped":
+				f.request = func(*http.Request) (*http.Response, error) {
+					return lifecycleResponse(200, `[{"uuid":"old","name":"demo","status":"stopped"}]`), nil
+				}
+			case "unknown absence":
+				original := f.request
+				f.request = func(r *http.Request) (*http.Response, error) {
+					if r.URL.Path != "/sandbox" {
+						return lifecycleResponse(404, `{}`), nil
+					}
+					return original(r)
+				}
+			case "changed profile":
+				f.catalog = `[{"profile_id":"machine-1","label":"manual","ssh_target":"demo.sbx","remote_session":"default"}]`
+			case "pending intent":
+				item.Pending = true
+			case "other scope":
+				f.scope = "another-daemon"
+			}
+			f.save(item)
+			_ = f.service.registrations.Reconcile(io.Discard)
+			if len(f.removed) != 0 {
+				t.Fatalf("removed protected machine: %v", f.removed)
+			}
+			f.assertCount(1)
+		})
+	}
+}
+
 func TestLifecycleSchedulerIgnoresOtherEventTypes(t *testing.T) {
 	s := newLifecycleFixture(t).scheduler()
 	if !s.enqueue(sbx.LifecycleEvent{Type: "other", Action: "deleted", SandboxID: "old"}) || len(s.retired) != 0 || len(s.deletes) != 0 || len(s.queue) != 0 {
@@ -243,8 +315,8 @@ func TestWorkerUsesPluginAndSessionLiveness(t *testing.T) {
 	enabled := true
 	f.run = func(_ context.Context, cmd process.Command) (string, error) {
 		switch strings.Join(cmd.Args, " ") {
-		case "plugin list --plugin herdr.docker-sandboxes --json":
-			return fmt.Sprintf(`[{"id":"herdr.docker-sandboxes","enabled":%t}]`, enabled), nil
+		case "plugin list --plugin lanwen.herdr-sbx --json":
+			return fmt.Sprintf(`[{"id":"lanwen.herdr-sbx","enabled":%t}]`, enabled), nil
 		case "status server --json":
 			return `{"running":false}`, nil
 		case "session list --json":
@@ -286,7 +358,7 @@ func TestWorkerAllowsABriefServerHandoffGap(t *testing.T) {
 	f.run = func(_ context.Context, cmd process.Command) (string, error) {
 		switch cmd.Args[0] {
 		case "plugin":
-			return `[{"id":"herdr.docker-sandboxes","enabled":true}]`, nil
+			return `[{"id":"lanwen.herdr-sbx","enabled":true}]`, nil
 		case "status":
 			return `{"running":false}`, nil
 		case "session":
@@ -315,8 +387,8 @@ func TestWorkerReconnectsWhileHerdrRemainsLive(t *testing.T) {
 	var attempts atomic.Int32
 	f.run = func(ctx context.Context, cmd process.Command) (string, error) {
 		switch strings.Join(cmd.Args, " ") {
-		case "plugin list --plugin herdr.docker-sandboxes --json":
-			return fmt.Sprintf(`[{"id":"herdr.docker-sandboxes","enabled":%t}]`, attempts.Load() < 2), nil
+		case "plugin list --plugin lanwen.herdr-sbx --json":
+			return fmt.Sprintf(`[{"id":"lanwen.herdr-sbx","enabled":%t}]`, attempts.Load() < 2), nil
 		case "status server --json":
 			return `{"running":true}`, nil
 		case "daemon status --json":
@@ -399,5 +471,66 @@ func TestWatchCancelsSchedulerBeforeAWorkerRetry(t *testing.T) {
 		}
 	default:
 		t.Fatal("watch returned before its in-flight scheduler command was canceled")
+	}
+}
+
+func TestWorkerReportsStreamSyncAndReconnect(t *testing.T) {
+	f := newLifecycleFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	original := f.request
+	f.request = func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/events" {
+			return &http.Response{StatusCode: 200, Body: reader}, nil
+		}
+		return original(r)
+	}
+	synced := make(chan struct{}, 1)
+	states := make(chan string, 8)
+	report := func(state, detail string, sync bool) {
+		if err := store.RecordWorkerStatus(state, detail, sync); err != nil {
+			t.Error(err)
+		}
+		if state != "" {
+			states <- state
+		}
+		if sync {
+			select {
+			case synced <- struct{}{}:
+			default:
+			}
+		}
+		if state == "reconnecting" {
+			cancel()
+		}
+	}
+	producerDone := make(chan struct{})
+	go func() {
+		defer close(producerDone)
+		fmt.Fprintln(writer, `{"type":"sync","action":"complete"}`)
+		select {
+		case <-synced:
+		case <-ctx.Done():
+		}
+		writer.Close()
+	}()
+	if err := f.service.watchWithStatus(ctx, io.Discard, report); err != nil {
+		t.Fatal(err)
+	}
+	<-producerDone
+	close(states)
+	var got []string
+	for state := range states {
+		got = append(got, state)
+	}
+	if strings.Join(got, ",") != "running,reconnecting" {
+		t.Fatalf("states: %v", got)
+	}
+	saved, err := store.ReadStatusStore()
+	if err != nil || saved.Worker == nil || saved.Worker.LastSync.IsZero() || saved.Worker.State != "reconnecting" {
+		t.Fatalf("saved=%#v err=%v", saved.Worker, err)
 	}
 }

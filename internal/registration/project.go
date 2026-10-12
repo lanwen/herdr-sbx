@@ -114,3 +114,49 @@ func (s *Service) prepareProjectWorkspace(ctx context.Context, scope string, st 
 func validProjectDirectory(cwd string) bool {
 	return path.IsAbs(cwd) && path.Clean(cwd) == cwd && !strings.ContainsFunc(cwd, unicode.IsControl)
 }
+
+// prepareInitialProjectWorkspace runs before machine add can bootstrap a guest
+// in its SSH login directory. Persist the startup intent so failed or uncertain
+// attempts must verify the same project on retry, never create another workspace.
+func (s *Service) prepareInitialProjectWorkspace(ctx context.Context, scope string, st *store.State, sb sbx.Sandbox, current func() bool) (string, error) {
+	cwd := ""
+	for _, item := range st.Scopes[scope] {
+		if item.SandboxID == sb.ID && item.ProfileID == "" {
+			cwd = item.ProjectWorkspacePending
+		}
+	}
+	if cwd == "" {
+		if sb.Workspace == "" {
+			return "", nil
+		}
+		running, err := s.herdr.GuestServerRunning(ctx, sb.Name+".sbx")
+		if err != nil {
+			return "", err
+		}
+		if running {
+			return "", nil
+		}
+		output, err := s.sbx.WorkspaceDirectory(ctx, sb.Name)
+		if err != nil {
+			return "", fmt.Errorf("resolve guest directory: %s", commandError(err, output))
+		}
+		cwd = strings.TrimSuffix(output, "\n")
+		if !validProjectDirectory(cwd) {
+			return "", errors.New("guest returned an invalid project directory")
+		}
+		if ctx.Err() != nil || current == nil || !current() {
+			return "", errors.New("sandbox changed before project startup")
+		}
+		st.Scopes[scope] = append(st.Scopes[scope], store.Tracked{SandboxID: sb.ID, Label: sandboxMachineLabel(sb.Name), Target: sb.Name + ".sbx", ProjectWorkspacePending: cwd})
+		if err := store.SaveState(*st); err != nil {
+			return "", err
+		}
+	}
+	if ctx.Err() != nil || current == nil || !current() {
+		return "", errors.New("sandbox changed before project startup")
+	}
+	if err := s.herdr.StartProjectServer(ctx, sb.Name+".sbx", cwd); err != nil {
+		return "", err
+	}
+	return cwd, nil
+}

@@ -158,3 +158,29 @@ func TestSandboxStatusSeparatesObservationFromConnectionAndStaleness(t *testing.
 		}
 	}
 }
+
+func TestPanelShowsWorkerHealthAndLastSync(t *testing.T) {
+	s := testPanel(t, nil)
+	var output strings.Builder
+	if err := s.Run(strings.NewReader("q\n"), &output); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Worker: STOPPED", "Last successful sync: not yet", "b  Start background worker", "c to refresh status"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("missing %q: %s", want, output.String())
+		}
+	}
+	unlock, err := store.LockWorker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	if err := store.RecordWorkerStatus("reconnecting", "daemon unavailable", true); err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	printWorkerStatus(&output)
+	if !strings.Contains(output.String(), "RECONNECTING") || !strings.Contains(output.String(), "daemon unavailable") || strings.Contains(output.String(), "not yet") {
+		t.Fatal(output.String())
+	}
+}

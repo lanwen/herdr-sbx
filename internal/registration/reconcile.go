@@ -82,6 +82,13 @@ func (s *Service) reconcileWithInstallation(ctx context.Context, out io.Writer, 
 	if err := s.recoverPolicy(p.Scope, p.Socket); err != nil {
 		return err
 	}
+	// A full refresh must recover deletions even when an empty inventory or
+	// missing guest SSH setup prevents registering new machines.
+	if match == nil && hasLevel(p.Checks, "Herdr", precheck.Ready) && hasLevel(p.Checks, "Sandbox capability", precheck.Ready) && hasLevel(p.Checks, "Sandbox daemon", precheck.Ready) && !hasBlocked(p.Checks, "Docker authorization") {
+		if err := s.recoverDeletedSandboxes(ctx, out, p.Scope, p.Socket); err != nil {
+			return err
+		}
+	}
 	if hasBlocked(p.Checks, "Sandbox capability") || hasBlocked(p.Checks, "Sandbox daemon") || hasBlocked(p.Checks, "Docker authorization") || hasBlocked(p.Checks, "Sandbox SSH") {
 		return errors.New("fix the blocked prerequisites before registering sandboxes")
 	}
@@ -253,8 +260,14 @@ func (s *Service) registerWithInstallation(ctx context.Context, scope string, st
 		return result{sb.Name, "stale", "sandbox changed before registration"}, nil
 	}
 
-	pending := store.Tracked{SandboxID: sb.ID, Label: sandboxMachineLabel(sb.Name), Target: target, Pending: true}
-	st.Scopes[scope] = append(st.Scopes[scope], pending)
+	initialCWD, err := s.prepareInitialProjectWorkspace(ctx, scope, st, sb, current)
+	if err != nil {
+		return result{sb.Name, "workspace setup required", err.Error()}, nil
+	}
+	pending := store.Tracked{SandboxID: sb.ID, Label: sandboxMachineLabel(sb.Name), Target: target, Pending: true, ProjectWorkspacePending: initialCWD}
+	if err := replaceTracked(st, scope, pending); err != nil {
+		st.Scopes[scope] = append(st.Scopes[scope], pending)
+	}
 	if err := store.SaveState(*st); err != nil {
 		return result{sb.Name, "failed", err.Error()}, nil
 	}

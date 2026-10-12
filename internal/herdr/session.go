@@ -28,7 +28,7 @@ func (c *Client) LocalServerRunning(ctx context.Context) bool {
 func (c *Client) PluginEnabled(ctx context.Context) bool {
 	plugin := os.Getenv("HERDR_PLUGIN_ID")
 	if plugin == "" {
-		plugin = "herdr.docker-sandboxes"
+		plugin = "lanwen.herdr-sbx"
 	}
 	output, err := c.command(ctx, 5*time.Second, false, "plugin", "list", "--plugin", plugin, "--json")
 	if err != nil {
