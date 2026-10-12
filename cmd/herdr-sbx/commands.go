@@ -16,7 +16,7 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-const rootUsage = "usage: herdr-sandboxes [panel|status|check|open-status|open-status-tab|open-status-split|repair|reconcile|watch|worker|start-worker|retry-preparation]"
+const rootUsage = "usage: herdr-sbx [panel|status|guest-plugins|adopt|check|open-status|open-status-tab|open-status-split|repair|reconcile|watch|worker|daemon|retry-preparation]"
 
 func commands() *cli.Command {
 	runner := process.Runner{}
@@ -30,7 +30,7 @@ func commands() *cli.Command {
 		return &cli.Command{Name: name, Usage: usage, Action: action}
 	}
 	return &cli.Command{
-		Name:      "herdr-sandboxes",
+		Name:      "herdr-sbx",
 		Usage:     "Manage Herdr registrations for Docker Sandboxes",
 		Writer:    os.Stdout,
 		ErrWriter: os.Stderr,
@@ -41,9 +41,20 @@ func commands() *cli.Command {
 			return ui.Run(os.Stdin, os.Stdout)
 		},
 		Commands: []*cli.Command{
+			guestPluginsCommand(herdrClient),
+			{Name: "adopt", Usage: "Adopt an existing matching sandbox machine without reconnecting it", ArgsUsage: "<sandbox-name> <machine-id>", Action: func(ctx context.Context, cmd *cli.Command) error {
+				if cmd.Args().Len() != 2 {
+					return errors.New("usage: herdr-sbx adopt <sandbox-name> <machine-id>")
+				}
+				if err := registrations.AdoptMachine(ctx, cmd.Args().First(), cmd.Args().Get(1)); err != nil {
+					return err
+				}
+				fmt.Fprintln(cmd.Root().Writer, "Adopted existing machine. The plugin now manages its lifecycle.")
+				return nil
+			}},
 			command("status", "Show background worker status and last successful sync", func(_ context.Context, cmd *cli.Command) error {
 				if cmd.Args().Len() != 0 {
-					return errors.New("usage: herdr-sandboxes status")
+					return errors.New("usage: herdr-sbx status")
 				}
 				return panel.PrintWorkerStatus(cmd.Root().Writer)
 			}),
@@ -63,7 +74,7 @@ func commands() *cli.Command {
 			command("open-watch", "Open the lifecycle watcher in a tab", func(ctx context.Context, _ *cli.Command) error { return herdrClient.OpenPane(ctx, "watch", "tab") }),
 			command("worker", "Run the plugin worker", func(_ context.Context, _ *cli.Command) error { return lifecycleService.Worker(os.Stdout) }),
 			command("open-worker", "Open the worker in a tab", func(ctx context.Context, _ *cli.Command) error { return herdrClient.OpenPane(ctx, "worker", "tab") }),
-			command("start-worker", "Start a detached plugin worker", func(_ context.Context, _ *cli.Command) error { return lifecycleService.StartWorker() }),
+			command("daemon", "Start a detached plugin worker", func(_ context.Context, _ *cli.Command) error { return lifecycleService.StartWorker() }),
 			retryPreparationCommand(registrations),
 		},
 	}
@@ -72,11 +83,11 @@ func commands() *cli.Command {
 func repairCommand(ui *panel.Service) *cli.Command {
 	return &cli.Command{
 		Name:      "repair",
-		Usage:     "Run one interactive setup action",
-		ArgsUsage: "[daemon|login|ssh]",
+		Usage:     "Set up sandbox SSH interactively",
+		ArgsUsage: "ssh",
 		Action: func(_ context.Context, cmd *cli.Command) error {
-			if cmd.Args().Len() != 1 {
-				return fmt.Errorf("usage: herdr-sandboxes repair [daemon|login|ssh]")
+			if cmd.Args().Len() != 1 || cmd.Args().First() != "ssh" {
+				return fmt.Errorf("usage: herdr-sbx repair ssh")
 			}
 			return ui.Repair(cmd.Args().First(), os.Stdout)
 		},
@@ -90,7 +101,7 @@ func retryPreparationCommand(registrations *registration.Service) *cli.Command {
 		ArgsUsage: "<sandbox-name>",
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			if cmd.Args().Len() != 1 {
-				return fmt.Errorf("usage: herdr-sandboxes retry-preparation <sandbox-name>")
+				return fmt.Errorf("usage: herdr-sbx retry-preparation <sandbox-name>")
 			}
 			return registrations.RetryPreparation(ctx, os.Stdout, cmd.Args().First())
 		},

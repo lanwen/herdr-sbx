@@ -16,20 +16,15 @@ func (s *Service) repair(action string, reader *bufio.Reader, out io.Writer) {
 	waitForReturn(reader, out)
 }
 
-// Repair runs exactly one supported interactive setup action and refreshes
+// Repair runs interactive SSH setup and refreshes
 // prerequisite status when it finishes.
 func (s *Service) Repair(action string, out io.Writer) error {
-	titles := map[string]string{
-		"daemon": "Starting the sandbox daemon",
-		"login":  "Opening Docker sign-in",
-		"ssh":    "Setting up sandbox SSH",
+	if action != "ssh" {
+		return fmt.Errorf("unsupported repair action: use ssh")
 	}
-	title, ok := titles[action]
-	if !ok {
-		return fmt.Errorf("unknown repair action")
-	}
+	title := "Setting up sandbox SSH"
 	fmt.Fprintln(out, title+". Follow any prompts in this terminal.")
-	err, canceled := s.runRepair(action)
+	err, canceled := s.runSSHSetup()
 	switch {
 	case canceled:
 		fmt.Fprintln(out, title+" canceled.")
@@ -43,10 +38,10 @@ func (s *Service) Repair(action string, out io.Writer) error {
 	return nil
 }
 
-func (s *Service) runRepair(action string) (error, bool) {
+func (s *Service) runSSHSetup() (error, bool) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	err := s.sbx.RepairInteractive(ctx, action)
+	err := s.sbx.SetupSSHInteractive(ctx)
 	return err, ctx.Err() != nil
 }
 

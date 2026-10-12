@@ -75,7 +75,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-go build -o bin/herdr-sandboxes ./cmd/herdr-sandboxes
+go build -o bin/herdr-sbx ./cmd/herdr-sbx
 "$HERDR_BIN_PATH" --session "$HERDR_SESSION" server >"$HERDR_SANDBOX_TEST_ROOT/herdr-server.log" 2>&1 &
 server_pid=$!
 
@@ -113,7 +113,7 @@ if [ "${HERDR_SANDBOX_TEST_TEMPORARY_ACCESS:-}" = 1 ]; then
   denied_code=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$HERDR_SANDBOX_TEST_NAME.sbx" 'curl --silent --show-error --location --max-time 30 --output /dev/null --write-out "%{http_code}" https://herdr.dev/install.sh')
   [ "$denied_code" = 403 ] || { echo 'Temporary access fixture must block guest installer downloads with HTTP 403.' >&2; exit 2; }
   sbx --app-name "$HERDR_SANDBOXES_SBX_APP_NAME" ls --json | python3 -c 'import json,sys; rows=json.load(sys.stdin)["sandboxes"]; assert len(rows)==1 and rows[0].get("name")==sys.argv[1] and rows[0].get("id")==sys.argv[2], "sandbox identity changed"' "$HERDR_SANDBOX_TEST_NAME" "$sandbox_id"
-  first=$(printf 'n\n1\nallow\n\nq\n' | bin/herdr-sandboxes panel)
+  first=$(printf 'n\n1\nallow\n\nq\n' | bin/herdr-sbx panel)
   printf '%s\n' "$first" >"$HERDR_SANDBOX_TEST_ROOT/temporary-install.log"
   policy_snapshot >"$HERDR_SANDBOX_TEST_ROOT/policy-after.json"
   cmp "$HERDR_SANDBOX_TEST_ROOT/policy-before.json" "$HERDR_SANDBOX_TEST_ROOT/policy-after.json"
@@ -125,7 +125,7 @@ PY
   sbx --app-name "$HERDR_SANDBOXES_SBX_APP_NAME" ls --json | python3 -c 'import json,sys; rows=json.load(sys.stdin)["sandboxes"]; assert len(rows)==1 and rows[0].get("name")==sys.argv[1] and rows[0].get("id")==sys.argv[2], "sandbox identity changed"' "$HERDR_SANDBOX_TEST_NAME" "$sandbox_id"
 else
   policy_snapshot >"$HERDR_SANDBOX_TEST_ROOT/policy-before.json"
-  first=$(bin/herdr-sandboxes reconcile)
+  first=$(bin/herdr-sbx reconcile)
   policy_snapshot >"$HERDR_SANDBOX_TEST_ROOT/policy-after.json"
   cmp "$HERDR_SANDBOX_TEST_ROOT/policy-before.json" "$HERDR_SANDBOX_TEST_ROOT/policy-after.json"
 fi
@@ -138,7 +138,7 @@ if [ -n "$project_workspace" ]; then
   }
   project_workspace_ids >"$HERDR_SANDBOX_TEST_ROOT/project-workspaces-before.json"
 fi
-second=$(bin/herdr-sandboxes reconcile)
+second=$(bin/herdr-sbx reconcile)
 if [ -n "$project_workspace" ]; then
   project_workspace_ids >"$HERDR_SANDBOX_TEST_ROOT/project-workspaces-after.json"
   cmp "$HERDR_SANDBOX_TEST_ROOT/project-workspaces-before.json" "$HERDR_SANDBOX_TEST_ROOT/project-workspaces-after.json"
@@ -155,7 +155,7 @@ if [ "${HERDR_SANDBOX_TEST_LIFECYCLE:-}" = 1 ]; then
   verify_identity() {
     sbx --app-name "$HERDR_SANDBOXES_SBX_APP_NAME" ls --json | python3 -c 'import json,sys; rows=[row for row in json.load(sys.stdin)["sandboxes"] if row.get("name")==sys.argv[1]]; assert len(rows)==1 and rows[0].get("id")==sys.argv[2], "sandbox identity changed"' "$HERDR_SANDBOX_TEST_NAME" "$sandbox_id"
   }
-  bin/herdr-sandboxes worker >"$HERDR_SANDBOX_TEST_ROOT/worker.log" 2>&1 &
+  bin/herdr-sbx worker >"$HERDR_SANDBOX_TEST_ROOT/worker.log" 2>&1 &
   worker_pid=$!
   trap 'kill "$worker_pid" >/dev/null 2>&1 || true; cleanup' EXIT INT TERM
   verify_identity

@@ -27,11 +27,11 @@ try:
     herdr = stub("herdr", 'case "$1" in --version) echo "herdr 0.9.1";; esac\n')
     stub("sbx", 'case "$*" in "--version") echo "sbx 0.45.1";; "version") echo "sbx 0.45.1";; "daemon status --help"|"ls --help") echo "--json";; "daemon status --json") echo "{\\"status\\":\\"stopped\\",\\"socket\\":\\"/tmp/herdr-sbx-panel.sock\\"}";; esac\n')
     stub("ssh", 'case "$1" in -V) echo "OpenSSH_9.9";; -G) echo "proxycommand sbx ssh proxy %n";; esac\n')
-    binary = temp / "herdr-sandboxes"
+    binary = temp / "herdr-sbx"
     session = "herdr-sbx-test-panel-" + str(os.getpid())
     env = {"HOME": str(home), "XDG_CONFIG_HOME": str(config), "XDG_STATE_HOME": str(state), "HERDR_CONFIG_PATH": str(config / "herdr.toml"), "HERDR_SESSION": session, "HERDR_PLUGIN_STATE_DIR": str(state / "plugin"), "HERDR_BIN_PATH": herdr, "PATH": str(tools) + ":/usr/bin:/bin", "GOCACHE": str(temp / "go-cache"), "GOPATH": str(temp / "go-path")}
     env.update(GOMODCACHE=module_cache, GOPROXY="off", GOFLAGS="-mod=readonly", GOTOOLCHAIN="local", GOENV="off")
-    subprocess.run([go, "build", "-o", str(binary), "./cmd/herdr-sandboxes"], cwd=root, env=env, check=True)
+    subprocess.run([go, "build", "-o", str(binary), "./cmd/herdr-sbx"], cwd=root, env=env, check=True)
     pid, master = pty.fork()
     if pid == 0:
         os.execve(str(binary), [str(binary), "panel"], env)

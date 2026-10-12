@@ -22,7 +22,7 @@ func TestCommandHelpDoesNotRequireExternalTools(t *testing.T) {
 			command := commands()
 			var output bytes.Buffer
 			command.Writer, command.ErrWriter = &output, &output
-			args := []string{"herdr-sandboxes"}
+			args := []string{"herdr-sbx"}
 			if name != "" {
 				args = append(args, name)
 			}
@@ -30,7 +30,7 @@ func TestCommandHelpDoesNotRequireExternalTools(t *testing.T) {
 			if err := command.Run(context.Background(), args); err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(output.String(), "USAGE:") || !strings.Contains(output.String(), "herdr-sandboxes") {
+			if !strings.Contains(output.String(), "USAGE:") || !strings.Contains(output.String(), "herdr-sbx") {
 				t.Fatalf("missing generated help: %s", output.String())
 			}
 		})
@@ -44,18 +44,18 @@ func TestCommandRejectsInvalidArgumentsBeforeActions(t *testing.T) {
 		want string
 	}{
 		{[]string{"unknown-command"}, ""},
-		{[]string{"status", "extra"}, "usage: herdr-sandboxes status"},
+		{[]string{"status", "extra"}, "usage: herdr-sbx status"},
 		{[]string{"--unknown-flag"}, ""},
-		{[]string{"repair"}, "usage: herdr-sandboxes repair"},
-		{[]string{"repair", "daemon", "extra"}, "usage: herdr-sandboxes repair"},
-		{[]string{"repair", "unsupported"}, "unknown repair action"},
-		{[]string{"retry-preparation"}, "usage: herdr-sandboxes retry-preparation"},
-		{[]string{"retry-preparation", "demo", "extra"}, "usage: herdr-sandboxes retry-preparation"},
+		{[]string{"repair"}, "usage: herdr-sbx repair"},
+		{[]string{"repair", "ssh", "extra"}, "usage: herdr-sbx repair"},
+		{[]string{"repair", "unsupported"}, "usage: herdr-sbx repair ssh"},
+		{[]string{"retry-preparation"}, "usage: herdr-sbx retry-preparation"},
+		{[]string{"retry-preparation", "demo", "extra"}, "usage: herdr-sbx retry-preparation"},
 	} {
 		t.Run(strings.Join(test.args, " "), func(t *testing.T) {
 			command := commands()
 			command.Writer, command.ErrWriter = io.Discard, io.Discard
-			err := command.Run(context.Background(), append([]string{"herdr-sandboxes"}, test.args...))
+			err := command.Run(context.Background(), append([]string{"herdr-sbx"}, test.args...))
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want rejection containing %q", err, test.want)
 			}
@@ -77,7 +77,7 @@ func TestStatusCommandReadsWorkerWithoutExternalTools(t *testing.T) {
 		cmd := commands()
 		var output bytes.Buffer
 		cmd.Writer = &output
-		err := cmd.Run(context.Background(), []string{"herdr-sandboxes", "status"})
+		err := cmd.Run(context.Background(), []string{"herdr-sbx", "status"})
 		return output.String(), err
 	}
 	output, err := run()

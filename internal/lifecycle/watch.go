@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -117,23 +118,25 @@ func (w *lockedWriter) Write(p []byte) (int, error) {
 }
 
 type lifecycleScheduler struct {
-	report  func(string, string, bool)
-	owner   *Service
-	ctx     context.Context
-	scope   string
-	socket  string
-	out     io.Writer
-	mu      sync.Mutex
-	retired map[string]bool
-	deletes map[string]sbx.LifecycleEvent
-	lastSeq *uint64
-	catchup bool
-	queue   chan sbx.LifecycleEvent
-	jobs    sync.WaitGroup
+	pluginDefaults store.GuestPluginDefaults
+	report         func(string, string, bool)
+	owner          *Service
+	ctx            context.Context
+	scope          string
+	socket         string
+	out            io.Writer
+	mu             sync.Mutex
+	retired        map[string]bool
+	deletes        map[string]sbx.LifecycleEvent
+	lastSeq        *uint64
+	catchup        bool
+	queue          chan sbx.LifecycleEvent
+	jobs           sync.WaitGroup
 }
 
 func (owner *Service) newScheduler(ctx context.Context, scope, socket string, out io.Writer, report func(string, string, bool)) *lifecycleScheduler {
 	s := &lifecycleScheduler{report: report, owner: owner, ctx: ctx, scope: scope, socket: socket, out: out, retired: map[string]bool{}, deletes: map[string]sbx.LifecycleEvent{}, queue: make(chan sbx.LifecycleEvent, 128)}
+	s.pluginDefaults, _ = store.ReadGuestPluginDefaults()
 	s.jobs.Add(1)
 	go s.run()
 	return s
@@ -193,10 +196,25 @@ func (s *lifecycleScheduler) run() {
 			s.processCatchup(false)
 		case <-deleteRetry.C:
 			s.processDeletes()
+			s.processPluginDefaults()
 		case <-catchup.C:
 			s.processCatchup(true)
 		}
 	}
+}
+
+// Settings have a separate, atomically replaced file. Polling it also works
+// across CLI processes and saves made while the worker was not running.
+func (s *lifecycleScheduler) processPluginDefaults() {
+	settings, err := store.ReadGuestPluginDefaults()
+	if err != nil {
+		return
+	} // Periodic reconciliation reports unreadable defaults.
+	if reflect.DeepEqual(settings, s.pluginDefaults) {
+		return
+	}
+	s.pluginDefaults = settings
+	s.processCatchup(true)
 }
 
 func (s *lifecycleScheduler) processCatchup(periodic bool) {

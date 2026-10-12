@@ -144,21 +144,9 @@ func (c *Client) WorkspaceDirectory(ctx context.Context, name string) (string, e
 	return c.cli(ctx, 15*time.Second, true, "exec", name, "--", "pwd", "-P")
 }
 
-// RepairInteractive runs one supported interactive setup action. The action
-// allowlist keeps command construction in the sbx client.
-func (c *Client) RepairInteractive(ctx context.Context, action string) error {
-	var args []string
-	switch action {
-	case "daemon":
-		args = []string{"daemon", "start"}
-	case "login":
-		args = []string{"login"}
-	case "ssh":
-		args = []string{"setup", "ssh"}
-	default:
-		return fmt.Errorf("unknown repair action")
-	}
-	return c.runner.RunInteractive(ctx, "sbx", c.appScopedArgs(args...)...)
+// SetupSSHInteractive configures sandbox SSH through the user's terminal.
+func (c *Client) SetupSSHInteractive(ctx context.Context) error {
+	return c.runner.RunInteractive(ctx, "sbx", c.appScopedArgs("setup", "ssh")...)
 }
 
 func (c *Client) cli(ctx context.Context, timeout time.Duration, scoped bool, args ...string) (string, error) {

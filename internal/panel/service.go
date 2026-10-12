@@ -52,13 +52,13 @@ func (s *Service) Run(in io.Reader, out io.Writer) error {
 		fmt.Fprintln(out, "Stopped sandbox registrations remain available for ordinary SSH reconnects.")
 		fmt.Fprintln(out, "c  Check again (observation only)")
 		fmt.Fprintln(out, "r  Register prepared running sandboxes")
-		fmt.Fprintln(out, "d  Start daemon")
-		fmt.Fprintln(out, "l  Sign in to Docker")
+		fmt.Fprintln(out, "a  Adopt an existing sandbox machine")
 		fmt.Fprintln(out, "s  Set up sandbox SSH")
 		fmt.Fprintln(out, "b  Start background worker")
 		fmt.Fprintln(out, "w  Watch sandbox lifecycle")
 		fmt.Fprintln(out, "t  Retry Herdr preparation for one sandbox")
 		fmt.Fprintln(out, "n  Temporarily allow downloads and install Herdr")
+		fmt.Fprintln(out, "g  Select guest plugins (defaults)")
 		fmt.Fprintln(out, "q  Close")
 		fmt.Fprint(out, "> ")
 
@@ -72,16 +72,14 @@ func (s *Service) Run(in io.Reader, out io.Writer) error {
 		switch strings.ToLower(strings.TrimSpace(line)) {
 		case "c", "":
 			continue
+		case "a":
+			s.adoptMachine(reader, out)
 		case "r":
 			fmt.Fprintln(out, "")
 			if err := s.registration.Reconcile(out); err != nil {
 				fmt.Fprintln(out, "Reconciliation failed:", err)
 			}
 			waitForReturn(reader, out)
-		case "d":
-			s.repair("daemon", reader, out)
-		case "l":
-			s.repair("login", reader, out)
 		case "s":
 			s.repair("ssh", reader, out)
 		case "b":
@@ -109,6 +107,8 @@ func (s *Service) Run(in io.Reader, out io.Writer) error {
 			waitForReturn(reader, out)
 		case "n":
 			s.temporaryInstall(reader, out)
+		case "g":
+			s.guestPlugins(reader, out)
 		case "q":
 			return nil
 		}

@@ -27,7 +27,7 @@ export XDG_DATA_HOME="$HERDR_WORKER_TEST_ROOT/data"
 export XDG_CACHE_HOME="$HERDR_WORKER_TEST_ROOT/cache"
 export XDG_RUNTIME_DIR="$HERDR_WORKER_TEST_ROOT/runtime"
 export HERDR_CONFIG_PATH="$XDG_CONFIG_HOME/herdr/config.toml"
-export HERDR_PLUGIN_STATE_DIR="$HERDR_WORKER_TEST_ROOT/plugin-state"
+export HERDR_PLUGIN_STATE_DIR="$XDG_STATE_HOME/herdr/plugins/lanwen.herdr-sbx"
 unset HERDR_SOCKET_PATH HERDR_CLIENT_SOCKET_PATH HERDR_SESSION HERDR_ENV
 unset HERDR_PLUGIN_ID HERDR_PLUGIN_ROOT HERDR_PLUGIN_CONFIG_DIR
 unset HERDR_PANE HERDR_PANE_ID HERDR_TAB HERDR_TAB_ID HERDR_WORKSPACE HERDR_WORKSPACE_ID
@@ -92,26 +92,42 @@ wait_for_server() {
   done
 }
 
+worker_lock_active() {
+  python3 - "$HERDR_PLUGIN_STATE_DIR/state.json.worker" <<'PYLOCK'
+import fcntl, sys
+try:
+    with open(sys.argv[1], 'r') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            sys.exit(0)
+except FileNotFoundError:
+    pass
+sys.exit(1)
+PYLOCK
+}
+
 assert_worker_locked() {
-  HERDR_SESSION="$second_session" python3 - "$HERDR_WORKER_TEST_ROOT/herdr-sandboxes" <<'PY'
+  worker_lock_active || { echo 'Expected an active worker lock.' >&2; exit 1; }
+  HERDR_SESSION="$second_session" python3 - "$HERDR_WORKER_TEST_ROOT/herdr-sbx" <<'PYNOOP'
 import subprocess, sys
-result = subprocess.run([sys.argv[1], 'worker'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=2)
-if result.returncode == 0 or 'already active' not in result.stdout:
-    raise SystemExit('expected the detached worker lock:\n' + result.stdout)
-PY
+for command in ['worker', 'daemon']:
+    result = subprocess.run([sys.argv[1], command], text=True, capture_output=True, timeout=2)
+    if result.returncode != 0 or result.stdout or result.stderr:
+        raise SystemExit('Expected duplicate start to succeed silently: ' + repr(result))
+PYNOOP
+  worker_lock_active || { echo 'Duplicate start lost worker lock.' >&2; exit 1; }
 }
 
 assert_worker_stopped() {
-  HERDR_SESSION="$second_session" python3 - "$HERDR_WORKER_TEST_ROOT/herdr-sandboxes" <<'PY'
-import subprocess, sys
-result = subprocess.run([sys.argv[1], 'worker'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=2)
-if result.returncode == 0 or 'already active' in result.stdout:
-    raise SystemExit('expected the detached worker to have exited:\n' + result.stdout)
-PY
+  if worker_lock_active; then
+    echo 'Expected worker to have exited.' >&2
+    exit 1
+  fi
 }
 
 start_worker() {
-  HERDR_SESSION="$1" "$HERDR_WORKER_TEST_ROOT/herdr-sandboxes" worker >"$HERDR_WORKER_TEST_ROOT/worker.log" 2>&1 &
+  HERDR_SESSION="$1" "$HERDR_WORKER_TEST_ROOT/herdr-sbx" worker >"$HERDR_WORKER_TEST_ROOT/worker.log" 2>&1 &
   worker_pid=$!
   attempts=0
   until grep -F 'worker started' "$HERDR_WORKER_TEST_ROOT/worker.log" >/dev/null; do
@@ -135,7 +151,11 @@ wait_for_worker_exit() {
   worker_pid=""
 }
 
-go build -o "$HERDR_WORKER_TEST_ROOT/herdr-sandboxes" ./cmd/herdr-sandboxes
+go build -o "$HERDR_WORKER_TEST_ROOT/herdr-sbx" ./cmd/herdr-sbx
+mkdir "$HERDR_WORKER_TEST_ROOT/plugin"
+cp herdr-plugin.toml "$HERDR_WORKER_TEST_ROOT/plugin/"
+mkdir "$HERDR_WORKER_TEST_ROOT/plugin/bin"
+ln -s "$HERDR_WORKER_TEST_ROOT/herdr-sbx" "$HERDR_WORKER_TEST_ROOT/plugin/bin/herdr-sbx"
 HERDR_SESSION="$first_session" "$HERDR_BIN_PATH" server >"$HERDR_WORKER_TEST_ROOT/first.log" 2>&1 &
 first_pid=$!
 HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" server >"$HERDR_WORKER_TEST_ROOT/second.log" 2>&1 &
@@ -143,7 +163,7 @@ second_pid=$!
 wait_for_server "$first_session"
 wait_for_server "$second_session"
 
-HERDR_SESSION="$first_session" "$HERDR_BIN_PATH" plugin link . >/dev/null
+HERDR_SESSION="$first_session" "$HERDR_BIN_PATH" plugin link "$HERDR_WORKER_TEST_ROOT/plugin" >/dev/null
 HERDR_SESSION="$first_session" "$HERDR_BIN_PATH" plugin enable lanwen.herdr-sbx >/dev/null
 start_worker "$first_session"
 assert_worker_locked
@@ -156,7 +176,7 @@ HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin disable lanwen.herdr-sb
 wait_for_worker_exit
 assert_worker_stopped
 
-HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin link . >/dev/null
+HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin link "$HERDR_WORKER_TEST_ROOT/plugin" >/dev/null
 HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin enable lanwen.herdr-sbx >/dev/null
 start_worker "$second_session"
 assert_worker_locked
@@ -165,7 +185,7 @@ wait_for_worker_exit
 assert_worker_stopped
 HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin list --plugin lanwen.herdr-sbx --json | python3 -c 'import json,sys; value=json.load(sys.stdin); assert isinstance(value,dict), repr(value); value=value.get("result",value); assert isinstance(value,dict), repr(value); rows=value.get("plugins"); assert isinstance(rows,list), repr(value); assert all(isinstance(row,dict) and isinstance(row.get("plugin_id",row.get("id")),str) for row in rows), repr(rows); assert all(row.get("plugin_id",row.get("id")) != "lanwen.herdr-sbx" for row in rows), repr(rows)'
 
-HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin link . >/dev/null
+HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin link "$HERDR_WORKER_TEST_ROOT/plugin" >/dev/null
 HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" plugin enable lanwen.herdr-sbx >/dev/null
 start_worker "$second_session"
 assert_worker_locked
@@ -173,4 +193,25 @@ HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" server stop >/dev/null
 wait_for_worker_exit
 assert_worker_stopped
 
-printf '%s\n' 'Isolated two-server worker lifetime gate passed.'
+# The enabled plugin remains linked. A new server must start the worker via
+# its actual manifest hook, without an explicit daemon invocation.
+HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" server >"$HERDR_WORKER_TEST_ROOT/startup.log" 2>&1 &
+second_pid=$!
+wait_for_server "$second_session"
+attempts=0
+until worker_lock_active; do
+  attempts=$((attempts + 1))
+  [ "$attempts" -lt 10 ] || { cat "$HERDR_WORKER_TEST_ROOT/startup.log" >&2; echo 'Startup hook did not start worker.' >&2; exit 1; }
+  sleep 1
+done
+assert_worker_locked
+HERDR_SESSION="$second_session" "$HERDR_BIN_PATH" server stop >/dev/null
+attempts=0
+while worker_lock_active; do
+  attempts=$((attempts + 1))
+  [ "$attempts" -lt 20 ] || { echo 'Automatic worker did not stop.' >&2; exit 1; }
+  sleep 1
+done
+assert_worker_stopped
+
+printf '%s\n' 'Isolated worker lifetime, automatic startup and duplicate-start gate passed.'
