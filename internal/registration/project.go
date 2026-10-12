@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/lanwen/herdr-sbx/internal/guestplugins"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
 )
@@ -16,12 +17,18 @@ import (
 // machines. Its failure must not discard ownership or add another machine.
 func (s *Service) projectReadiness(ctx context.Context, scope string, st *store.State, sb sbx.Sandbox, item *store.Tracked, known bool, current func() bool) result {
 	outcome := s.readinessResult(ctx, sb.Name, item.ProfileID, known, current)
-	if outcome.Status != "ready" || item.ProjectWorkspaceDone || (sb.Workspace == "" && item.ProjectWorkspacePending == "") {
+	if outcome.Status != "ready" {
 		return outcome
 	}
-	if err := s.prepareProjectWorkspace(ctx, scope, st, sb, item, current); err != nil {
-		return result{sb.Name, "workspace setup required", "machine is registered; project workspace: " + err.Error()}
+	if !item.ProjectWorkspaceDone && (sb.Workspace != "" || item.ProjectWorkspacePending != "") {
+		if err := s.prepareProjectWorkspace(ctx, scope, st, sb, item, current); err != nil {
+			return result{sb.Name, "workspace setup required", "machine is registered; project workspace: " + err.Error()}
+		}
 	}
+	if err := guestplugins.Apply(ctx, s.herdr, s.releaseTransport, item.Target, current); err != nil {
+		return result{sb.Name, "plugin setup required", err.Error()}
+	}
+
 	return outcome
 }
 

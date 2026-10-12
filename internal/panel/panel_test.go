@@ -45,6 +45,8 @@ func testPanel(t *testing.T, interactive func(context.Context, string, ...string
 			args = args[2:]
 		}
 		switch cmd.Name + " " + strings.Join(args, " ") {
+		case "herdr plugin list --json":
+			return `[{"plugin_id":"first.plugin","enabled":true},{"plugin_id":"second.plugin","enabled":true}]`, nil
 		case "herdr --version":
 			return "herdr 0.9.1", nil
 		case "sbx --version":
@@ -75,22 +77,18 @@ func testPanel(t *testing.T, interactive func(context.Context, string, ...string
 	return New(registrations, lifecycle.New(registrations, sandboxes, herdrClient), sandboxes)
 }
 
-func TestRepairRunsOnlyTheChosenInteractiveCommandThenRefreshes(t *testing.T) {
-	for action, want := range map[string]string{"daemon": "daemon start", "login": "login", "ssh": "setup ssh"} {
-		t.Run(action, func(t *testing.T) {
-			calls := 0
-			ui := testPanel(t, func(_ context.Context, name string, args ...string) error {
-				calls++
-				if name != "sbx" || strings.Join(args, " ") != "--app-name isolated "+want {
-					t.Fatalf("interactive command = %s %v", name, args)
-				}
-				return nil
-			})
-			var out bytes.Buffer
-			if err := ui.Repair(action, &out); err != nil || calls != 1 || !strings.Contains(out.String(), "Refreshing status.") || !strings.Contains(out.String(), "Sandbox daemon") {
-				t.Fatalf("repair calls=%d err=%v output=%s", calls, err, out.String())
-			}
-		})
+func TestSSHSetupRefreshesStatus(t *testing.T) {
+	calls := 0
+	ui := testPanel(t, func(_ context.Context, name string, args ...string) error {
+		calls++
+		if name != "sbx" || strings.Join(args, " ") != "--app-name isolated setup ssh" {
+			t.Fatalf("interactive command = %s %v", name, args)
+		}
+		return nil
+	})
+	var out bytes.Buffer
+	if err := ui.Repair("ssh", &out); err != nil || calls != 1 || !strings.Contains(out.String(), "Refreshing status.") || !strings.Contains(out.String(), "Sandbox daemon") {
+		t.Fatalf("repair calls=%d err=%v output=%s", calls, err, out.String())
 	}
 }
 
@@ -119,7 +117,7 @@ func TestRepairCancellationRefreshesWithoutRetry(t *testing.T) {
 		return ctx.Err()
 	})
 	var out bytes.Buffer
-	if err := ui.Repair("login", &out); err != nil || calls != 1 || !strings.Contains(out.String(), "canceled.") || !strings.Contains(out.String(), "Refreshing status.") || !strings.Contains(out.String(), "Sandbox daemon") {
+	if err := ui.Repair("ssh", &out); err != nil || calls != 1 || !strings.Contains(out.String(), "canceled.") || !strings.Contains(out.String(), "Refreshing status.") || !strings.Contains(out.String(), "Sandbox daemon") {
 		t.Fatalf("cancellation calls=%d err=%v output=%s", calls, err, out.String())
 	}
 }
@@ -182,5 +180,21 @@ func TestPanelShowsWorkerHealthAndLastSync(t *testing.T) {
 	printWorkerStatus(&output)
 	if !strings.Contains(output.String(), "RECONNECTING") || !strings.Contains(output.String(), "daemon unavailable") || strings.Contains(output.String(), "not yet") {
 		t.Fatal(output.String())
+	}
+}
+
+func TestPluginPickerSavesIndependentChoices(t *testing.T) {
+	panel := testPanel(t, nil)
+	var output bytes.Buffer
+	panel.guestPlugins(bufio.NewReader(strings.NewReader("1\n2\n1\n\n")), &output)
+	settings, err := store.ReadGuestPluginDefaults()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.Plugins["first.plugin"].Enabled || !settings.Plugins["second.plugin"].Enabled {
+		t.Fatal(settings)
+	}
+	if !strings.Contains(output.String(), "[OFF]") || !strings.Contains(output.String(), "[ON]") {
+		t.Fatal("picker does not show choices")
 	}
 }

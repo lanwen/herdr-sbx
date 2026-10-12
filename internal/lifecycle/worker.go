@@ -16,8 +16,18 @@ import (
 )
 
 // StartWorker starts a detached plugin worker and writes its output beside the
-// registration journal.
+// registration journal. An already active worker is a successful no-op.
 func (s *Service) StartWorker() error {
+	unlock, err := store.LockWorker()
+	if errors.Is(err, store.ErrWorkerActive) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	// The child takes the authoritative lock. Concurrent starters may launch
+	// children, but only one child can watch; the others exit successfully.
+	unlock()
 	executable, err := os.Executable()
 	if err != nil {
 		return err
@@ -38,7 +48,11 @@ func (s *Service) StartWorker() error {
 	command.Stdin = nil
 	command.Stdout, command.Stderr = log, log
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	return command.Start()
+	if err := command.Start(); err != nil {
+		return err
+	}
+	go func() { _ = command.Wait() }()
+	return nil
 }
 
 // Worker supervises a lifecycle watch for as long as this plugin is enabled
@@ -46,8 +60,11 @@ func (s *Service) StartWorker() error {
 func (s *Service) Worker(out io.Writer) error {
 	out = &lockedWriter{out: out}
 	unlock, err := store.LockWorker()
+	if errors.Is(err, store.ErrWorkerActive) {
+		return nil
+	}
 	if err != nil {
-		return errors.New("a Docker Sandboxes lifecycle worker is already active")
+		return err
 	}
 	defer unlock()
 	report := func(state, detail string, synced bool) {

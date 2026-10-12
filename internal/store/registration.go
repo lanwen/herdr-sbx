@@ -139,6 +139,9 @@ func LockState() (func(), error) {
 	}, nil
 }
 
+// ErrWorkerActive means another process owns the worker lock.
+var ErrWorkerActive = errors.New("worker lock is held")
+
 // LockWorker obtains the non-blocking singleton worker lock beside state.json.
 func LockWorker() (func(), error) {
 	path, err := StatePath()
@@ -154,7 +157,10 @@ func LockWorker() (func(), error) {
 	}
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		file.Close()
-		return nil, errors.New("worker lock is held")
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, ErrWorkerActive
+		}
+		return nil, err
 	}
 	return func() {
 		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)

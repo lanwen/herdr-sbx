@@ -2,7 +2,7 @@
 
 The display name is `lanwen/herdr-sbx` and the plugin ID is `lanwen.herdr-sbx` (Herdr IDs do not allow slashes).
 
-If replacing the former `herdr.docker-sandboxes` link, unlink that ID before linking this checkout again. The new ID uses fresh plugin state. Existing Herdr machine profiles remain in the catalog; remove obsolete sandbox profiles before registering them again, because the new plugin will not adopt untracked machines.
+If replacing the former `herdr.docker-sandboxes` link, unlink that ID before linking this checkout again. The new ID uses fresh plugin state. Existing Herdr machine profiles remain in the catalog; press **a** in the panel to explicitly adopt matching sandbox profiles without removing them.
 
 This Herdr plugin checks local Docker Sandboxes prerequisites, installs missing guest Herdr, and keeps owned machine entries aligned with sandbox lifecycle changes.
 
@@ -19,11 +19,74 @@ Mise pins the Go version and provides development tasks. Herdr's plugin build st
 
 Open **lanwen/herdr-sbx status** with `herdr plugin action invoke open-status --plugin lanwen.herdr-sbx`. The default action opens a 110-column by 32-row popup (subject to Herdr’s terminal-size limits). Tab and split actions remain available as `open-status-tab` and `open-status-split`. The panel's **Check again** command only observes local binaries, daemon status, sandbox inventory, Docker sign-in through the Authentication result of `sbx diagnose --json`, and the effective SSH configuration. Diagnostics may take up to 35 seconds; unavailable or inconclusive results remain UNKNOWN. An unrelated diagnostic failure does not invalidate a successful authentication check. Diagnostics are not uploaded. It does not start the daemon, sign in, configure SSH, connect to a sandbox, or install software.
 
-The panel offers **Start daemon**, **Sign in to Docker**, and **Set up sandbox SSH** as separate, interactive terminal actions. Each runs only after you choose it, then refreshes the status panel. The plugin does not store Docker credentials or SSH keys.
+Start the Docker Sandboxes daemon and sign in outside the plugin.
+The plugin reports daemon and authorization readiness but does not manage either.
+The panel offers **Set up sandbox SSH** as an explicit interactive action, then refreshes status.
+The CLI equivalent is `herdr-sbx repair ssh`.
+The plugin does not store Docker credentials or SSH keys.
+
+Press **a**, Enter to adopt an existing machine by number when registration reports an ownership conflict.
+Adoption requires a running sandbox, one machine targeting its exact `<sandbox-name>.sbx` alias with the default remote session, and no conflicting ownership record.
+The plugin rechecks the selected sandbox ID and machine ID before saving ownership.
+It preserves the machine connection and existing workspaces; later reconciliation applies the usual label, workspace and selected-plugin setup.
+The adopted entry is removed when its sandbox is deleted, just like other plugin-managed machines.
+CLI equivalent: `herdr-sbx adopt <sandbox-name> <machine-id>`.
+Ordinary registration and the worker never adopt untracked machines automatically.
 
 The registration action is explicit. It checks a running sandbox through its managed SSH alias. If guest Herdr is missing, it downloads the Linux binary on the host using the official release manifest, verifies its SHA256 checksum, streams it over SSH, and then verifies compatibility before `herdr machine add`. Existing incompatible or broken guest installations are reported and left untouched. It records its owned profile before and after the catalog change.
 
 For sandboxes that report a project workspace, registration resolves the actual working directory inside the guest and creates one Herdr project workspace without changing focus or terminal defaults. A matching existing workspace is reused. This also applies to previously registered plugin-owned machines. Completion is saved, so closing the workspace later does not cause it to reappear. Missing project metadata leaves workspace setup unchanged; failed or uncertain setup is shown without losing machine ownership.
+
+## Plugins inside sandboxes
+
+Press **g**, Enter in the status panel to open **Guest plugin defaults**.
+Choose plugins by number to toggle them.
+Newly discovered plugins start **OFF**, regardless of whether they are enabled locally.
+Turning a plugin off only stops provisioning; its guest installation and shortcuts stay intact.
+
+Selections live in `guest-plugins.json` beside the registration state, separate from runtime status.
+The CLI saves this file atomically under a lock.
+The running worker checks for selection changes about once per second and schedules reconciliation of running sandboxes.
+An active reconciliation can delay the next check.
+Stopped sandboxes receive selected plugins when they next run.
+No sandbox lifecycle event or worker restart is needed to apply a changed selection.
+If the worker is stopped, press **b** to start it, or **r** to apply the current choices once.
+
+```sh
+bin/herdr-sbx guest-plugins list
+bin/herdr-sbx guest-plugins enable persiyanov.reviewr
+bin/herdr-sbx guest-plugins enable herdr-last
+bin/herdr-sbx guest-plugins disable herdr-last
+```
+
+Reviewr and herdr-last have host-download recipes that select the installed version's Linux release and verify its checksum.
+Other plugins without build steps can use their local plugin directory when its contents are Linux-ready.
+Plugins that need compilation or another release layout need a prepared, self-contained Linux bundle:
+
+```sh
+bin/herdr-sbx guest-plugins bundle example.plugin /path/to/linux-plugin
+bin/herdr-sbx guest-plugins enable example.plugin
+```
+
+The bundle must contain `herdr-plugin.toml` with the matching ID, runtime files, and binaries built for the sandbox's architecture.
+Setting a bundle path does not enable the plugin.
+Symlinks, special files, incompatible native binaries, and bundles over 128 MiB are rejected; dotfiles and dot-directories are excluded from copying.
+Build instructions are removed from the transferred manifest.
+The worker copies files over SSH, links the guest plugin, and reloads guest Herdr configuration without guest downloads or builds.
+Guest `jq`, `tar`, `sha256sum`, and `base64` must be available; Reviewr also requires `bash` and `git`.
+Other plugin-specific runtime dependencies must already be installed.
+
+Only the selected plugin's `plugin_action` shortcuts are copied from local Herdr configuration.
+Plugins without a local shortcut can still be installed and used through plugin actions.
+Existing guest settings are preserved; conflicting shortcuts, explicitly different prefixes, and externally managed guest installations require user action.
+When the guest has no configured prefix, the local prefix is copied too.
+A changed guest config is backed up to `config.toml.herdr-sbx-<plugin-id>.bak` before replacement; TOML formatting and comments are retained only in that backup.
+Host Herdr settings, environment variables, and credentials are not copied.
+Failures appear as **PLUGIN SETUP REQUIRED** without removing the registered machine, and other selected plugins are still attempted.
+
+After rebuilding, reopen the panel to load the updated binary.
+An already running worker must be restarted once to use new code; relinking is not needed for binary-only updates.
+Subsequent selection changes do not require a restart.
 
 Machine labels use `sbx · <sandbox-name>`. Reconciliation updates previously owned machine labels when their sandboxes are running; manual or modified profiles remain protected by ownership checks. To give these labels a sand color in agent rows, merge this rule into your Herdr configuration:
 
@@ -46,7 +109,11 @@ Cleanup runs after success, failure, or cancellation and before machine registra
 
 Use **Watch lanwen/herdr-sbx lifecycle** to open a foreground watcher. It registers a started, prepared sandbox after rechecking its stable identity. Stopped sandbox registrations remain available for ordinary SSH reconnects. A deletion removes only the matching profile that the plugin recorded as its own. Press Ctrl-C to stop the watcher.
 
-Press **b**, Enter in the panel to start the background worker, or run `herdr plugin action invoke start-worker --plugin lanwen.herdr-sbx` from a Herdr terminal.
+The enabled plugin starts its background worker automatically when a Herdr server starts or hands off to a new server.
+Creating a workspace also starts the worker if it is not already running.
+Linking or enabling it in an already running server does not trigger startup.
+Repeated starts are successful no-ops while a worker is active.
+To start it immediately, press **b**, Enter in the panel, or run `herdr plugin action invoke daemon --plugin lanwen.herdr-sbx` from a Herdr terminal.
 
 **Start lanwen/herdr-sbx worker** starts one detached lifecycle worker. It reconnects after a sandbox daemon interruption, tolerates a short local server handoff, and exits when the plugin is disabled or the final local server remains stopped. Closing the panel does not stop it. If the worker process crashes, use this action again; Herdr does not supervise its restart.
 
@@ -87,13 +154,14 @@ Start with the package that owns the behavior you want to change:
 
 | Change | Location |
 | --- | --- |
-| Commands, arguments, help and exit handling | `cmd/herdr-sandboxes` |
+| Commands, arguments, help and exit handling | `cmd/herdr-sbx` |
 | sbx CLI, daemon inventory/events and policy protocol | `internal/sbx` |
 | Herdr machine, workspace, session and plugin operations | `internal/herdr` |
 | Process execution, deadlines and environment handling | `internal/process` |
 | Numeric tool-version parsing and compatibility comparison | `internal/version` |
 | Passive prerequisite stages and their order | `internal/precheck` |
 | Registration, guest preparation, labels and initial workspace | `internal/registration` |
+| Plugin recipes, selection catalog, bundles and shortcut merging | `internal/guestplugins` |
 | State journals, file locks, cooldowns and observations | `internal/store` |
 | Event reconciliation, deletion and worker lifetime | `internal/lifecycle` |
 | Panel rendering, sandbox selection and explicit setup actions | `internal/panel` |
@@ -104,10 +172,15 @@ Tests live beside the code they exercise. Transport tests use fake command execu
 
 ### Worker status from the terminal
 
-Run `./bin/herdr-sandboxes status` from this checkout to print the worker state, last successful sync and connection detail. It does not contact Docker, start a worker or check prerequisites. A stopped worker is a valid result (exit 0); unreadable state returns an error (exit 1).
+Run `./bin/herdr-sbx status` from this checkout to print the worker state, last successful sync and connection detail. It does not contact Docker, start a worker or check prerequisites. A stopped worker is a valid result (exit 0); unreadable state returns an error (exit 1).
 
 The command uses `HERDR_PLUGIN_STATE_DIR` when provided, otherwise `${XDG_STATE_HOME:-$HOME/.local/state}/herdr/plugins/lanwen.herdr-sbx`. For a custom Herdr state location, pass its plugin state directory explicitly. The same command is exposed as `herdr plugin action invoke status --plugin lanwen.herdr-sbx` after re-linking the updated manifest.
 
 For a new guest server, registration resolves the sandbox project directory and starts Herdr there before adding the machine. It verifies the initial workspace instead of creating a second one. Existing running sessions keep their workspaces. An interrupted startup retains its intended directory for retry; a guest that cannot honor it reports a setup error rather than silently creating another workspace.
 
 To verify this with an isolated local Herdr server: `SBX_TEST_HERDR_BINARY="$(command -v herdr)" mise exec -- python3 scripts/test-go.py test ./internal/herdr -run TestProjectBootstrapRealServer -v -count=1`. The test uses temporary configuration and state, never the normal session.
+
+For guest plugin integration, run `SBX_TEST_HERDR_BINARY="$(command -v herdr)" mise exec -- python3 scripts/test-go.py test ./internal/guestplugins -run TestReviewrRealServer -v -count=1`.
+This uses a temporary Herdr server and local shell transport, with simulated Linux release bytes.
+To verify the published Linux archives separately, run `SBX_TEST_REVIEWR_DOWNLOAD=1 mise exec -- python3 scripts/test-go.py test ./internal/guestplugins -run TestPublishedReviewrRelease -v -count=1`.
+Live sandbox and interactive hotkey checks require a dedicated sandbox fixture.

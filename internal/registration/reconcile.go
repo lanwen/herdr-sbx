@@ -211,7 +211,7 @@ func (s *Service) registerWithInstallation(ctx context.Context, scope string, st
 	}
 	for _, m := range machines {
 		if m.Label == sandboxMachineLabel(sb.Name) || m.Target == target {
-			return result{sb.Name, "ownership conflict", "a manual or untracked machine uses this label or target"}, nil
+			return result{sb.Name, "ownership conflict", "a manual or untracked machine uses this label or target; choose a in the panel to adopt a matching machine"}, nil
 		}
 	}
 

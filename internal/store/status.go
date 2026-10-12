@@ -51,6 +51,7 @@ func (a PolicyAttempt) PolicySandboxName() string {
 
 // StatusStore is the existing sidecar JSON document.
 type StatusStore struct {
+	ReviewrEnabled    bool                     `json:"reviewr_enabled,omitempty"`
 	Worker            *WorkerStatus            `json:"worker,omitempty"`
 	Sandboxes         map[string]SandboxStatus `json:"sandboxes"`
 	Preparation       map[string]time.Time     `json:"preparation"`

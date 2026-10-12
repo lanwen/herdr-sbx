@@ -7,7 +7,7 @@ run = "go mod download"
 
 [tasks.build]
 description = "Build the linked plugin executable"
-run = "go build -o bin/herdr-sandboxes ./cmd/herdr-sandboxes"
+run = "go build -o bin/herdr-sbx ./cmd/herdr-sbx"
 
 [tasks.fmt]
 description = "Format Go source"

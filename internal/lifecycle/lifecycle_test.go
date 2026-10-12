@@ -534,3 +534,32 @@ func TestWorkerReportsStreamSyncAndReconnect(t *testing.T) {
 		t.Fatalf("saved=%#v err=%v", saved.Worker, err)
 	}
 }
+
+func TestPluginDefaultsChangeRequestsCatchupWithoutLifecycleEvent(t *testing.T) {
+	f := newLifecycleFixture(t)
+	scheduler := f.scheduler()
+	scheduler.pluginDefaults, _ = store.ReadGuestPluginDefaults()
+	inspections := 0
+	f.run = func(ctx context.Context, cmd process.Command) (string, error) {
+		if strings.Contains(strings.Join(cmd.Args, " "), "--version") {
+			inspections++
+		}
+		return f.defaultRun(ctx, cmd)
+	}
+	scheduler.processPluginDefaults()
+	if inspections != 0 {
+		t.Fatal("unchanged defaults triggered reconciliation")
+	}
+	if err := store.SetGuestPluginDefault("example.plugin", true, nil); err != nil {
+		t.Fatal(err)
+	}
+	scheduler.processPluginDefaults()
+	if inspections == 0 {
+		t.Fatal("saved choice did not trigger reconciliation")
+	}
+	previous := inspections
+	scheduler.processPluginDefaults()
+	if inspections != previous {
+		t.Fatal("same choice repeatedly triggered reconciliation")
+	}
+}
