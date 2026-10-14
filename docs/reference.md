@@ -4,6 +4,13 @@ See the [README](../README.md) for installation and requirements.
 The plugin ID is `lanwen.herdr-sbx`.
 Run the following commands from the checkout on the host, inside local Herdr when they need a server.
 
+## Public sources
+
+For external behavior and API contracts, consult the [Herdr documentation](https://herdr.dev/docs/) and [Docker Sandboxes documentation](https://docs.docker.com/ai/sandboxes/).
+For regressions, upgrades, or new features, consult the [Herdr changelog](https://github.com/herdrdev/herdr/blob/master/CHANGELOG.md) and [Docker Sandboxes release notes](https://docs.docker.com/ai/sandboxes/release-notes/).
+Record the installed Herdr and Docker Sandboxes versions before applying claims from these sources.
+Distinguish features available in those versions from later releases and unreleased changes.
+
 ## Commands and panel
 
 | Command | Purpose |
