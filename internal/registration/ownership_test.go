@@ -312,6 +312,9 @@ func TestCooldownRetainsInstallationFailure(t *testing.T) {
 	fixture := newRegistrationFixture(t, "[]")
 	statusChecks, architectureChecks := 0, 0
 	fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
+		if command.Name == "herdr" && strings.Join(command.Args, " ") == "--version" {
+			return "herdr 0.9.3", nil
+		}
 		if command.Name == "ssh" && len(command.Args) > 0 {
 			switch command.Args[len(command.Args)-1] {
 			case remoteHerdrStatusShell():

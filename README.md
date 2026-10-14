@@ -33,7 +33,7 @@ The adopted entry is removed when its sandbox is deleted, just like other plugin
 CLI equivalent: `herdr-sbx adopt <sandbox-name> <machine-id>`.
 Ordinary registration and the worker never adopt untracked machines automatically.
 
-The registration action is explicit. It checks a running sandbox through its managed SSH alias. If guest Herdr is missing, it downloads the Linux binary on the host using the official release manifest, verifies its SHA256 checksum, streams it over SSH, and then verifies compatibility before `herdr machine add`. Existing incompatible or broken guest installations are reported and left untouched. It records its owned profile before and after the catalog change.
+The registration action is explicit. It checks a running sandbox through its managed SSH alias. If guest Herdr is missing, it downloads the Linux binary on the host using the official release manifest, verifies its SHA256 checksum, streams it over SSH, and then verifies compatibility before `herdr machine add`. Host downloads select the local Herdr CLI version from the verified release manifest, including archived releases when needed. Broken guest installations are reported and left untouched. It records its owned profile before and after the catalog change.
 
 For sandboxes that report a project workspace, registration resolves the actual working directory inside the guest and creates one Herdr project workspace without changing focus or terminal defaults. A matching existing workspace is reused. This also applies to previously registered plugin-owned machines. Completion is saved, so closing the workspace later does not cause it to reappear. Missing project metadata leaves workspace setup unchanged; failed or uncertain setup is shown without losing machine ownership.
 
@@ -118,6 +118,13 @@ To start it immediately, press **b**, Enter in the panel, or run `herdr plugin a
 **Start lanwen/herdr-sbx worker** starts one detached lifecycle worker. It reconnects after a sandbox daemon interruption, tolerates a short local server handoff, and exits when the plugin is disabled or the final local server remains stopped. Closing the panel does not stop it. If the worker process crashes, use this action again; Herdr does not supervise its restart.
 
 The panel shows **Worker: STARTING / RUNNING / RECONNECTING / STOPPED** and the last successful lifecycle sync or catch-up time. Press **c**, Enter or reopen the panel to refresh it. Running means the event stream is active; individual sandbox readiness is shown separately. Reconnecting includes the latest failure reason. The worker lock detects exits even if the process could not save its final status. An older active worker without status reporting shows **UNKNOWN** until restarted. Foreground watchers do not change the background worker indicator.
+
+Registration issues also appear as Herdr notifications.
+The same warning is shown once until its details change or the sandbox becomes ready again; failed notification delivery is retried.
+If registration fails because the guest server is not ready, the plugin aligns the user-local guest executable with the local CLI and requests a live handoff that preserves panes.
+A failed handoff is reported; there is no stop/restart fallback.
+An unresolved registration is retried automatically only after a successful catalog read confirms that no matching machine exists.
+Existing matching profiles still require explicit adoption.
 
 The status panel separates the last sandbox observation from connection and installation results. Old results are marked stale. **Retry Herdr preparation** lets you choose a sandbox from a numbered list and retries it without waiting for the automatic retry cooldown; **Check again** remains observational.
 

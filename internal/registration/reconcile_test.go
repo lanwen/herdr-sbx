@@ -182,3 +182,80 @@ func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) 
 func remoteHerdrStatusShell() string {
 	return "if command -v herdr >/dev/null 2>&1; then printf '" + remoteHerdrOnPath + "\\n'; herdr --version; elif [ -x \"$HOME/.local/bin/herdr\" ]; then printf '" + remoteHerdrFallback + "\\n'; \"$HOME/.local/bin/herdr\" --version; elif [ -e \"$HOME/.local/bin/herdr\" ] || [ -L \"$HOME/.local/bin/herdr\" ]; then printf '" + remoteHerdrConflict + "\\n'; else printf '" + missingRemoteHerdr + "\\n'; fi"
 }
+
+func TestReconcileRetriesPendingRegistrationWhenCatalogIsEmpty(t *testing.T) {
+	fixture := newRegistrationFixture(t, `[{"uuid":"sandbox-1","name":"demo","status":"running"}]`)
+	scope := store.ScopeID("/tmp/test-sandboxd.sock")
+	if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {{SandboxID: "sandbox-1", Label: "sbx · demo", Target: "demo.sbx", Pending: true, ProjectWorkspacePending: "/workspace/demo"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	adds, lists := 0, 0
+	handedOff := false
+	fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
+		joined := strings.Join(command.Args, " ")
+		switch command.Name + " " + joined {
+		case "herdr --version":
+			return "herdr 0.9.1\n", nil
+		case "sbx --version":
+			return "sbx version: 0.45.1\n", nil
+		case "ssh -V":
+			return "OpenSSH_9.9\n", nil
+		case "sbx daemon status --help", "sbx ls --help":
+			return "--json\n", nil
+		case "sbx daemon status --json":
+			return `{"status":"running","socket":"/tmp/test-sandboxd.sock"}`, nil
+		case "sbx diagnose --json":
+			return `{"checks":[{"name":"Authentication","status":"pass"}]}`, nil
+		case "ssh -G herdr-sandbox-probe.sbx":
+			return "proxycommand sbx ssh proxy %n\n", nil
+		case "ssh -o BatchMode=yes -o ConnectTimeout=8 demo.sbx " + remoteHerdrStatusShell():
+			return remoteHerdrOnPath + "\nherdr 0.9.1\n", nil
+		case "herdr machine list --json":
+			lists++
+			if adds == 0 {
+				return `[]`, nil
+			}
+			return `[{"profile_id":"machine-1","label":"sbx · demo","ssh_target":"demo.sbx","remote_session":"default"}]`, nil
+		case "herdr machine add --label sbx · demo demo.sbx":
+			adds++
+			return "Saved SSH machine machine-1. Remote server is ready.\n", nil
+		case "herdr --machine machine-1 pane list":
+			return `[{"workspace_id":"w1","cwd":"/workspace/demo"}]`, nil
+		case "herdr --machine machine-1 status server":
+			return "running\n", nil
+		default:
+			if command.Name == "ssh" && strings.HasSuffix(joined, "status server --json") {
+				if !handedOff {
+					return `{"running":true,"version":"0.9.4"}`, nil
+				}
+				return `{"running":true,"version":"0.9.1"}`, nil
+			}
+			if command.Name == "ssh" && strings.Contains(joined, "server live-handoff") {
+				handedOff = true
+				return "done", nil
+			}
+			if command.Name == "ssh" && strings.Contains(joined, "HERDR_STARTUP_CWD=") {
+				if !handedOff {
+					t.Fatal("queried project panes before version alignment")
+				}
+				return `[{"workspace_id":"w1","cwd":"/workspace/demo"}]`, nil
+			}
+			return "", fmt.Errorf("unexpected command: %s %s", command.Name, joined)
+		}
+	}
+	fixture.rebuildClients()
+
+	for range 2 {
+		if err := fixture.service.Reconcile(io.Discard); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state, err := store.LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := state.Scopes[store.ScopeID("/tmp/test-sandboxd.sock")]
+	if adds != 1 || lists < 3 || len(items) != 1 || items[0].ProfileID != "machine-1" || items[0].Pending {
+		t.Fatalf("adds=%d lists=%d state=%#v", adds, lists, items)
+	}
+}

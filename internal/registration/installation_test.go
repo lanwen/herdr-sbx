@@ -171,6 +171,9 @@ func TestOrdinaryPreparationNeverTouchesSandboxPolicy(t *testing.T) {
 	policy := &policyFixture{}
 	fixture.transport = policy
 	fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
+		if command.Name == "herdr" && strings.Join(command.Args, " ") == "--version" {
+			return "herdr 0.9.3", nil
+		}
 		if command.Name == "ssh" && len(command.Args) > 0 && command.Args[len(command.Args)-1] == "uname -sm" {
 			return "Linux x86_64", nil
 		}
