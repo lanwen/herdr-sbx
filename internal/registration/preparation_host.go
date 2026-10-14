@@ -22,12 +22,27 @@ const maxHerdrDownload = 256 << 20
 
 // A transport seam lets tests serve the official URLs without external access.
 type herdrRelease struct {
-	Version string            `json:"version"`
-	Assets  map[string]string `json:"assets"`
-	SHA256  map[string]string `json:"sha256"`
+	Version  string                  `json:"version"`
+	Assets   map[string]string       `json:"assets"`
+	SHA256   map[string]string       `json:"sha256"`
+	Releases map[string]herdrRelease `json:"releases"`
 }
 
 func (s *Service) prepareFromHost(ctx context.Context, target string, current func() bool, progress func(string)) (string, error) {
+	local, err := s.herdr.Version(ctx)
+	if err != nil {
+		return "", fmt.Errorf("read local Herdr version: %w", err)
+	}
+	wanted := version.Parse(local)
+	if strings.TrimSpace(local) != "herdr "+wanted || wanted == "" {
+		return "", fmt.Errorf("local Herdr must report an exact stable release version")
+	}
+	return s.prepareHostVersion(ctx, target, wanted, "", current, progress)
+}
+
+// An expected old version permits atomic replacement of only the user-local
+// executable we just inspected. Other paths and symlinks are left untouched.
+func (s *Service) prepareHostVersion(ctx context.Context, target, wanted, old string, current func() bool, progress func(string)) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	check := func() error {
@@ -87,6 +102,14 @@ func (s *Service) prepareFromHost(ctx context.Context, target string, current fu
 	if err := json.Unmarshal(data, &release); err != nil {
 		return "", fmt.Errorf("invalid release manifest: %w", err)
 	}
+	if release.Version != wanted {
+		archived, ok := release.Releases[wanted]
+		if !ok {
+			return "", fmt.Errorf("release manifest has no verified assets for local Herdr %s", wanted)
+		}
+		release = archived
+		release.Version = wanted
+	}
 	if version.Parse(release.Version) != release.Version || version.Compare(release.Version, minHerdrVersion) < 0 {
 		return "", fmt.Errorf("release manifest has an incompatible version")
 	}
@@ -133,7 +156,7 @@ func (s *Service) prepareFromHost(ctx context.Context, target string, current fu
 	if progress != nil {
 		progress("Copying verified Herdr into the sandbox over SSH.")
 	}
-	if err := s.streamHerdr(ctx, target, file, checksum, release.Version); err != nil {
+	if err := s.streamHerdrReplacing(ctx, target, file, checksum, release.Version, old); err != nil {
 		return "", err
 	}
 	if err := check(); err != nil {
@@ -166,9 +189,18 @@ func releaseGet(ctx context.Context, client *http.Client, address string) (io.Re
 }
 
 func (s *Service) streamHerdr(ctx context.Context, target string, binary io.Reader, checksum, version string) error {
+	return s.streamHerdrReplacing(ctx, target, binary, checksum, version, "")
+}
+
+func (s *Service) streamHerdrReplacing(ctx context.Context, target string, binary io.Reader, checksum, version, old string) error {
+	script := transferredInstallCommand(checksum, version)
+	if old != "" {
+		script = strings.Replace(script, `[ ! -e "$HOME/.local/bin/herdr" ] && [ ! -L "$HOME/.local/bin/herdr" ]; ln -T "$stage/herdr" "$HOME/.local/bin/herdr"`,
+			`[ ! -L "$HOME/.local/bin/herdr" ]; [ "$(command -v herdr || printf '%s' "$HOME/.local/bin/herdr")" = "$HOME/.local/bin/herdr" ]; [ "$("$HOME/.local/bin/herdr" --version)" = 'herdr `+old+`' ]; mv -f "$stage/herdr" "$HOME/.local/bin/herdr"`, 1)
+	}
 	output, err := s.runner.CombinedOutput(ctx, process.Command{
 		Name: "ssh", Stdin: binary,
-		Args: []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=8", target, transferredInstallCommand(checksum, version)},
+		Args: []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=8", target, script},
 	})
 	if err != nil {
 		return fmt.Errorf("SSH Herdr transfer: %s", commandError(err, string(output)))

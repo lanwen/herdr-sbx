@@ -158,9 +158,33 @@ func (s *Service) reconcileWithInstallation(ctx context.Context, out io.Writer, 
 			continue
 		}
 		if known && item.Pending {
-			results = append(results, result{sb.Name, "ownership conflict", "previous registration is unresolved; inspect the machine catalog before retrying"})
-			resultSandboxes[sb.Name] = sb
-			continue
+			// The catalog was read successfully under the registration lock.
+			// Retry only when neither the recorded nor current identity collides.
+			collision := false
+			for _, machine := range machines {
+				if machine.Label == item.Label || machine.Target == item.Target || machine.Label == sandboxMachineLabel(sb.Name) || machine.Target == sb.Name+".sbx" {
+					collision = true
+				}
+			}
+			if collision {
+				results = append(results, result{sb.Name, "ownership conflict", "previous registration is unresolved; inspect the machine catalog before retrying"})
+				resultSandboxes[sb.Name] = sb
+				continue
+			}
+			// A previous attempt may have started the project server before
+			// machine add rejected its version. Align before querying its panes.
+			if err := s.recoverGuestVersion(ctx, sb.Name+".sbx", registrationCurrent, nil, false); err != nil {
+				results = append(results, result{sb.Name, "setup required", "automatic Herdr alignment failed: " + err.Error()})
+				resultSandboxes[sb.Name] = sb
+				continue
+			}
+			item.Pending = false
+			if err := replaceTracked(&st, p.Scope, item); err != nil {
+				return err
+			}
+			if err := store.SaveState(st); err != nil {
+				return err
+			}
 		}
 		var progressStatusErr error
 		outcome, saved := s.registerWithInstallation(ctx, p.Scope, &st, machines, sb, registrationCurrent, installation, func(message string) {
@@ -186,6 +210,9 @@ func (s *Service) reconcileWithInstallation(ctx context.Context, out io.Writer, 
 			if err := store.RecordSandboxStatus(p.Scope, sb, item.Status, item.Detail, false); err != nil {
 				fmt.Fprintln(out, "Sandbox status was not saved:", err)
 			}
+		}
+		if sb, ok := resultSandboxes[item.Name]; ok {
+			s.notifyResult(ctx, out, p.Scope, sb.ID, item)
 		}
 		fmt.Fprintf(out, "%-24s %-18s %s\n", item.Name, strings.ToUpper(item.Status), item.Detail)
 	}
@@ -280,6 +307,12 @@ func (s *Service) registerWithInstallation(ctx context.Context, scope string, st
 
 	profileID, addOutput, addErr := s.herdr.AddMachine(ctx, pending.Label, target)
 	if addErr != nil {
+		if strings.Contains(addOutput, "remote server is not ready for saved machines") {
+			if err := s.recoverGuestVersion(ctx, target, current, progress, true); err != nil {
+				return result{sb.Name, "setup required", "automatic Herdr alignment failed: " + err.Error()}, &pending
+			}
+			return result{sb.Name, "retrying", "Herdr aligned; registration will retry on the next scan"}, &pending
+		}
 		if deterministicAddFailure(addOutput) {
 			if err := removeTracked(st, scope, pending.SandboxID); err != nil {
 				return result{sb.Name, "ownership conflict", "machine add failed and its intent could not be cleared"}, &pending

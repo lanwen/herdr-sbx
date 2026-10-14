@@ -80,7 +80,7 @@ func runPreparationInterruptHelper(t *testing.T, action string) {
 		joined := command.Name + " " + strings.Join(command.Args, " ")
 		switch joined {
 		case "herdr --version":
-			return "herdr 0.9.1\n", nil
+			return "herdr 0.9.3\n", nil
 		case "sbx --version":
 			return "sbx 0.45.1\n", nil
 		case "ssh -V":

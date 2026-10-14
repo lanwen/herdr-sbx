@@ -25,7 +25,7 @@ func (f releaseTestTransport) RoundTrip(request *http.Request) (*http.Response, 
 }
 
 func TestHostPreparation(t *testing.T) {
-	for _, scenario := range []string{"success amd64", "success arm64", "corrupt download", "host denied", "bad asset", "incompatible manifest", "transfer corruption", "broken executable", "transfer failure", "replacement", "canceled", "existing file", "existing symlink"} {
+	for _, scenario := range []string{"success amd64", "success arm64", "success archived", "missing archived", "corrupt download", "host denied", "bad asset", "incompatible manifest", "transfer corruption", "broken executable", "transfer failure", "replacement", "canceled", "existing file", "existing symlink"} {
 		t.Run(scenario, func(t *testing.T) {
 			home, tools := t.TempDir(), t.TempDir()
 			ln := "/bin/ln"
@@ -80,7 +80,16 @@ func TestHostPreparation(t *testing.T) {
 					if scenario == "bad asset" {
 						asset = "https://example.org/herdr"
 					}
-					manifest, _ := json.Marshal(herdrRelease{Version: version, Assets: map[string]string{platform: asset}, SHA256: map[string]string{platform: digest}})
+					release := herdrRelease{Version: version, Assets: map[string]string{platform: asset}, SHA256: map[string]string{platform: digest}}
+					if scenario == "success archived" || scenario == "missing archived" {
+						previous := release
+						release.Version = "0.9.4"
+						release.Assets = map[string]string{platform: "https://github.com/herdrdev/herdr/releases/download/v0.9.4/herdr-" + platform}
+						if scenario == "success archived" {
+							release.Releases = map[string]herdrRelease{"0.9.3": previous}
+						}
+					}
+					manifest, _ := json.Marshal(release)
 					contents = manifest
 				case "https://github.com/herdrdev/herdr/releases/download/v0.9.3/herdr-" + platform:
 					downloads++
@@ -103,6 +112,9 @@ func TestHostPreparation(t *testing.T) {
 				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(contents))), Request: request}, nil
 			})
 			fixture.runner.Execute = func(ctx context.Context, command process.Command) (string, error) {
+				if command.Name == "herdr" && strings.Join(command.Args, " ") == "--version" {
+					return "herdr 0.9.3", nil
+				}
 				if command.Name != "ssh" || len(command.Args) == 0 {
 					return "", fmt.Errorf("unexpected command %s %v", command.Name, command.Args)
 				}
@@ -167,7 +179,7 @@ func TestHostPreparation(t *testing.T) {
 					t.Fatal("transferred unverified/stale binary")
 				}
 			}
-			if scenario == "bad asset" || scenario == "incompatible manifest" {
+			if scenario == "bad asset" || scenario == "incompatible manifest" || scenario == "missing archived" {
 				if downloads != 0 {
 					t.Fatal("downloaded invalid release")
 				}
@@ -188,7 +200,7 @@ func TestMissingRemoteHerdrIsPreparedBeforeRegistration(t *testing.T) {
 		joined := strings.Join(command.Args, " ")
 		switch command.Name + " " + joined {
 		case "herdr --version":
-			return "herdr 0.9.1\n", nil
+			return "herdr 0.9.3\n", nil
 		case "sbx --version":
 			return "sbx version: 0.45.1\n", nil
 		case "ssh -V":
@@ -326,5 +338,59 @@ func TestRemoteInstallerShellPublishesOnlyAfterSuccess(t *testing.T) {
 	}
 	if strings.Contains(command, "ln -s") || strings.Contains(command, "curl --insecure") {
 		t.Fatalf("unsafe remote installer: %s", command)
+	}
+}
+
+// Execute replacement scripts against an isolated HOME, including a concurrent
+// version change and a PATH installation outside the plugin's install directory.
+func TestHostTransferReplacement(t *testing.T) {
+	for _, scenario := range []string{"replace", "changed", "symlink", "other path"} {
+		t.Run(scenario, func(t *testing.T) {
+			home := t.TempDir()
+			destination := filepath.Join(home, ".local/bin/herdr")
+			if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
+				t.Fatal(err)
+			}
+			original := "#!/bin/sh\necho herdr 0.9.4\n"
+			if scenario == "changed" {
+				original = "#!/bin/sh\necho herdr 0.9.5\n"
+			}
+			if err := os.WriteFile(destination, []byte(original), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "symlink" {
+				if err := os.Rename(destination, destination+"-real"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(destination+"-real", destination); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tools := filepath.Dir(destination)
+			if scenario == "other path" {
+				tools = t.TempDir()
+				if err := os.WriteFile(filepath.Join(tools, "herdr"), []byte(original), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runner := process.Runner{Execute: func(ctx context.Context, command process.Command) (string, error) {
+				return runInstallerCommand(ctx, command.Args[len(command.Args)-1], command.Stdin, home, tools)
+			}}
+			service := &Service{runner: runner}
+			binary := "#!/bin/sh\necho herdr 0.9.3\n"
+			checksum := fmt.Sprintf("%x", sha256.Sum256([]byte(binary)))
+			err := service.streamHerdrReplacing(context.Background(), "fixture.sbx", strings.NewReader(binary), checksum, "0.9.3", "0.9.4")
+			contents, readErr := os.ReadFile(destination)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if scenario == "replace" {
+				if err != nil || string(contents) != binary {
+					t.Fatalf("replacement: %q %v", contents, err)
+				}
+			} else if err == nil || string(contents) != original {
+				t.Fatalf("changed protected executable: %q %v", contents, err)
+			}
+		})
 	}
 }
