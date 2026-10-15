@@ -14,14 +14,13 @@ var savedMachine = regexp.MustCompile(`(?m)^Saved SSH machine ([^[:space:]]+)\. 
 
 // Machine is a catalog entry returned by Herdr.
 type Machine struct {
-	ID      string
-	Label   string
-	Target  string
-	Session string
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Target  string `json:"target"`
+	Session string `json:"session"`
 }
 
-// ListMachines reads the local machine catalog and accepts supported JSON
-// result envelopes.
+// ListMachines reads the local machine catalog.
 func (c *Client) ListMachines(ctx context.Context) ([]Machine, string, error) {
 	output, err := c.command(ctx, 5*time.Second, true, "machine", "list", "--json")
 	if err != nil {
@@ -61,53 +60,19 @@ func (c *Client) MachineStatus(ctx context.Context, id string) (string, error) {
 }
 
 func parseMachines(raw string) ([]Machine, error) {
-	items, err := objects(raw, "machines", "profiles")
-	if err != nil {
-		return nil, fmt.Errorf("read Herdr machine list: %w", err)
+	var machines []Machine
+	if err := decodeJSON(raw, &machines); err != nil {
+		return nil, fmt.Errorf("read herdr machine list: %w", err)
 	}
-	machines := make([]Machine, 0, len(items))
-	for _, item := range items {
-		machines = append(machines, Machine{
-			ID:      first(item, "profile_id", "id"),
-			Label:   first(item, "label", "name"),
-			Target:  first(item, "ssh_target", "target", "host"),
-			Session: first(item, "remote_session", "session"),
-		})
+	if machines == nil {
+		return nil, errors.New("read herdr machine list: expected a list")
+	}
+	for _, machine := range machines {
+		if strings.TrimSpace(machine.ID) == "" {
+			return nil, errors.New("read herdr machine list: entry is missing its ID")
+		}
 	}
 	return machines, nil
-}
-
-func objects(raw string, keys ...string) ([]map[string]any, error) {
-	var value any
-	if err := decodeJSON(raw, &value); err != nil {
-		return nil, err
-	}
-	if object, ok := value.(map[string]any); ok {
-		if nested, ok := object["result"]; ok {
-			value = nested
-		}
-	}
-	if object, ok := value.(map[string]any); ok {
-		for _, key := range keys {
-			if nested, ok := object[key]; ok {
-				value = nested
-				break
-			}
-		}
-	}
-	array, ok := value.([]any)
-	if !ok {
-		return nil, errors.New("expected a list")
-	}
-	result := make([]map[string]any, 0, len(array))
-	for _, item := range array {
-		object, ok := item.(map[string]any)
-		if !ok {
-			return nil, errors.New("list contains a non-object")
-		}
-		result = append(result, object)
-	}
-	return result, nil
 }
 
 func decodeJSON(raw string, destination any) error {
@@ -116,15 +81,6 @@ func decodeJSON(raw string, destination any) error {
 		return errors.New("no JSON value")
 	}
 	return json.NewDecoder(strings.NewReader(raw[start:])).Decode(destination)
-}
-
-func first(item map[string]any, keys ...string) string {
-	for _, key := range keys {
-		if value := text(item[key]); value != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func text(value any) string {

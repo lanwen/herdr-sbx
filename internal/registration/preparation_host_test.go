@@ -201,7 +201,7 @@ func TestMissingRemoteHerdrIsPreparedBeforeRegistration(t *testing.T) {
 		switch command.Name + " " + joined {
 		case "herdr --version":
 			return "herdr 0.9.3\n", nil
-		case "sbx --version":
+		case "sbx version":
 			return "sbx version: 0.45.1\n", nil
 		case "ssh -V":
 			return "OpenSSH_9.9\n", nil
@@ -226,7 +226,7 @@ func TestMissingRemoteHerdrIsPreparedBeforeRegistration(t *testing.T) {
 			if !added {
 				return `[]`, nil
 			}
-			return `[{"profile_id":"machine-1","label":"sbx · demo","ssh_target":"demo.sbx","remote_session":"default"}]`, nil
+			return `[{"id":"machine-1","label":"sbx · demo","target":"demo.sbx","session":"default"}]`, nil
 		case "herdr machine add --label sbx · demo demo.sbx":
 			events = append(events, "add")
 			added = true

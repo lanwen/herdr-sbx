@@ -18,15 +18,9 @@ func (c *Client) GuestServerRunning(ctx context.Context, target string) (bool, e
 	}
 	var response struct {
 		Running *bool `json:"running"`
-		Result  struct {
-			Running *bool `json:"running"`
-		} `json:"result"`
 	}
 	if err := decodeJSON(output, &response); err != nil {
 		return false, err
-	}
-	if response.Result.Running != nil {
-		return *response.Result.Running, nil
 	}
 	if response.Running != nil {
 		return *response.Running, nil
@@ -38,8 +32,8 @@ const guestExecutable = `set -eu; if command -v herdr >/dev/null 2>&1; then h=$(
 
 // StartProjectServer seeds the first workspace before machine add attaches.
 // Existing/restored sessions are never cleared. Verify the resulting pane so
-// older guests that ignore the startup directory cannot silently add a home
-// workspace followed by a second project workspace.
+// unexpected startup behavior cannot silently add a home workspace followed
+// by a second project workspace.
 func (c *Client) StartProjectServer(ctx context.Context, target, cwd string) error {
 	script := guestExecutable + `HERDR_STARTUP_CWD=` + quoteShell(cwd) + ` nohup "$h" --session default server </dev/null >/dev/null 2>&1 &
 for attempt in 1 2 3 4 5 6 7 8 9 10; do

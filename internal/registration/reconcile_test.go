@@ -20,13 +20,13 @@ import (
 
 func TestReconcilePersistsOnlyVerifiedMachineAndDoesNotAddTwice(t *testing.T) {
 	fixture := newRegistrationFixture(t, `[{"uuid":"sandbox-1","name":"demo","status":"running"}]`)
-	adds, lists := 0, 0
+	adds, lists, readinessChecks := 0, 0, 0
 	fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
 		joined := strings.Join(command.Args, " ")
 		switch command.Name + " " + joined {
 		case "herdr --version":
 			return "herdr 0.9.1\n", nil
-		case "sbx --version":
+		case "sbx version":
 			return "sbx version: 0.45.1\n", nil
 		case "ssh -V":
 			return "OpenSSH_9.9\n", nil
@@ -45,12 +45,13 @@ func TestReconcilePersistsOnlyVerifiedMachineAndDoesNotAddTwice(t *testing.T) {
 			if adds == 0 {
 				return `[]`, nil
 			}
-			return `[{"profile_id":"machine-1","label":"sbx · demo","ssh_target":"demo.sbx","remote_session":"default"}]`, nil
+			return `[{"id":"machine-1","label":"sbx · demo","target":"demo.sbx","session":"default"}]`, nil
 		case "herdr machine add --label sbx · demo demo.sbx":
 			adds++
 			return "Saved SSH machine machine-1. Remote server is ready.\n", nil
 		case "herdr --machine machine-1 status server":
-			return "running\n", nil
+			readinessChecks++
+			return "workspace directory no longer exists", errors.New("connection aborted")
 		default:
 			return "", fmt.Errorf("unexpected command: %s %s", command.Name, joined)
 		}
@@ -61,6 +62,9 @@ func TestReconcilePersistsOnlyVerifiedMachineAndDoesNotAddTwice(t *testing.T) {
 		if err := fixture.service.Reconcile(io.Discard); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if readinessChecks != 0 {
+		t.Fatalf("machine add already confirmed readiness; post-add checks=%d", readinessChecks)
 	}
 	state, err := store.LoadState()
 	if err != nil {
@@ -78,8 +82,14 @@ func TestManualMachineIsNotAdopted(t *testing.T) {
 	outcome, saved := fixture.service.registerPrepared("scope", &state,
 		[]herdr.Machine{{ID: "manual", Label: "demo", Target: "demo.sbx", Session: "default"}},
 		sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"})
-	if outcome.Status != "ownership conflict" || saved != nil {
+	if outcome.Status != "ownership conflict" || outcome.Detail != "This sandbox is already a Herdr machine. It was added outside Herdr-sbx." || saved != nil {
 		t.Fatalf("outcome=%#v saved=%#v", outcome, saved)
+	}
+	outcome, saved = fixture.service.registerPrepared("scope", &state,
+		[]herdr.Machine{{ID: "other", Label: sandboxMachineLabel("demo"), Target: "other.sbx", Session: "default"}},
+		sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"})
+	if outcome.Status != "ownership conflict" || outcome.Detail != "Another Herdr machine already uses this sandbox's name. Review that machine in Herdr." || saved != nil {
+		t.Fatalf("name collision outcome=%#v saved=%#v", outcome, saved)
 	}
 }
 
@@ -90,7 +100,7 @@ func TestUncertainMachineAddRemainsPendingForManualInspection(t *testing.T) {
 		switch command.Name + " " + joined {
 		case "herdr --version":
 			return "herdr 0.9.1", nil
-		case "sbx --version":
+		case "sbx version":
 			return "sbx 0.45.1", nil
 		case "ssh -V":
 			return "OpenSSH", nil
@@ -196,7 +206,7 @@ func TestReconcileRetriesPendingRegistrationWhenCatalogIsEmpty(t *testing.T) {
 		switch command.Name + " " + joined {
 		case "herdr --version":
 			return "herdr 0.9.1\n", nil
-		case "sbx --version":
+		case "sbx version":
 			return "sbx version: 0.45.1\n", nil
 		case "ssh -V":
 			return "OpenSSH_9.9\n", nil
@@ -215,12 +225,12 @@ func TestReconcileRetriesPendingRegistrationWhenCatalogIsEmpty(t *testing.T) {
 			if adds == 0 {
 				return `[]`, nil
 			}
-			return `[{"profile_id":"machine-1","label":"sbx · demo","ssh_target":"demo.sbx","remote_session":"default"}]`, nil
+			return `[{"id":"machine-1","label":"sbx · demo","target":"demo.sbx","session":"default"}]`, nil
 		case "herdr machine add --label sbx · demo demo.sbx":
 			adds++
 			return "Saved SSH machine machine-1. Remote server is ready.\n", nil
 		case "herdr --machine machine-1 pane list":
-			return `[{"workspace_id":"w1","cwd":"/workspace/demo"}]`, nil
+			return `{"result":{"panes":[{"workspace_id":"w1","cwd":"/workspace/demo"}]}}`, nil
 		case "herdr --machine machine-1 status server":
 			return "running\n", nil
 		default:
@@ -238,7 +248,7 @@ func TestReconcileRetriesPendingRegistrationWhenCatalogIsEmpty(t *testing.T) {
 				if !handedOff {
 					t.Fatal("queried project panes before version alignment")
 				}
-				return `[{"workspace_id":"w1","cwd":"/workspace/demo"}]`, nil
+				return `{"result":{"panes":[{"workspace_id":"w1","cwd":"/workspace/demo"}]}}`, nil
 			}
 			return "", fmt.Errorf("unexpected command: %s %s", command.Name, joined)
 		}

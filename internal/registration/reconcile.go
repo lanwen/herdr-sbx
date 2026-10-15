@@ -20,9 +20,11 @@ import (
 const minHerdrVersion = herdr.MinimumVersion
 
 type result struct {
-	Name   string
-	Status string
-	Detail string
+	Name           string
+	Status         string
+	Detail         string
+	DiagnosticCode string
+	PluginFailures []store.PluginFailure
 }
 
 func ownedMachineByID(machines []herdr.Machine, id, label, target string) *herdr.Machine {
@@ -122,6 +124,14 @@ func (s *Service) reconcileWithInstallation(ctx context.Context, out io.Writer, 
 	if err != nil {
 		return err
 	}
+	rows, err := observeManagement(p.Scope, sandboxes, machines, st)
+	if err != nil {
+		return err
+	}
+	management := map[string]store.ManagementChoice{}
+	for _, row := range rows {
+		management[row.Sandbox.ID] = row.Management
+	}
 	trackedByID := map[string]store.Tracked{}
 	for _, item := range st.Scopes[p.Scope] {
 		trackedByID[item.SandboxID] = item
@@ -130,6 +140,13 @@ func (s *Service) reconcileWithInstallation(ctx context.Context, out io.Writer, 
 	results := []result{}
 	resultSandboxes := map[string]sbx.Sandbox{}
 	for _, sb := range sandboxes {
+		if management[sb.ID] != store.Watched {
+			if management[sb.ID] == store.Unmanaged && (match == nil || match(sb)) {
+				results = append(results, result{Name: sb.Name, Status: "ownership conflict", Detail: "This sandbox is already a Herdr machine. It was added outside Herdr-sbx."})
+				resultSandboxes[sb.Name] = sb
+			}
+			continue
+		}
 		if !strings.EqualFold(sb.Status, "running") {
 			continue
 		}
@@ -137,7 +154,7 @@ func (s *Service) reconcileWithInstallation(ctx context.Context, out io.Writer, 
 			continue
 		}
 		if sb.ID == "" || sb.Name == "" {
-			results = append(results, result{sb.Name, "failed", "sandbox has no stable identity"})
+			results = append(results, result{Name: sb.Name, Status: "failed", Detail: "sandbox has no stable identity"})
 			resultSandboxes[sb.Name] = sb
 			continue
 		}
@@ -147,13 +164,13 @@ func (s *Service) reconcileWithInstallation(ctx context.Context, out io.Writer, 
 		}
 		item, known := trackedByID[sb.ID]
 		if known && item.ProfileID != "" {
-			labelErr := s.migrateMachineLabel(ctx, p.Scope, &st, machines, sb, &item, registrationCurrent)
+			labelErr := s.recoverMachineLabel(ctx, p.Scope, &st, machines, sb, &item, registrationCurrent)
 			if labelErr == nil {
 				results = append(results, s.projectReadiness(ctx, p.Scope, &st, sb, &item, true, registrationCurrent))
 				resultSandboxes[sb.Name] = sb
 				continue
 			}
-			results = append(results, result{sb.Name, "ownership conflict", "saved machine label was not updated: " + labelErr.Error()})
+			results = append(results, result{Name: sb.Name, Status: "ownership conflict", Detail: "saved machine label was not updated: " + labelErr.Error()})
 			resultSandboxes[sb.Name] = sb
 			continue
 		}
@@ -167,14 +184,14 @@ func (s *Service) reconcileWithInstallation(ctx context.Context, out io.Writer, 
 				}
 			}
 			if collision {
-				results = append(results, result{sb.Name, "ownership conflict", "previous registration is unresolved; inspect the machine catalog before retrying"})
+				results = append(results, result{Name: sb.Name, Status: "ownership conflict", Detail: "previous registration is unresolved; inspect the machine catalog before retrying"})
 				resultSandboxes[sb.Name] = sb
 				continue
 			}
 			// A previous attempt may have started the project server before
 			// machine add rejected its version. Align before querying its panes.
-			if err := s.recoverGuestVersion(ctx, sb.Name+".sbx", registrationCurrent, nil, false); err != nil {
-				results = append(results, result{sb.Name, "setup required", "automatic Herdr alignment failed: " + err.Error()})
+			if err := s.recoverGuestVersion(ctx, p.Scope, sb, registrationCurrent, nil, false); err != nil {
+				results = append(results, result{Name: sb.Name, Status: "setup required", Detail: "automatic Herdr alignment failed: " + err.Error()})
 				resultSandboxes[sb.Name] = sb
 				continue
 			}
@@ -196,7 +213,7 @@ func (s *Service) reconcileWithInstallation(ctx context.Context, out io.Writer, 
 		if progressStatusErr != nil {
 			fmt.Fprintln(out, "Sandbox status was not saved:", progressStatusErr)
 		}
-		results = append(results, result{sb.Name, outcome.Status, outcome.Detail})
+		results = append(results, outcome)
 		resultSandboxes[sb.Name] = sb
 		if saved != nil {
 			trackedByID[sb.ID] = *saved
@@ -212,7 +229,11 @@ func (s *Service) reconcileWithInstallation(ctx context.Context, out io.Writer, 
 			}
 		}
 		if sb, ok := resultSandboxes[item.Name]; ok {
-			s.notifyResult(ctx, out, p.Scope, sb.ID, item)
+			if err := saveResultError(store.StatusKey(p.Scope, sb.ID), item); err != nil {
+				fmt.Fprintln(out, "Sandbox diagnostic was not saved:", err)
+			} else {
+				s.notifyResult(ctx, out, p.Scope, sb.ID, item)
+			}
 		}
 		fmt.Fprintf(out, "%-24s %-18s %s\n", item.Name, strings.ToUpper(item.Status), item.Detail)
 	}
@@ -234,118 +255,121 @@ func (s *Service) registerPreparedWithProgress(ctx context.Context, scope string
 func (s *Service) registerWithInstallation(ctx context.Context, scope string, st *store.State, machines []herdr.Machine, sb sbx.Sandbox, current func() bool, installation installationOptions, progress func(string)) (result, *store.Tracked) {
 	target := sb.Name + ".sbx"
 	if current != nil && !current() {
-		return result{sb.Name, "stale", "sandbox changed before registration"}, nil
+		return result{Name: sb.Name, Status: "stale", Detail: "sandbox changed before registration"}, nil
 	}
 	for _, m := range machines {
 		if m.Label == sandboxMachineLabel(sb.Name) || m.Target == target {
-			return result{sb.Name, "ownership conflict", "a manual or untracked machine uses this label or target; choose a in the panel to adopt a matching machine"}, nil
+			if m.Target == target {
+				return result{Name: sb.Name, Status: "ownership conflict", Detail: "This sandbox is already a Herdr machine. It was added outside Herdr-sbx."}, nil
+			}
+			return result{Name: sb.Name, Status: "ownership conflict", Detail: "Another Herdr machine already uses this sandbox's name. Review that machine in Herdr."}, nil
 		}
 	}
 
 	remote, err := s.remoteHerdrStatus(ctx, target)
 	if err != nil {
-		return result{sb.Name, "setup required", "remote Herdr is unavailable: " + err.Error()}, nil
+		return result{Name: sb.Name, Status: "setup required", Detail: "remote Herdr is unavailable: " + err.Error()}, nil
 	}
 	versionOutput := remote.Version
 	if remote.Missing {
 		preparationKey := scope + "/" + sb.ID
 		allowed, cooldownErr := store.PreparationAllowed(preparationKey)
 		if cooldownErr != nil {
-			return result{sb.Name, "failed", "preparation status is unavailable: " + cooldownErr.Error()}, nil
+			return result{Name: sb.Name, Status: "failed", Detail: "preparation status is unavailable: " + cooldownErr.Error()}, nil
 		}
 		if !allowed {
 			detail, err := store.PreparationCooldownDetail(preparationKey)
 			if err != nil {
-				return result{sb.Name, "failed", "cannot read last preparation failure: " + err.Error()}, nil
+				return result{Name: sb.Name, Status: "failed", Detail: "cannot read last preparation failure: " + err.Error()}, nil
 			}
-			return result{sb.Name, "setup required", detail}, nil
+			return result{Name: sb.Name, Status: "setup required", Detail: detail}, nil
 		}
 		versionOutput, err = s.installHerdr(ctx, installationRequest{Scope: scope, Socket: installation.Socket, Sandbox: sb, Authorized: installation.Scope == scope && installation.AuthorizedID == sb.ID, Current: current, Progress: progress})
 		if err != nil {
 			if cooldownErr := store.NotePreparationFailure(preparationKey, err.Error(), s.preparationRetryDelay); cooldownErr != nil {
-				return result{sb.Name, "failed", "preparation failed and its retry state was not saved: " + cooldownErr.Error()}, nil
+				return result{Name: sb.Name, Status: "failed", Detail: "preparation failed and its retry state was not saved: " + cooldownErr.Error()}, nil
 			}
 			if errors.Is(err, context.Canceled) {
-				return result{sb.Name, "stale", "sandbox changed while Herdr was being prepared"}, nil
+				return result{Name: sb.Name, Status: "stale", Detail: "sandbox changed while Herdr was being prepared"}, nil
 			}
 			var outcome *installationError
 			if errors.As(err, &outcome) {
-				return result{sb.Name, outcome.State, outcome.Detail}, nil
+				return result{Name: sb.Name, Status: outcome.State, Detail: outcome.Detail}, nil
 			}
-			return result{sb.Name, "setup required", "remote Herdr preparation failed: " + err.Error()}, nil
+			return result{Name: sb.Name, Status: "setup required", Detail: "remote Herdr preparation failed: " + err.Error()}, nil
 		}
 		if cooldownErr := store.ClearPreparationFailure(preparationKey); cooldownErr != nil {
-			return result{sb.Name, "failed", "preparation completed but its retry state was not cleared: " + cooldownErr.Error()}, nil
+			return result{Name: sb.Name, Status: "failed", Detail: "preparation completed but its retry state was not cleared: " + cooldownErr.Error()}, nil
 		}
 	} else if remote.Conflict {
-		return result{sb.Name, "setup required", "remote Herdr path exists but is not executable; it was left unchanged"}, nil
+		return result{Name: sb.Name, Status: "setup required", Detail: "remote Herdr path exists but is not executable; it was left unchanged"}, nil
 	}
 	if installedVersion := version.Parse(versionOutput); installedVersion == "" || version.Compare(installedVersion, minHerdrVersion) < 0 {
-		return result{sb.Name, "setup required", "remote Herdr is missing or too old"}, nil
+		return result{Name: sb.Name, Status: "setup required", Detail: "remote Herdr is missing or too old"}, nil
 	}
 	if current != nil && !current() {
-		return result{sb.Name, "stale", "sandbox changed before registration"}, nil
+		return result{Name: sb.Name, Status: "stale", Detail: "sandbox changed before registration"}, nil
 	}
 
 	initialCWD, err := s.prepareInitialProjectWorkspace(ctx, scope, st, sb, current)
 	if err != nil {
-		return result{sb.Name, "workspace setup required", err.Error()}, nil
+		return result{Name: sb.Name, Status: "workspace setup required", Detail: err.Error()}, nil
 	}
 	pending := store.Tracked{SandboxID: sb.ID, Label: sandboxMachineLabel(sb.Name), Target: target, Pending: true, ProjectWorkspacePending: initialCWD}
 	if err := replaceTracked(st, scope, pending); err != nil {
 		st.Scopes[scope] = append(st.Scopes[scope], pending)
 	}
 	if err := store.SaveState(*st); err != nil {
-		return result{sb.Name, "failed", err.Error()}, nil
+		return result{Name: sb.Name, Status: "failed", Detail: err.Error()}, nil
 	}
 	if current != nil && !current() {
 		if err := removeTracked(st, scope, pending.SandboxID); err != nil || store.SaveState(*st) != nil {
-			return result{sb.Name, "ownership conflict", "sandbox changed and registration intent could not be cleared"}, &pending
+			return result{Name: sb.Name, Status: "ownership conflict", Detail: "sandbox changed and registration intent could not be cleared"}, &pending
 		}
-		return result{sb.Name, "stale", "sandbox changed before machine registration"}, nil
+		return result{Name: sb.Name, Status: "stale", Detail: "sandbox changed before machine registration"}, nil
 	}
 
 	profileID, addOutput, addErr := s.herdr.AddMachine(ctx, pending.Label, target)
 	if addErr != nil {
 		if strings.Contains(addOutput, "remote server is not ready for saved machines") {
-			if err := s.recoverGuestVersion(ctx, target, current, progress, true); err != nil {
-				return result{sb.Name, "setup required", "automatic Herdr alignment failed: " + err.Error()}, &pending
+			if err := s.recoverGuestVersion(ctx, scope, sb, current, progress, true); err != nil {
+				return result{Name: sb.Name, Status: "setup required", Detail: "automatic Herdr alignment failed: " + err.Error()}, &pending
 			}
-			return result{sb.Name, "retrying", "Herdr aligned; registration will retry on the next scan"}, &pending
+			return result{Name: sb.Name, Status: "retrying", Detail: "Herdr aligned; registration will retry on the next scan"}, &pending
 		}
 		if deterministicAddFailure(addOutput) {
 			if err := removeTracked(st, scope, pending.SandboxID); err != nil {
-				return result{sb.Name, "ownership conflict", "machine add failed and its intent could not be cleared"}, &pending
+				return result{Name: sb.Name, Status: "ownership conflict", Detail: "machine add failed and its intent could not be cleared"}, &pending
 			}
 			if err := store.SaveState(*st); err != nil {
-				return result{sb.Name, "ownership conflict", "machine add failed and its cleared intent could not be saved"}, &pending
+				return result{Name: sb.Name, Status: "ownership conflict", Detail: "machine add failed and its cleared intent could not be saved"}, &pending
 			}
 			return addFailureResult(sb.Name, addErr, addOutput), nil
 		}
-		return result{sb.Name, "ownership conflict", "registration outcome is uncertain: " + commandError(addErr, addOutput)}, &pending
+		return result{Name: sb.Name, Status: "ownership conflict", Detail: "registration outcome is uncertain: " + commandError(addErr, addOutput)}, &pending
 	}
 
 	if profileID == "" {
-		return result{sb.Name, "ownership conflict", "registration succeeded but did not return a trusted machine ID"}, &pending
+		return result{Name: sb.Name, Status: "ownership conflict", Detail: "registration succeeded but did not return a trusted machine ID"}, &pending
 	}
 	after, _, listErr := s.herdr.ListMachines(ctx)
 	if listErr != nil {
-		return result{sb.Name, "ownership conflict", "registration completed but could not inspect the returned machine ID"}, &pending
+		return result{Name: sb.Name, Status: "ownership conflict", Detail: "registration completed but could not inspect the returned machine ID"}, &pending
 	}
 	if ownedMachineByID(after, profileID, pending.Label, target) == nil {
-		return result{sb.Name, "ownership conflict", "registration did not yield the returned owned machine"}, &pending
+		return result{Name: sb.Name, Status: "ownership conflict", Detail: "registration did not yield the returned owned machine"}, &pending
 	}
 
 	pending.ProfileID = profileID
 	pending.Pending = false
 	if err := replaceTracked(st, scope, pending); err != nil {
-		return result{sb.Name, "ownership conflict", "machine was registered but ownership could not be saved"}, &pending
+		return result{Name: sb.Name, Status: "ownership conflict", Detail: "machine was registered but ownership could not be saved"}, &pending
 	}
 	if err := store.SaveState(*st); err != nil {
-		return result{sb.Name, "ownership conflict", "machine was registered but ownership could not be saved"}, &pending
+		return result{Name: sb.Name, Status: "ownership conflict", Detail: "machine was registered but ownership could not be saved"}, &pending
 	}
 	if current != nil && !current() {
-		return result{sb.Name, "stale", "sandbox changed after machine registration; cleanup is pending"}, &pending
+		return result{Name: sb.Name, Status: "stale", Detail: "sandbox changed after machine registration; cleanup is pending"}, &pending
 	}
 	return s.projectReadiness(ctx, scope, st, sb, &pending, false, current), &pending
 }
@@ -363,27 +387,13 @@ func (s *Service) sandboxRunning(socket string, expected sbx.Sandbox) bool {
 	return false
 }
 
-func (s *Service) readinessResult(ctx context.Context, name, profileID string, alreadyKnown bool, current func() bool) result {
-	statusOutput, err := s.herdr.MachineStatus(ctx, profileID)
-	if err != nil {
-		return result{name, "failed", "saved machine is not ready: " + commandError(err, statusOutput) + ". Retry registration when the remote server is available."}
-	}
-	if current != nil && !current() {
-		return result{name, "stale", "sandbox changed after remote readiness; cleanup is pending"}
-	}
-	if alreadyKnown {
-		return result{name, "ready", "already registered and reachable"}
-	}
-	return result{name, "ready", "registered and reachable"}
-}
-
 func addFailureResult(name string, err error, output string) result {
 	detail := commandError(err, output)
 	lower := strings.ToLower(detail)
 	if strings.Contains(lower, "capacity") || strings.Contains(lower, "catalog full") || strings.Contains(lower, "maximum") || strings.Contains(lower, "limit") {
-		return result{name, "catalog full", "Herdr cannot save another machine: " + detail + ". Remove an unused machine, then retry."}
+		return result{Name: name, Status: "catalog full", Detail: "Herdr cannot save another machine: " + detail + ". Remove an unused machine, then retry."}
 	}
-	return result{name, "failed", "machine add failed: " + detail + ". Retry after correcting the reported problem."}
+	return result{Name: name, Status: "failed", Detail: "machine add failed: " + detail + ". Retry after correcting the reported problem."}
 }
 
 func replaceTracked(st *store.State, scope string, next store.Tracked) error {
@@ -424,6 +434,10 @@ func hasLevel(checks []precheck.Check, name string, expected precheck.Level) boo
 }
 
 func commandError(err error, output string) string {
+	var upstream *herdr.CommandError
+	if errors.As(err, &upstream) {
+		return upstream.Error()
+	}
 	message := strings.TrimSpace(output)
 	if message == "" {
 		return err.Error()
@@ -438,4 +452,40 @@ func commandError(err error, output string) string {
 func deterministicAddFailure(output string) bool {
 	lower := strings.ToLower(output)
 	return strings.Contains(lower, "capacity") || strings.Contains(lower, "catalog full") || strings.Contains(lower, "maximum") || strings.Contains(lower, "limit")
+}
+
+// Save the diagnostic before advertising its reference in a notification.
+func saveResultError(scope string, item result) error {
+	if item.Status == "ready" {
+		if err := store.SetRegistrationError("", scope, ""); err != nil {
+			return err
+		}
+		return store.ClearGuestPluginFailure(scope)
+	}
+	if item.Status == "stale" || item.Status == "retrying" {
+		return nil
+	}
+	if item.Status == "plugin setup required" || item.Status == "manual intervention required" {
+		if err := store.SetRegistrationError("", scope, ""); err != nil {
+			return err
+		}
+		if len(item.PluginFailures) == 0 {
+			// Catalog/defaults could not be read. No plugin recovery was observed.
+			return store.RecordGuestPluginFailureCode(store.CodeGuestPluginSync, scope, item.Detail)
+		}
+		return store.SetGuestPluginFailures(scope, item.PluginFailures)
+	}
+	code := store.CodeRegistration
+	switch item.Status {
+	case "ownership conflict":
+		code = store.CodeOwnershipConflict
+	case "workspace setup required":
+		code = store.CodeWorkspaceSetup
+	case "setup required":
+		code = store.CodeSandboxSetup
+	}
+	if item.DiagnosticCode != "" {
+		code = item.DiagnosticCode
+	}
+	return store.SetRegistrationError(code, scope, item.Detail)
 }

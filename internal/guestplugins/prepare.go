@@ -4,27 +4,30 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
-	"path/filepath"
+	"os/exec"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/lanwen/herdr-sbx/internal/herdr"
 	"github.com/lanwen/herdr-sbx/internal/store"
-	"github.com/pelletier/go-toml/v2"
 )
 
-// Apply reconciles explicit defaults, independent of the local enabled flags.
+// ApplySandbox resolves live defaults for the selected sandbox before each transfer.
 // One failed plugin does not prevent the other selected plugins from applying.
-func Apply(ctx context.Context, client *herdr.Client, transport http.RoundTripper, target string, current func() bool) error {
+func ApplySandbox(ctx context.Context, client *herdr.Client, target, scope, sandboxID string, current func() bool, attempts ...func(id, revision string) (finish func(error) error, err error)) error {
 	settings, err := store.ReadGuestPluginDefaults()
 	if err != nil {
 		return err
 	}
+	settings = settings.Effective(scope, sandboxID)
 	selected := false
 	for _, entry := range settings.Plugins {
 		selected = selected || entry.Enabled
@@ -45,29 +48,33 @@ func Apply(ctx context.Context, client *herdr.Client, transport http.RoundTrippe
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	var failures []error
+	var failures Failures
 	for _, id := range ids {
 		desired := settings.Plugins[id]
 		if !desired.Enabled {
 			continue
 		}
 		local, ok := installed[id]
-		if !ok && desired.Bundle == "" {
-			failures = append(failures, fmt.Errorf("%s: not installed locally", id))
+		if !ok {
+			failures = append(failures, store.PluginFailure{PluginID: id, Code: store.CodeGuestPluginSync, Detail: "Plugin is not installed locally"})
 			continue
 		}
-		if local.ID == "" {
-			local.ID = id
+		if reason := unsupportedReason(local); reason != "" {
+			failures = append(failures, store.PluginFailure{PluginID: id, Code: store.CodeGuestPluginSync, Detail: "unsupported: " + reason})
+			continue
 		}
 		stillSelected := func() bool {
 			latest, err := store.ReadGuestPluginDefaults()
-			return err == nil && latest.Plugins[id] == desired && current != nil && current()
+			return err == nil && latest.Effective(scope, sandboxID).Plugins[id] == desired && current != nil && current()
 		}
-		if err := prepare(ctx, client, transport, target, local, desired.Bundle, stillSelected); err != nil {
-			failures = append(failures, fmt.Errorf("%s: %w", id, err))
+		if err := prepare(ctx, client, target, scope, sandboxID, local, stillSelected, attempts...); err != nil {
+			failures = append(failures, FailureFor(local, "", err))
 		}
 	}
-	return errors.Join(failures...)
+	if len(failures) > 0 {
+		return failures
+	}
+	return nil
 }
 
 type payloadFile struct {
@@ -76,7 +83,24 @@ type payloadFile struct {
 	mode int64
 }
 
-func prepare(ctx context.Context, client *herdr.Client, transport http.RoundTripper, target string, local herdr.PluginInstall, bundleRoot string, current func() bool) error {
+func prepare(ctx context.Context, client *herdr.Client, target, scope, sandboxID string, local herdr.PluginInstall, current func() bool, attempts ...func(id, revision string) (finish func(error) error, err error)) (result error) {
+	var revision string
+	absent := false
+	failureFor := func(err error) store.PluginFailure {
+		failure := FailureFor(local, revision, err)
+		var setup *herdr.GuestPluginSetupError
+		if absent && errors.As(err, &setup) && setup.BuildFailed {
+			failure.Recovery, failure.Command = manualRecovery(local, revision, true)
+		} else if !absent && failure.Command != "" {
+			failure.Recovery, failure.Command = manualRecovery(local, revision, false)
+		}
+		return failure
+	}
+	defer func() {
+		if result != nil {
+			result = &FailureError{Failure: failureFor(result), Cause: result}
+		}
+	}()
 	if !store.ValidPluginID(local.ID) || local.ID == "lanwen.herdr-sbx" {
 		return errors.New("invalid guest plugin")
 	}
@@ -84,11 +108,15 @@ func prepare(ctx context.Context, client *herdr.Client, transport http.RoundTrip
 	if errors.Is(err, os.ErrNotExist) {
 		config = nil
 	} else if err != nil {
-		return errors.New("cannot read local Herdr shortcuts")
+		return errors.New("cannot read local herdr shortcuts")
 	}
 	guest, err := client.InspectGuestPlugin(ctx, target, local.ID)
 	if err != nil {
 		return err
+	}
+	absent = guest.Plugin.ID == ""
+	if exactExternalPlugin(local, guest.Plugin) && cleanInstalledSource(local) && !guest.Managed {
+		return nil
 	}
 	merged, err := mergeKeys(config, guest.Config, local.ID)
 	if err != nil {
@@ -98,11 +126,7 @@ func prepare(ctx context.Context, client *herdr.Client, transport http.RoundTrip
 	if err != nil {
 		return err
 	}
-	source := local.Root
-	if bundleRoot != "" {
-		source = bundleRoot
-	}
-	manifest, err := readSmall(filepath.Join(source, "herdr-plugin.toml"))
+	manifest, err := readSmall(local.ManifestPath)
 	if err != nil {
 		return err
 	}
@@ -111,7 +135,7 @@ func prepare(ctx context.Context, client *herdr.Client, transport http.RoundTrip
 		return errors.New("invalid plugin manifest")
 	}
 	version, _ := doc["version"].(string)
-	if doc["id"] != local.ID || version == "" || (bundleRoot == "" && version != local.Version) {
+	if doc["id"] != local.ID || version == "" || version != local.Version {
 		return errors.New("plugin manifest does not match installed metadata")
 	}
 	platforms := keyNames(doc["platforms"])
@@ -127,12 +151,11 @@ func prepare(ctx context.Context, client *herdr.Client, transport http.RoundTrip
 	if guest.Plugin.ID != "" && !guest.Managed {
 		return errors.New("guest installation is managed outside herdr-sbx; left unchanged")
 	}
-	files, err := planPayload(local.ID, source, doc, bundleRoot != "", arch)
+	files, err := planPayload(local.Root, local.ManifestPath, doc, arch)
 	if err != nil {
 		return err
 	}
-	delete(doc, "build")
-	manifest, err = toml.Marshal(doc)
+	commands, err := linuxBuildCommands(doc)
 	if err != nil {
 		return err
 	}
@@ -143,33 +166,38 @@ func prepare(ctx context.Context, client *herdr.Client, transport http.RoundTrip
 	for _, f := range files {
 		fmt.Fprintf(&identity, "%s:%o:%s\n", f.name, f.mode, digest(f.data))
 	}
-	revision := digest(identity.Bytes())[:24]
-	if guest.Managed && strings.HasSuffix(guest.Plugin.Root, "/"+local.ID+"-"+revision) && guest.Plugin.Version == version && guest.Plugin.Enabled && bytes.Equal(merged, guest.Config) && guest.AppliedConfigSHA == digest(guest.Config) {
-		return nil
+	revision = digest(identity.Bytes())[:24]
+	repaired := guest.Managed && strings.HasSuffix(guest.Plugin.Root, "/"+local.ID+"-"+revision) && guest.Plugin.Version == version && guest.Plugin.Enabled && guest.Plugin.Available && noPluginWarnings(guest.Plugin)
+	if repaired && bytes.Equal(merged, guest.Config) && guest.AppliedConfigSHA == digest(guest.Config) {
+		return store.FinishGuestPluginAttempt(scope, sandboxID, local.ID, revision, "")
 	}
 	if ctx.Err() != nil || current == nil || !current() {
 		return errors.New("sandbox identity or plugin selection changed before plugin preparation")
 	}
-	if bundleRoot == "" {
-		switch local.ID {
-		case reviewrID:
-			if !releaseVersion.MatchString(version) {
-				return errors.New("a stable Reviewr release is required")
-			}
-			binary, err := download(ctx, transport, version, arch)
+	if repaired {
+		commands = nil
+		attempts = nil
+	}
+	for _, attempt := range attempts {
+		if attempt != nil {
+			finish, err := attempt(local.ID, revision)
 			if err != nil {
 				return err
 			}
-			files = append(files, payloadFile{"bin/herdr-reviewr", binary, 0700})
-		case "herdr-last":
-			if !releaseVersion.MatchString(version) {
-				return errors.New("a stable herdr-last release is required")
+			if finish != nil {
+				defer func() {
+					if result != nil {
+						result = &FailureError{Failure: failureFor(result), Cause: result}
+					}
+					finished := finish(result)
+					var structured *FailureError
+					if errors.As(finished, &structured) {
+						result = finished
+					} else {
+						result = errors.Join(result, finished)
+					}
+				}()
 			}
-			binary, err := downloadLast(ctx, transport, version, arch)
-			if err != nil {
-				return err
-			}
-			files = append(files, payloadFile{"bin/herdr-last", binary, 0700})
 		}
 	}
 	bundle, err := makeBundle(files, merged)
@@ -179,17 +207,17 @@ func prepare(ctx context.Context, client *herdr.Client, transport http.RoundTrip
 	if ctx.Err() != nil || !current() {
 		return errors.New("sandbox identity or plugin selection changed before plugin transfer")
 	}
-	if err := client.InstallGuestPlugin(ctx, target, local.ID, bytes.NewReader(bundle), digest(bundle), digest(guest.Config), revision, guest.ConfigExists); err != nil {
+	if err := client.InstallGuestPlugin(ctx, target, local.ID, bytes.NewReader(bundle), digest(bundle), digest(guest.Config), revision, guest.ConfigExists, commands...); err != nil {
 		return err
 	}
 	verified, err := client.InspectGuestPlugin(ctx, target, local.ID)
 	if err != nil {
 		return err
 	}
-	if verified.Plugin.ID != local.ID || !verified.Plugin.Enabled || verified.Plugin.Version != version || verified.AppliedConfigSHA != digest(merged) {
+	if verified.Plugin.ID != local.ID || !verified.Plugin.Enabled || verified.Plugin.Version != version || !verified.Plugin.Available || !noPluginWarnings(verified.Plugin) || verified.AppliedConfigSHA != digest(merged) {
 		return errors.New("guest plugin setup could not be verified")
 	}
-	return nil
+	return store.FinishGuestPluginAttempt(scope, sandboxID, local.ID, revision, "")
 }
 func readSmall(path string) ([]byte, error) {
 	f, err := os.Open(path)
@@ -230,4 +258,49 @@ func makeBundle(files []payloadFile, config []byte) ([]byte, error) {
 		return nil, err
 	}
 	return buffer.Bytes(), nil
+}
+
+func digest(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
+
+// exactExternalPlugin accepts an externally managed installation only when herdr
+// reports the same immutable source revision. Version alone is not sufficient.
+func exactExternalPlugin(local, guest herdr.PluginInstall) bool {
+	a, b := local.Source, guest.Source
+	return local.ID == guest.ID && local.Version == guest.Version && guest.Enabled && guest.Available && noPluginWarnings(guest) && a.Kind == "github" && b.Kind == "github" && regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(a.ResolvedCommit) && a.ResolvedCommit == b.ResolvedCommit && a.Owner == b.Owner && a.Repo == b.Repo && a.Subdir == b.Subdir
+}
+
+// cleanInstalledSource prevents an immutable GitHub ref from standing in for
+// different local source when the installed checkout was edited.
+func cleanInstalledSource(plugin herdr.PluginInstall) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	run := func(args ...string) (string, error) {
+		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", plugin.Root}, args...)...)
+		out, err := cmd.Output()
+		return strings.TrimSpace(string(out)), err
+	}
+	head, err := run("rev-parse", "HEAD")
+	if err != nil || head != plugin.Source.ResolvedCommit {
+		return false
+	}
+	status, err := run("status", "--porcelain", "--untracked-files=normal", "--", ".")
+	return err == nil && status == ""
+}
+
+func manualRecovery(plugin herdr.PluginInstall, revision string, install bool) (string, string) {
+	source := plugin.Source
+	if install && source.Kind == "github" && regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(source.ResolvedCommit) && source.Owner != "" && source.Repo != "" && cleanInstalledSource(plugin) {
+		repo := source.Owner + "/" + source.Repo
+		if source.Subdir != "" {
+			repo += "/" + source.Subdir
+		}
+		quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
+		return "Install this exact revision inside the sandbox, then choose Re-sync.", "herdr plugin install " + quote(repo) + " --ref " + quote(source.ResolvedCommit) + " --yes"
+	}
+	return fmt.Sprintf("Repair herdr plugin %s inside the sandbox (version %s) at ~/.local/share/herdr-sbx/plugins/%s, then choose Re-sync.", plugin.ID, plugin.Version, plugin.ID+"-"+revision), ""
+}
+
+func noPluginWarnings(plugin herdr.PluginInstall) bool {
+	warnings := strings.TrimSpace(string(plugin.Warnings))
+	return warnings == "" || warnings == "null" || warnings == "[]"
 }

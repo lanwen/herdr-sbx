@@ -6,9 +6,9 @@ Run tests with isolated Herdr sessions and sandbox fixtures.
 
 ## Focused agents
 
-Use the project agents in `.codex/agents/` when a task benefits from focused work.
-For small changes, keep the work in the main agent.
-The main agent owns task scope, file assignments, integration, and the final response.
+The main agent owns the specification, requirements alignment, task scope, file assignments, integration, and the final response.
+The main agent updates the spec and project reference when behavior changes.
+Delegate implementation, code edits, tests, visual design, and domain review to focused project agents in `.codex/agents/`, including for small code changes.
 
 Give each agent a concrete question or change, relevant context, and a completion condition.
 Assign each file to one editor at a time.

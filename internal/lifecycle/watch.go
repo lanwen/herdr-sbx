@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/signal"
 	"reflect"
@@ -118,6 +119,7 @@ func (w *lockedWriter) Write(p []byte) (int, error) {
 }
 
 type lifecycleScheduler struct {
+	management     map[string]store.ManagementChoice
 	pluginDefaults store.GuestPluginDefaults
 	report         func(string, string, bool)
 	owner          *Service
@@ -130,6 +132,8 @@ type lifecycleScheduler struct {
 	deletes        map[string]sbx.LifecycleEvent
 	lastSeq        *uint64
 	catchup        bool
+	streamStarted  bool
+	freshCatchup   bool
 	queue          chan sbx.LifecycleEvent
 	jobs           sync.WaitGroup
 }
@@ -137,6 +141,7 @@ type lifecycleScheduler struct {
 func (owner *Service) newScheduler(ctx context.Context, scope, socket string, out io.Writer, report func(string, string, bool)) *lifecycleScheduler {
 	s := &lifecycleScheduler{report: report, owner: owner, ctx: ctx, scope: scope, socket: socket, out: out, retired: map[string]bool{}, deletes: map[string]sbx.LifecycleEvent{}, queue: make(chan sbx.LifecycleEvent, 128)}
 	s.pluginDefaults, _ = store.ReadGuestPluginDefaults()
+	s.management, _ = store.ReadManagement()
 	s.jobs.Add(1)
 	go s.run()
 	return s
@@ -154,6 +159,7 @@ func (s *lifecycleScheduler) enqueue(event sbx.LifecycleEvent) bool {
 	if event.Seq != nil {
 		if s.lastSeq != nil && *event.Seq > *s.lastSeq && *event.Seq-*s.lastSeq > 1 {
 			s.catchup = true
+			s.freshCatchup = true
 		}
 		if s.lastSeq == nil || *event.Seq > *s.lastSeq {
 			seq := *event.Seq
@@ -177,6 +183,11 @@ func (s *lifecycleScheduler) enqueue(event sbx.LifecycleEvent) bool {
 func (s *lifecycleScheduler) beginStream() {
 	s.mu.Lock()
 	s.lastSeq = nil
+	if s.streamStarted {
+		s.catchup = true
+		s.freshCatchup = true
+	}
+	s.streamStarted = true
 	s.mu.Unlock()
 }
 
@@ -210,24 +221,42 @@ func (s *lifecycleScheduler) processPluginDefaults() {
 	if err != nil {
 		return
 	} // Periodic reconciliation reports unreadable defaults.
-	if reflect.DeepEqual(settings, s.pluginDefaults) {
+	management, err := store.ReadManagement()
+	if err != nil {
+		return
+	}
+	if reflect.DeepEqual(settings, s.pluginDefaults) && maps.Equal(management, s.management) {
 		return
 	}
 	s.pluginDefaults = settings
+	s.management = management
 	s.processCatchup(true)
 }
 
 func (s *lifecycleScheduler) processCatchup(periodic bool) {
 	s.mu.Lock()
 	needed := s.catchup
+	fresh := s.freshCatchup
 	s.catchup = false
+	if periodic || needed {
+		s.freshCatchup = false
+	}
 	s.mu.Unlock()
 	if !periodic && !needed {
 		return
 	}
-	if err := s.owner.registrations.ReconcileContext(s.ctx, s.out); err != nil {
+	ctx := s.ctx
+	if fresh {
+		ctx = registration.WithFreshGuestObservation(ctx)
+	}
+	if err := s.owner.registrations.ReconcileContext(ctx, s.out); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return
+		}
+		if fresh {
+			s.mu.Lock()
+			s.freshCatchup = true
+			s.mu.Unlock()
 		}
 		if !errors.Is(err, context.Canceled) {
 			if statusErr := store.MarkScopeStale(s.scope, "sandbox catch-up is unavailable"); statusErr != nil {
@@ -265,7 +294,7 @@ func (s *lifecycleScheduler) handle(event sbx.LifecycleEvent) {
 		if !s.current(event) {
 			return
 		}
-		if err := s.owner.registrations.ReconcileSandbox(s.ctx, s.out, event.SandboxID, event.SandboxName, func() bool { return s.current(event) }); err != nil && !errors.Is(err, context.Canceled) {
+		if err := s.owner.registrations.ReconcileSandbox(registration.WithFreshGuestObservation(s.ctx), s.out, event.SandboxID, event.SandboxName, func() bool { return s.current(event) }); err != nil && !errors.Is(err, context.Canceled) {
 			fmt.Fprintln(s.out, "Lifecycle registration failed:", err)
 		}
 		if s.isRetired(event.SandboxID) {
@@ -309,29 +338,72 @@ func (s *lifecycleScheduler) processDeletes() {
 }
 
 func (s *lifecycleScheduler) recoverMissedDeletes() {
+	sandboxes, err := s.owner.sbx.Inventory(s.ctx, s.socket)
+	if err != nil {
+		fmt.Fprintln(s.out, "Lifecycle deletion check deferred:", err)
+		return
+	}
+	present := make(map[string]bool, len(sandboxes))
+	for _, sandbox := range sandboxes {
+		present[sandbox.ID] = true
+	}
 	st, err := store.LoadState()
 	if err != nil {
 		fmt.Fprintln(s.out, "Lifecycle recovery deferred:", err)
 		return
 	}
+	// An earlier daemon broadcast this warning to every sandbox in the scope.
+	// Successful inventory now limits uncertainty to missing tracked identities.
+	if err := store.UpdateStatusStore(func(status *store.StatusStore) {
+		delete(status.Warnings, s.scope+"/absence")
+		for id := range present {
+			key := store.StatusKey(s.scope, id)
+			if cached, ok := status.Sandboxes[key]; ok {
+				cached.ConfirmPresent()
+				status.Sandboxes[key] = cached
+			}
+			status.SetSandboxDeletionFailure(key, "")
+		}
+	}); err != nil {
+		fmt.Fprintln(s.out, "Sandbox status was not saved:", err)
+	}
 	for _, item := range st.Scopes[s.scope] {
 		if registration.SandboxName(item) == "" || item.Pending || item.ProfileID == "" {
 			continue
 		}
+		warningKey := store.StatusKey(s.scope, item.SandboxID) + "/absence"
+		if present[item.SandboxID] {
+			continue
+		}
 		absent, err := s.owner.sbx.SandboxAbsent(s.ctx, s.socket, registration.SandboxName(item), item.SandboxID)
 		if err != nil {
-			if statusErr := store.MarkScopeStale(s.scope, "sandbox deletion recovery is unavailable"); statusErr != nil {
+			if statusErr := store.UpdateStatusStore(func(status *store.StatusStore) {
+				key := store.StatusKey(s.scope, item.SandboxID)
+				cached := status.Sandboxes[key]
+				cached.Scope, cached.SandboxID, cached.Name = s.scope, item.SandboxID, registration.SandboxName(item)
+				cached.Stale, cached.Detail = true, store.DeletionUnconfirmedDetail
+				status.Sandboxes[key] = cached
+				status.SetSandboxDeletionFailure(key, store.DeletionUnconfirmedDetail+" Verification failed: "+err.Error())
+			}); statusErr != nil {
 				fmt.Fprintln(s.out, "Sandbox status was not saved:", statusErr)
 			}
-			s.owner.warnBlocking(s.ctx, s.out, s.scope+"/absence", "Sandbox deletion recovery is unavailable. Known machines were preserved.")
-			return
+			s.owner.warnBlocking(s.ctx, s.out, warningKey, registration.SandboxName(item)+": "+store.DeletionUnconfirmedDetail)
+			fmt.Fprintln(s.out, "Sandbox deletion check deferred:", err)
+			continue
+		}
+		if err := store.UpdateStatusStore(func(status *store.StatusStore) {
+			key := store.StatusKey(s.scope, item.SandboxID)
+			status.SetSandboxDeletionFailure(key, "")
+			if cached, ok := status.Sandboxes[key]; ok && !absent {
+				cached.ConfirmPresent()
+				status.Sandboxes[key] = cached
+			}
+		}); err != nil {
+			fmt.Fprintln(s.out, "Sandbox status was not saved:", err)
 		}
 		if absent {
 			s.removeDeleted(sbx.LifecycleEvent{Type: "sandbox.lifecycle", Action: "deleted", SandboxID: item.SandboxID, SandboxName: registration.SandboxName(item)})
 		}
-	}
-	if err := store.ClearWarning(s.scope + "/absence"); err != nil {
-		fmt.Fprintln(s.out, "Sandbox warning state was not saved:", err)
 	}
 }
 

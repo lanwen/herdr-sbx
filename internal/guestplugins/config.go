@@ -1,5 +1,5 @@
-// Package guestplugins prepares selected plugins for guest Herdr servers.
-// Downloads and configuration planning run on the host; herdr owns SSH transport.
+// Package guestplugins prepares selected plugins for guest herdr servers.
+// Payload and configuration planning run on the host; herdr owns SSH transport.
 package guestplugins
 
 import (
@@ -13,8 +13,6 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 )
-
-const reviewrID = "persiyanov.reviewr"
 
 func localConfig() ([]byte, error) {
 	path := os.Getenv("HERDR_CONFIG_PATH")

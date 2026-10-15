@@ -9,11 +9,11 @@ platforms = ["linux", "macos"]
 command = ["go", "build", "-o", "bin/herdr-sbx", "./cmd/herdr-sbx"]
 
 [[startup]]
-command = ["./bin/herdr-sbx", "daemon"]
+command = ["./bin/herdr-sbx", "daemon", "start", "--automatic"]
 
 [[events]]
 on = "workspace.created"
-command = ["./bin/herdr-sbx", "daemon"]
+command = ["./bin/herdr-sbx", "daemon", "start", "--automatic"]
 
 [[panes]]
 id = "status"
@@ -21,19 +21,7 @@ title = "lanwen/herdr-sbx"
 placement = "popup"
 width = 110
 height = 32
-command = ["./bin/herdr-sbx", "panel"]
-
-[[panes]]
-id = "watch"
-title = "lanwen/herdr-sbx lifecycle"
-placement = "tab"
-command = ["./bin/herdr-sbx", "watch"]
-
-[[panes]]
-id = "worker"
-title = "lanwen/herdr-sbx worker"
-placement = "tab"
-command = ["./bin/herdr-sbx", "worker"]
+command = ["./bin/herdr-sbx"]
 
 [[actions]]
 id = "open-status"
@@ -54,31 +42,7 @@ description = "Open the Docker Sandboxes status panel in a split."
 command = ["./bin/herdr-sbx", "open-status-split"]
 
 [[actions]]
-id = "check-again"
-title = "Check lanwen/herdr-sbx prerequisites"
-description = "Inspect prerequisites without changing Docker Sandboxes or SSH setup."
-command = ["./bin/herdr-sbx", "check"]
-
-[[actions]]
-id = "reconcile"
-title = "Prepare and register lanwen/herdr-sbx"
-description = "Register running sandboxes and prepare a missing compatible guest Herdr installation."
-command = ["./bin/herdr-sbx", "reconcile"]
-
-[[actions]]
-id = "watch"
-title = "Watch lanwen/herdr-sbx lifecycle"
-description = "Open a foreground lifecycle watcher that prepares missing guest Herdr installations. Stop it with Ctrl-C."
-command = ["./bin/herdr-sbx", "open-watch"]
-
-[[actions]]
-id = "daemon"
-title = "Start lanwen/herdr-sbx worker"
-description = "Start one lifecycle worker for this local Herdr server."
-command = ["./bin/herdr-sbx", "daemon"]
-
-[[actions]]
 id = "status"
-title = "lanwen/herdr-sbx worker status"
-description = "Report background worker status and last successful sync without checking prerequisites."
+title = "lanwen/herdr-sbx daemon status"
+description = "Report cached sandbox and background daemon status."
 command = ["./bin/herdr-sbx", "status"]

@@ -55,8 +55,6 @@ func newCheckFixture(t *testing.T) *checkFixture {
 		switch call {
 		case "herdr --version":
 			return "herdr 0.9.1", nil
-		case "sbx --version":
-			return "", errors.New("unknown flag")
 		case "sbx version":
 			return "sbx version: v" + f.version, nil
 		case "ssh -V":

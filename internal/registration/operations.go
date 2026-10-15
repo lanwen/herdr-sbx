@@ -6,7 +6,6 @@ import (
 	"io"
 	"strings"
 
-	"github.com/lanwen/herdr-sbx/internal/precheck"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
 )
@@ -56,28 +55,6 @@ func (s *Service) ReconcileAuthorized(ctx context.Context, out io.Writer, scope,
 	}, nil, options)
 }
 
-// RetryPreparation clears the failed-attempt cooldown after confirming that
-// the named sandbox is still part of the current daemon inventory.
-func (s *Service) RetryPreparation(ctx context.Context, out io.Writer, name string) error {
-	if name == "" {
-		return errors.New("enter a sandbox name")
-	}
-	p := s.Inspect()
-	if p.Scope == "" || p.Socket == "" || !hasLevel(p.Checks, "Sandbox daemon", precheck.Ready) || hasBlocked(p.Checks, "Docker authorization") {
-		return errors.New("retry needs a running sandbox daemon and readable sandbox inventory")
-	}
-	sandboxes, err := s.inventory(context.Background(), p.Socket)
-	if err != nil {
-		return err
-	}
-	for _, sb := range sandboxes {
-		if sb.Name == name {
-			return s.RetrySelected(ctx, out, p.Scope, p.Socket, sb.ID, sb.Name)
-		}
-	}
-	return errors.New("sandbox is not in the current inventory")
-}
-
 // RetrySelected preserves the selected sandbox identity across cooldown reset
 // and reconciliation, so a same-name replacement cannot receive the retry.
 func (s *Service) RetrySelected(ctx context.Context, out io.Writer, scope, socket, id, name string) error {
@@ -87,7 +64,7 @@ func (s *Service) RetrySelected(ctx context.Context, out io.Writer, scope, socke
 	if err := store.ClearPreparationFailure(store.StatusKey(scope, id)); err != nil {
 		return errors.New("clear preparation retry state: " + err.Error())
 	}
-	return s.ReconcileSandbox(ctx, out, id, name, func() bool {
+	return s.ReconcileSandbox(context.WithValue(ctx, guestPluginRetryKey{}, true), out, id, name, func() bool {
 		items, err := s.inventory(ctx, socket)
 		if err != nil {
 			return false

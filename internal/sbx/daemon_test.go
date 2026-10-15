@@ -2,6 +2,7 @@ package sbx
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -87,7 +88,7 @@ func TestSandboxAppScopeIsExplicit(t *testing.T) {
 	client.DiagnoseAuthentication(ctx)
 	_, _ = client.WorkspaceDirectory(ctx, "demo")
 	want := []string{
-		"sbx --version", "sbx daemon status --help", "sbx ls --help",
+		"sbx version", "sbx daemon status --help", "sbx ls --help",
 		"sbx --app-name isolated daemon status --json",
 		"sbx --app-name isolated diagnose --json",
 		"sbx --app-name isolated exec demo -- pwd -P",
@@ -110,5 +111,57 @@ func TestInventoryEnvelopeAndDaemonStatusNoise(t *testing.T) {
 	daemon, err := client.DaemonStatus(context.Background())
 	if err != nil || daemon.Status != "stopped" {
 		t.Fatalf("daemon=%#v err=%v", daemon, err)
+	}
+}
+
+func TestInventoryWorkspaceMetadata(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		metadata string
+		probe    bool
+	}{
+		{"direct", ``, false},
+		{"clone", `,"source_repo_dir":"/host/source","labels":{"com.docker.sandbox.cloneMode":"true"}`, false},
+		{"matching directory", `,"labels":{"com.docker.sandbox.workingDirectory":"/project","com.docker.sandbox.usesWorktree":"false"}`, false},
+		{"legacy worktree", `,"labels":{"com.docker.sandbox.usesWorktree":"true"}`, true},
+		{"worktree override", `,"labels":{"com.docker.sandbox.worktreePath":"/different"}`, true},
+		{"different directory", `,"labels":{"com.docker.sandbox.workingDirectory":"/different"}`, true},
+		{"unknown labels", `,"labels":[]`, true},
+		{"invalid directory label", `,"labels":{"com.docker.sandbox.workingDirectory":42}`, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := NewWithTransport(process.Runner{}, daemonTestTransport(func(*http.Request) (*http.Response, error) {
+				body := `[{"uuid":"s1","name":"demo","status":"running","workspace":"/project"` + test.metadata + `}]`
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+			}))
+			items, err := client.Inventory(context.Background(), "unused")
+			if err != nil || len(items) != 1 {
+				t.Fatalf("inventory=%#v err=%v", items, err)
+			}
+			if items[0].Workspace != "/project" || items[0].WorkspaceNeedsProbe != test.probe {
+				t.Fatalf("sandbox=%#v", items[0])
+			}
+			encoded, err := json.Marshal(items[0])
+			if err != nil || strings.Contains(string(encoded), "NeedsProbe") || strings.Contains(string(encoded), "labels") {
+				t.Fatalf("internal metadata exposed: %s (%v)", encoded, err)
+			}
+		})
+	}
+}
+
+func TestInventoryRejectsNonStringWorkspace(t *testing.T) {
+	for _, workspace := range []string{`null`, `42`, `true`, `{}`, `[]`} {
+		t.Run(workspace, func(t *testing.T) {
+			body := `{"uuid":"s1","name":"demo","workspace":` + workspace + `}`
+			client := NewWithTransport(process.Runner{}, daemonTestTransport(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("[" + body + "]"))}, nil
+			}))
+			if _, err := client.Inventory(context.Background(), "unused"); err == nil || !strings.Contains(err.Error(), "workspace is not a string") {
+				t.Fatalf("inventory error=%v", err)
+			}
+			if _, err := parseSandbox(body); err == nil || !strings.Contains(err.Error(), "workspace is not a string") {
+				t.Fatalf("sandbox error=%v", err)
+			}
+		})
 	}
 }

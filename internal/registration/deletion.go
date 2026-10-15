@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/lanwen/herdr-sbx/internal/store"
 )
@@ -31,6 +32,13 @@ func (s *Service) RemoveDeletedSandbox(ctx context.Context, scope, socket, sandb
 
 // removeDeletedSandbox requires the caller to hold the state lock.
 func (s *Service) removeDeletedSandbox(ctx context.Context, scope, socket, sandboxID string) (DeletionResult, error) {
+	choices, err := store.ReadManagement()
+	if err != nil {
+		return DeletionResult{Retry: true}, err
+	}
+	if choice := choices[store.StatusKey(scope, sandboxID)]; choice == store.Unwatched || choice == store.Disabled {
+		return DeletionResult{}, nil
+	}
 	st, err := store.LoadState()
 	if err != nil {
 		return DeletionResult{Retry: true}, err
@@ -79,9 +87,15 @@ func (s *Service) clearDeleted(st *store.State, scope, sandboxID, name, detail s
 	// record available for a later cleanup retry.
 	if err := store.UpdateStatusStore(func(status *store.StatusStore) {
 		key := store.StatusKey(scope, sandboxID)
+		status.SetSandboxDeletionFailure(key, "")
 		delete(status.Sandboxes, key)
 		delete(status.Preparation, key)
 		delete(status.PreparationErrors, key)
+		for attempt := range status.GuestPluginAttempts {
+			if strings.HasPrefix(attempt, key+"\x00") {
+				delete(status.GuestPluginAttempts, attempt)
+			}
+		}
 	}); err != nil {
 		return DeletionResult{Retry: true}, err
 	}

@@ -10,15 +10,14 @@ import (
 )
 
 // GuestPluginDefault is independent of whether a plugin is enabled locally.
-// Bundle is an optional directory containing a Linux-ready plugin distribution.
 type GuestPluginDefault struct {
-	Enabled bool   `json:"enabled"`
-	Bundle  string `json:"bundle,omitempty"`
+	Enabled bool `json:"enabled"`
 }
 
 // GuestPluginDefaults contains explicit choices only. Missing plugins are off.
 type GuestPluginDefaults struct {
-	Plugins map[string]GuestPluginDefault `json:"plugins"`
+	Plugins   map[string]GuestPluginDefault `json:"plugins"`
+	Overrides map[string]map[string]bool    `json:"overrides,omitempty"`
 }
 
 var pluginIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
@@ -36,14 +35,6 @@ func ReadGuestPluginDefaults() (GuestPluginDefaults, error) {
 	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		// Preserve an explicit opt-in from the first Reviewr-only implementation.
-		legacy, err := ReadStatusStore()
-		if err != nil {
-			return settings, err
-		}
-		if legacy.ReviewrEnabled {
-			settings.Plugins["persiyanov.reviewr"] = GuestPluginDefault{Enabled: true}
-		}
 		return settings, nil
 	}
 	if err != nil {
@@ -63,26 +54,25 @@ func ReadGuestPluginDefaults() (GuestPluginDefaults, error) {
 	return settings, nil
 }
 
-// SetGuestPluginDefault changes one choice under its own lock. Bundle is left
-// unchanged when nil, so toggling never forgets a prepared distribution path.
-func SetGuestPluginDefault(id string, enabled bool, bundle *string) error {
+// SetGuestPluginDefault changes one choice under its own lock.
+func SetGuestPluginDefault(id string, enabled bool) error {
 	return updateGuestPluginDefault(id, func(entry *GuestPluginDefault) {
 		entry.Enabled = enabled
-		if bundle != nil {
-			entry.Bundle = *bundle
-		}
 	})
-}
-
-// SetGuestPluginBundle preserves the enabled choice under the settings lock.
-func SetGuestPluginBundle(id, path string) error {
-	return updateGuestPluginDefault(id, func(entry *GuestPluginDefault) { entry.Bundle = path })
 }
 
 func updateGuestPluginDefault(id string, change func(*GuestPluginDefault)) error {
 	if !ValidPluginID(id) || id == "lanwen.herdr-sbx" {
 		return errors.New("invalid guest plugin ID")
 	}
+	return updateGuestPluginSettings(func(settings *GuestPluginDefaults) {
+		entry := settings.Plugins[id]
+		change(&entry)
+		settings.Plugins[id] = entry
+	})
+}
+
+func updateGuestPluginSettings(change func(*GuestPluginDefaults)) error {
 	path, err := GuestPluginDefaultsPath()
 	if err != nil {
 		return err
@@ -103,9 +93,7 @@ func updateGuestPluginDefault(id string, change func(*GuestPluginDefault)) error
 	if err != nil {
 		return err
 	}
-	entry := settings.Plugins[id]
-	change(&entry)
-	settings.Plugins[id] = entry
+	change(&settings)
 	data, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		return err
@@ -134,4 +122,42 @@ func updateGuestPluginDefault(id string, change func(*GuestPluginDefault)) error
 	}
 	defer dir.Close()
 	return dir.Sync()
+}
+
+// Effective resolves live defaults and persistent per-sandbox overrides.
+func (s GuestPluginDefaults) Effective(scope, id string) GuestPluginDefaults {
+	result := GuestPluginDefaults{Plugins: map[string]GuestPluginDefault{}}
+	for plugin, entry := range s.Plugins {
+		result.Plugins[plugin] = entry
+	}
+	for plugin, enabled := range s.Overrides[StatusKey(scope, id)] {
+		entry := result.Plugins[plugin]
+		entry.Enabled = enabled
+		result.Plugins[plugin] = entry
+	}
+	return result
+}
+
+// SetSandboxPluginOverride saves On/Off, or clears the override for Inherit.
+func SetSandboxPluginOverride(scope, sandboxID, plugin string, enabled *bool) error {
+	if scope == "" || sandboxID == "" || !ValidPluginID(plugin) || plugin == "lanwen.herdr-sbx" {
+		return errors.New("invalid sandbox plugin selection")
+	}
+	return updateGuestPluginSettings(func(settings *GuestPluginDefaults) {
+		key := StatusKey(scope, sandboxID)
+		if enabled == nil {
+			delete(settings.Overrides[key], plugin)
+			if len(settings.Overrides[key]) == 0 {
+				delete(settings.Overrides, key)
+			}
+			return
+		}
+		if settings.Overrides == nil {
+			settings.Overrides = map[string]map[string]bool{}
+		}
+		if settings.Overrides[key] == nil {
+			settings.Overrides[key] = map[string]bool{}
+		}
+		settings.Overrides[key][plugin] = *enabled
+	})
 }

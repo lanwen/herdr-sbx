@@ -1,7 +1,6 @@
 package panel
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -20,7 +19,6 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/registration"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
-	"github.com/lanwen/herdr-sbx/internal/store"
 )
 
 type panelTransport func(*http.Request) (*http.Response, error)
@@ -49,7 +47,7 @@ func testPanel(t *testing.T, interactive func(context.Context, string, ...string
 			return `[{"plugin_id":"first.plugin","enabled":true},{"plugin_id":"second.plugin","enabled":true}]`, nil
 		case "herdr --version":
 			return "herdr 0.9.1", nil
-		case "sbx --version":
+		case "sbx version":
 			return "sbx 0.45.1", nil
 		case "ssh -V":
 			return "OpenSSH", nil
@@ -119,82 +117,5 @@ func TestRepairCancellationRefreshesWithoutRetry(t *testing.T) {
 	var out bytes.Buffer
 	if err := ui.Repair("ssh", &out); err != nil || calls != 1 || !strings.Contains(out.String(), "canceled.") || !strings.Contains(out.String(), "Refreshing status.") || !strings.Contains(out.String(), "Sandbox daemon") {
 		t.Fatalf("cancellation calls=%d err=%v output=%s", calls, err, out.String())
-	}
-}
-
-func TestSandboxSelectionUsesListedIdentity(t *testing.T) {
-	ui := testPanel(t, func(context.Context, string, ...string) error { t.Fatal("selection attempted repair"); return nil })
-	var out bytes.Buffer
-	_, selected, err := ui.chooseSandbox(bufio.NewReader(strings.NewReader("invalid\n0\n3\n2\n")), &out, true)
-	if err != nil || selected.ID != "second" || !strings.Contains(out.String(), "1  alpha (running)") || !strings.Contains(out.String(), "2  zeta (running)") || strings.Contains(out.String(), "aaa") {
-		t.Fatalf("selection=%#v err=%v output=%s", selected, err, out.String())
-	}
-	_, selected, err = ui.chooseSandbox(bufio.NewReader(strings.NewReader("1\n")), io.Discard, false)
-	if err != nil || selected.ID != "stopped" {
-		t.Fatalf("retry selection=%#v err=%v", selected, err)
-	}
-	_, _, err = ui.chooseSandbox(bufio.NewReader(strings.NewReader("\n")), io.Discard, true)
-	if !errors.Is(err, io.EOF) {
-		t.Fatalf("cancel=%v", err)
-	}
-}
-
-func TestSandboxStatusSeparatesObservationFromConnectionAndStaleness(t *testing.T) {
-	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
-	sandbox := sbx.Sandbox{ID: "old", Name: "demo", Status: "running"}
-	if err := store.RecordSandboxStatus("scope", sandbox, "preparing", "installing", false); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.MarkScopeStale("scope", "sandbox discovery is unavailable"); err != nil {
-		t.Fatal(err)
-	}
-	var out bytes.Buffer
-	printSandboxStatuses(&out, "scope")
-	for _, want := range []string{"observed: running", "connection: preparing (stale)", "sandbox discovery is unavailable"} {
-		if !strings.Contains(out.String(), want) {
-			t.Fatalf("missing %q: %s", want, out.String())
-		}
-	}
-}
-
-func TestPanelShowsWorkerHealthAndLastSync(t *testing.T) {
-	s := testPanel(t, nil)
-	var output strings.Builder
-	if err := s.Run(strings.NewReader("q\n"), &output); err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"Worker: STOPPED", "Last successful sync: not yet", "b  Start background worker", "c to refresh status"} {
-		if !strings.Contains(output.String(), want) {
-			t.Fatalf("missing %q: %s", want, output.String())
-		}
-	}
-	unlock, err := store.LockWorker()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer unlock()
-	if err := store.RecordWorkerStatus("reconnecting", "daemon unavailable", true); err != nil {
-		t.Fatal(err)
-	}
-	output.Reset()
-	printWorkerStatus(&output)
-	if !strings.Contains(output.String(), "RECONNECTING") || !strings.Contains(output.String(), "daemon unavailable") || strings.Contains(output.String(), "not yet") {
-		t.Fatal(output.String())
-	}
-}
-
-func TestPluginPickerSavesIndependentChoices(t *testing.T) {
-	panel := testPanel(t, nil)
-	var output bytes.Buffer
-	panel.guestPlugins(bufio.NewReader(strings.NewReader("1\n2\n1\n\n")), &output)
-	settings, err := store.ReadGuestPluginDefaults()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if settings.Plugins["first.plugin"].Enabled || !settings.Plugins["second.plugin"].Enabled {
-		t.Fatal(settings)
-	}
-	if !strings.Contains(output.String(), "[OFF]") || !strings.Contains(output.String(), "[ON]") {
-		t.Fatal("picker does not show choices")
 	}
 }
