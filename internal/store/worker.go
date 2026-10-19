@@ -32,8 +32,8 @@ func RecordWorkerStatus(state, detail string, synced bool) error {
 }
 
 // ReadWorkerStatus probes the existing lock without creating files or starting
-// a worker. The OS releases the lock on exit, including crashes. Old workers
-// without telemetry are reported as unknown rather than healthy.
+// a worker. The OS releases the lock on exit, including crashes. An active
+// daemon without telemetry is reported as unknown until it reports status.
 func ReadWorkerStatus() (WorkerStatus, error) {
 	path, err := StatePath()
 	if err != nil {
@@ -60,7 +60,7 @@ func ReadWorkerStatus() (WorkerStatus, error) {
 	if err != nil {
 		return WorkerStatus{}, err
 	}
-	status := WorkerStatus{State: "unknown", Detail: "Worker is active but has not reported status; it may need an update."}
+	status := WorkerStatus{State: "unknown", Detail: "Daemon is active but has not reported status yet."}
 	if saved.Worker != nil {
 		status.LastSync = saved.Worker.LastSync
 		if saved.Worker.State != "stopped" {
@@ -68,7 +68,7 @@ func ReadWorkerStatus() (WorkerStatus, error) {
 		}
 	}
 	if !active {
-		status.State, status.Detail = "stopped", "Background worker is not running."
+		status.State, status.Detail = "stopped", "Daemon is not running."
 	}
 	return status, nil
 }

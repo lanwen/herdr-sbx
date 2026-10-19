@@ -48,7 +48,7 @@ func newLifecycleFixture(t *testing.T) *lifecycleFixture {
 		}
 	}
 	t.Setenv("PATH", bin)
-	f := &lifecycleFixture{t: t, scope: store.ScopeID("/tmp/lifecycle-test.sock"), catalog: `[{"profile_id":"machine-1","label":"sbx · demo","ssh_target":"demo.sbx","remote_session":"default"}]`}
+	f := &lifecycleFixture{t: t, scope: store.ScopeID("/tmp/lifecycle-test.sock"), catalog: `[{"id":"machine-1","label":"sbx · demo","target":"demo.sbx","session":"default"}]`}
 	f.run = f.defaultRun
 	f.request = func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path == "/sandbox" {
@@ -77,7 +77,7 @@ func (f *lifecycleFixture) defaultRun(_ context.Context, cmd process.Command) (s
 	switch call {
 	case "herdr --version":
 		return "herdr 0.9.1", nil
-	case "sbx --version":
+	case "sbx version":
 		return "sbx 0.45.1", nil
 	case "ssh -V":
 		return "OpenSSH", nil
@@ -132,6 +132,173 @@ func TestLifecycleDeletionPreservesStateWhenAbsenceIsUnknown(t *testing.T) {
 		t.Fatal("unknown absence was treated as completed deletion")
 	}
 	f.assertCount(1)
+}
+
+func TestDeletionRecoveryOnlyChecksMissingTrackedSandboxes(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.save(ownedRegistration())
+	if err := store.RecordSandboxStatus(f.scope, sbx.Sandbox{ID: "old", Name: "demo", Status: "stopped"}, "ready", "retained registration", false); err != nil {
+		t.Fatal(err)
+	}
+	f.request = func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/sandbox" {
+			t.Fatalf("probed deletion for present stopped sandbox: %s", r.URL.Path)
+		}
+		return lifecycleResponse(200, `[{"uuid":"old","name":"demo","status":"stopped"}]`), nil
+	}
+	f.scheduler().recoverMissedDeletes()
+	f.assertCount(1)
+}
+
+func TestDeletionRecoveryClearsUnrelatedLegacyDetailWithoutRegistration(t *testing.T) {
+	f := newLifecycleFixture(t)
+	if err := store.RecordSandboxStatus(f.scope, sbx.Sandbox{ID: "new", Name: "new", Status: "stopped"}, "not checked", "sandbox deletion recovery is unavailable", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.WarningTransition(f.scope+"/absence", "old warning"); err != nil {
+		t.Fatal(err)
+	}
+	f.request = func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/sandbox" {
+			t.Fatalf("probed deletion without tracked registration: %s", r.URL.Path)
+		}
+		return lifecycleResponse(200, `[{"uuid":"new","name":"new","status":"stopped"}]`), nil
+	}
+	f.scheduler().recoverMissedDeletes()
+	status, err := store.ReadStatusStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := status.Sandboxes[store.StatusKey(f.scope, "new")]; got.Stale || got.Detail != "" || len(status.Warnings) != 0 {
+		t.Fatalf("legacy uncertainty remains: %+v warnings=%+v", got, status.Warnings)
+	}
+}
+
+func TestDeletionRecoveryFailureIsScopedAndClearsAfterRecovery(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.save(ownedRegistration())
+	for _, sb := range []sbx.Sandbox{{ID: "old", Name: "demo", Status: "running"}, {ID: "new", Name: "new", Status: "stopped"}} {
+		if err := store.RecordSandboxStatus(f.scope, sb, "not checked", "awaiting registration", false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.request = func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/sandbox" {
+			return lifecycleResponse(200, `[{"uuid":"new","name":"new","status":"stopped"}]`), nil
+		}
+		return nil, errors.New("unavailable")
+	}
+	f.scheduler().recoverMissedDeletes()
+	f.assertCount(1)
+	status, err := store.ReadStatusStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := status.Sandboxes[store.StatusKey(f.scope, "new")]; got.Stale || got.Detail != "awaiting registration" {
+		t.Fatalf("unrelated stopped sandbox changed: %+v", got)
+	}
+	if got := status.Sandboxes[store.StatusKey(f.scope, "old")]; !got.Stale || !strings.Contains(got.Detail, "Its herdr registration was kept") {
+		t.Fatalf("missing sandbox lacks specific explanation: %+v", got)
+	}
+	var diagnostic store.ErrorRecord
+	for _, item := range status.Errors {
+		if item.Code == "S0002" && item.Scope == store.StatusKey(f.scope, "old") {
+			diagnostic = item
+		}
+	}
+	if diagnostic.Ref == "" || !strings.Contains(diagnostic.Detail, "unavailable") || !strings.Contains(diagnostic.Detail, "registration was kept") || store.SeverityForCode(diagnostic.Code) != store.SeverityWarning {
+		t.Fatalf("deletion uncertainty lacks coded cause: %+v", status.Errors)
+	}
+	f.request = func(r *http.Request) (*http.Response, error) {
+		return lifecycleResponse(200, `[{"uuid":"old","name":"demo","status":"stopped"},{"uuid":"new","name":"new","status":"stopped"}]`), nil
+	}
+	f.scheduler().recoverMissedDeletes()
+	status, err = store.ReadStatusStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := status.Sandboxes[store.StatusKey(f.scope, "old")]; got.Stale || strings.Contains(got.Detail, "deleted") {
+		t.Fatalf("recovered sandbox retains deletion uncertainty: %+v", got)
+	}
+	if len(status.Warnings) != 0 {
+		t.Fatalf("recovered warning remains: %+v", status.Warnings)
+	}
+	if len(status.Errors) != 0 {
+		t.Fatalf("recovered diagnostic remains: %+v", status.Errors)
+	}
+}
+
+func TestCatchupClearsDeletionWarningAfterConfirmedAbsence(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.save(ownedRegistration())
+	f.request = func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/sandbox" {
+			return lifecycleResponse(200, `[]`), nil
+		}
+		return nil, errors.New("unavailable")
+	}
+	f.scheduler().recoverMissedDeletes()
+	f.assertCount(1)
+	f.request = func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/sandbox" {
+			return lifecycleResponse(200, `[]`), nil
+		}
+		return lifecycleResponse(404, `{"code":"sandbox_not_found"}`), nil
+	}
+	f.scheduler().processCatchup(true)
+	f.assertCount(0)
+	status, err := store.ReadStatusStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warning := status.Warnings[store.StatusKey(f.scope, "old")+"/absence"]; warning != "" {
+		t.Fatalf("deleted sandbox retains warning: %s", warning)
+	}
+	for _, item := range status.Errors {
+		if item.Code == "S0002" {
+			t.Fatalf("deleted sandbox retains diagnostic: %+v", item)
+		}
+	}
+}
+
+func TestConfirmedAbsenceClearsVerificationFailureWhenCleanupIsDeferred(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.save(ownedRegistration())
+	f.request = func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/sandbox" {
+			return lifecycleResponse(200, `[]`), nil
+		}
+		return nil, errors.New("unavailable")
+	}
+	f.scheduler().recoverMissedDeletes()
+	f.request = func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/sandbox" {
+			return lifecycleResponse(200, `[]`), nil
+		}
+		return lifecycleResponse(404, `{"code":"sandbox_not_found"}`), nil
+	}
+	unlock, err := store.LockState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	f.scheduler().recoverMissedDeletes()
+	f.assertCount(1)
+	status, err := store.ReadStatusStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range status.Errors {
+		if item.Code == store.CodeSandboxDeletion {
+			t.Fatalf("confirmed deletion retains verification diagnostic: %+v", item)
+		}
+	}
+	if detail := status.Sandboxes[store.StatusKey(f.scope, "old")].Detail; strings.Contains(detail, "confirm") {
+		t.Fatalf("confirmed deletion retains verification detail: %s", detail)
+	}
+	if len(f.removed) != 0 {
+		t.Fatalf("deferred cleanup removed herdr machine: %v", f.removed)
+	}
 }
 
 func TestCatchupRecoversConfirmedDeletionWhenInventoryIsAmbiguous(t *testing.T) {
@@ -200,7 +367,7 @@ func TestManualReconcilePreservesUnconfirmedOrUnownedMachines(t *testing.T) {
 					return original(r)
 				}
 			case "changed profile":
-				f.catalog = `[{"profile_id":"machine-1","label":"manual","ssh_target":"demo.sbx","remote_session":"default"}]`
+				f.catalog = `[{"id":"machine-1","label":"manual","target":"demo.sbx","session":"default"}]`
 			case "pending intent":
 				item.Pending = true
 			case "other scope":
@@ -242,7 +409,7 @@ func TestLifecycleDeletionRemovesOnlyOwnedProfileInItsScope(t *testing.T) {
 func TestLifecycleDeletionRetainsMismatchedProfile(t *testing.T) {
 	f := newLifecycleFixture(t)
 	f.save(ownedRegistration())
-	f.catalog = `[{"profile_id":"machine-1","label":"manual","ssh_target":"different","remote_session":"default"}]`
+	f.catalog = `[{"id":"machine-1","label":"manual","target":"different","session":"default"}]`
 	f.scheduler().removeDeleted(sbx.LifecycleEvent{SandboxID: "old"})
 	f.assertCount(1)
 	if len(f.removed) != 0 {
@@ -316,7 +483,7 @@ func TestWorkerUsesPluginAndSessionLiveness(t *testing.T) {
 	f.run = func(_ context.Context, cmd process.Command) (string, error) {
 		switch strings.Join(cmd.Args, " ") {
 		case "plugin list --plugin lanwen.herdr-sbx --json":
-			return fmt.Sprintf(`[{"id":"lanwen.herdr-sbx","enabled":%t}]`, enabled), nil
+			return fmt.Sprintf(`{"result":{"plugins":[{"plugin_id":"lanwen.herdr-sbx","enabled":%t}]}}`, enabled), nil
 		case "status server --json":
 			return `{"running":false}`, nil
 		case "session list --json":
@@ -358,7 +525,7 @@ func TestWorkerAllowsABriefServerHandoffGap(t *testing.T) {
 	f.run = func(_ context.Context, cmd process.Command) (string, error) {
 		switch cmd.Args[0] {
 		case "plugin":
-			return `[{"id":"lanwen.herdr-sbx","enabled":true}]`, nil
+			return `{"result":{"plugins":[{"plugin_id":"lanwen.herdr-sbx","enabled":true}]}}`, nil
 		case "status":
 			return `{"running":false}`, nil
 		case "session":
@@ -388,7 +555,7 @@ func TestWorkerReconnectsWhileHerdrRemainsLive(t *testing.T) {
 	f.run = func(ctx context.Context, cmd process.Command) (string, error) {
 		switch strings.Join(cmd.Args, " ") {
 		case "plugin list --plugin lanwen.herdr-sbx --json":
-			return fmt.Sprintf(`[{"id":"lanwen.herdr-sbx","enabled":%t}]`, attempts.Load() < 2), nil
+			return fmt.Sprintf(`{"result":{"plugins":[{"plugin_id":"lanwen.herdr-sbx","enabled":%t}]}}`, attempts.Load() < 2), nil
 		case "status server --json":
 			return `{"running":true}`, nil
 		case "daemon status --json":
@@ -425,7 +592,7 @@ func TestWatchCancelsSchedulerBeforeAWorkerRetry(t *testing.T) {
 	canceled := make(chan error, 1)
 	var streamEnded atomic.Bool
 	f.run = func(commandContext context.Context, cmd process.Command) (string, error) {
-		if strings.Join(cmd.Args, " ") == "--machine machine-1 status server" {
+		if cmd.Name == "sbx" && strings.Join(cmd.Args, " ") == "exec demo -- pwd -P" {
 			close(entered)
 			<-commandContext.Done()
 			canceled <- commandContext.Err()
@@ -444,7 +611,7 @@ func TestWatchCancelsSchedulerBeforeAWorkerRetry(t *testing.T) {
 			return &http.Response{StatusCode: 200, Body: reader}, nil
 		}
 		if r.URL.Path == "/sandbox" {
-			return lifecycleResponse(200, `[{"id":"old","name":"demo","status":"running"}]`), nil
+			return lifecycleResponse(200, `[{"id":"old","name":"demo","status":"running","workspace":"/host/project","labels":{"com.docker.sandbox.usesWorktree":"true"}}]`), nil
 		}
 		return nil, fmt.Errorf("unexpected request: %s", r.URL)
 	}
@@ -550,7 +717,7 @@ func TestPluginDefaultsChangeRequestsCatchupWithoutLifecycleEvent(t *testing.T) 
 	if inspections != 0 {
 		t.Fatal("unchanged defaults triggered reconciliation")
 	}
-	if err := store.SetGuestPluginDefault("example.plugin", true, nil); err != nil {
+	if err := store.SetGuestPluginDefault("example.plugin", true); err != nil {
 		t.Fatal(err)
 	}
 	scheduler.processPluginDefaults()
@@ -561,5 +728,22 @@ func TestPluginDefaultsChangeRequestsCatchupWithoutLifecycleEvent(t *testing.T) 
 	scheduler.processPluginDefaults()
 	if inspections != previous {
 		t.Fatal("same choice repeatedly triggered reconciliation")
+	}
+}
+
+func TestLifecycleDeletionRetainsOwnershipWithMalformedMachineCatalog(t *testing.T) {
+	for _, catalog := range []string{`[null]`, `[{}]`, `[{"label":"demo","target":"demo.sbx","session":"default"}]`} {
+		t.Run(catalog, func(t *testing.T) {
+			f := newLifecycleFixture(t)
+			f.save(ownedRegistration())
+			f.catalog = catalog
+			if f.scheduler().removeDeleted(sbx.LifecycleEvent{SandboxID: "old"}) {
+				t.Fatal("malformed machine catalog completed deletion")
+			}
+			f.assertCount(1)
+			if len(f.removed) != 0 {
+				t.Fatalf("malformed catalog removed machines: %v", f.removed)
+			}
+		})
 	}
 }

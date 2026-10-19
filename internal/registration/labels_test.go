@@ -13,12 +13,12 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/store"
 )
 
-func TestLabelMigrationOwnershipAndRecovery(t *testing.T) {
+func TestPendingLabelOwnershipAndRecovery(t *testing.T) {
 	for _, scenario := range []string{"manual rename", "target changed", "collision", "lost acknowledgement", "stale"} {
 		t.Run(scenario, func(t *testing.T) {
 			fixture := newRegistrationFixture(t, "[]")
-			item := store.Tracked{SandboxID: "sandbox-1", Label: "demo", Target: "demo.sbx", ProfileID: "machine-1"}
-			machine := herdr.Machine{ID: "machine-1", Label: "demo", Target: "demo.sbx", Session: "default"}
+			item := store.Tracked{SandboxID: "sandbox-1", Label: "original", PendingLabel: "Release desk", Target: "demo.sbx", ProfileID: "machine-1"}
+			machine := herdr.Machine{ID: "machine-1", Label: "original", Target: "demo.sbx", Session: "default"}
 			switch scenario {
 			case "manual rename":
 				machine.Label = "my workstation"
@@ -27,7 +27,7 @@ func TestLabelMigrationOwnershipAndRecovery(t *testing.T) {
 			}
 			machines := []herdr.Machine{machine}
 			if scenario == "collision" {
-				machines = append(machines, herdr.Machine{ID: "manual", Label: sandboxMachineLabel("demo"), Target: "elsewhere"})
+				machines = append(machines, herdr.Machine{ID: "manual", Label: "Release desk", Target: "elsewhere"})
 			}
 			state := store.State{Version: 1, Scopes: map[string][]store.Tracked{"scope": {item}}}
 			if err := store.SaveState(state); err != nil {
@@ -37,15 +37,15 @@ func TestLabelMigrationOwnershipAndRecovery(t *testing.T) {
 			fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
 				call := command.Name + " " + strings.Join(command.Args, " ")
 				switch call {
-				case "herdr machine rename machine-1 --label sbx · demo":
+				case "herdr machine rename machine-1 --label Release desk":
 					renames++
-					machines[0].Label = sandboxMachineLabel("demo")
+					machines[0].Label = "Release desk"
 					if scenario == "lost acknowledgement" {
 						return "", errors.New("lost response")
 					}
 					return "", nil
 				case "herdr machine list --json":
-					return fmt.Sprintf(`[{"profile_id":"machine-1","label":%q,"ssh_target":%q,"remote_session":"default"}]`, machines[0].Label, machines[0].Target), nil
+					return fmt.Sprintf(`[{"id":"machine-1","label":%q,"target":%q,"session":"default"}]`, machines[0].Label, machines[0].Target), nil
 				default:
 					return "", fmt.Errorf("unexpected %s", call)
 				}
@@ -53,9 +53,9 @@ func TestLabelMigrationOwnershipAndRecovery(t *testing.T) {
 			fixture.rebuildClients()
 			current := func() bool { return scenario != "stale" }
 			sandbox := sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"}
-			err := fixture.service.migrateMachineLabel(context.Background(), "scope", &state, machines, sandbox, &item, current)
+			err := fixture.service.recoverMachineLabel(context.Background(), "scope", &state, machines, sandbox, &item, current)
 			if err == nil {
-				t.Fatal("expected migration refusal or failure")
+				t.Fatal("expected rename refusal or failure")
 			}
 			if scenario == "lost acknowledgement" {
 				saved, err := store.LoadState()
@@ -63,13 +63,13 @@ func TestLabelMigrationOwnershipAndRecovery(t *testing.T) {
 					t.Fatal(err)
 				}
 				item = saved.Scopes["scope"][0]
-				if item.PendingLabel != sandboxMachineLabel("demo") {
+				if item.PendingLabel != "Release desk" {
 					t.Fatal("rename intent lost")
 				}
-				if err := fixture.service.migrateMachineLabel(context.Background(), "scope", &saved, machines, sandbox, &item, current); err != nil {
+				if err := fixture.service.recoverMachineLabel(context.Background(), "scope", &saved, machines, sandbox, &item, current); err != nil {
 					t.Fatal(err)
 				}
-				if item.Label != sandboxMachineLabel("demo") || item.PendingLabel != "" || renames != 1 {
+				if item.Label != "Release desk" || item.PendingLabel != "" || renames != 1 {
 					t.Fatalf("unsafe recovery: %#v renames=%d", item, renames)
 				}
 			} else if renames != 0 {

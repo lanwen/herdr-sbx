@@ -33,16 +33,9 @@ func (c *Client) GuestServerVersion(ctx context.Context, target string) (bool, s
 	var response struct {
 		Running *bool  `json:"running"`
 		Version string `json:"version"`
-		Result  *struct {
-			Running *bool  `json:"running"`
-			Version string `json:"version"`
-		} `json:"result"`
 	}
 	if err := decodeJSON(output, &response); err != nil {
 		return false, "", err
-	}
-	if response.Result != nil {
-		response.Running, response.Version = response.Result.Running, response.Result.Version
 	}
 	if response.Running == nil {
 		return false, "", fmt.Errorf("guest server did not report whether it is running")

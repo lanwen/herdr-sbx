@@ -2,8 +2,8 @@ package herdr
 
 import (
 	"context"
+	"errors"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -21,7 +21,7 @@ func (c *Client) LocalServerRunning(ctx context.Context) bool {
 	if running, ok := status["running"].(bool); ok {
 		return running
 	}
-	return text(status["status"]) == "running"
+	return false
 }
 
 // PluginEnabled checks the configured plugin using a clean local session.
@@ -34,18 +34,15 @@ func (c *Client) PluginEnabled(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	items, err := objects(output, "plugins")
+	items, err := parsePlugins(output)
 	if err != nil {
 		return false
 	}
 	for _, item := range items {
-		if first(item, "id", "plugin_id") != plugin {
+		if item.ID != plugin {
 			continue
 		}
-		if enabled, ok := item["enabled"].(bool); ok {
-			return enabled
-		}
-		return strings.EqualFold(first(item, "status", "state"), "enabled")
+		return item.Enabled
 	}
 	return false
 }
@@ -73,7 +70,7 @@ func (c *Client) RebindToRunningSession(ctx context.Context) bool {
 	}
 	for _, item := range items {
 		running, _ := item["running"].(bool)
-		socket := first(item, "socket_path", "socket")
+		socket := text(item["socket_path"])
 		if running && socket != "" {
 			c.RebindSocket(socket)
 			return true
@@ -87,5 +84,19 @@ func (c *Client) sessions(ctx context.Context) ([]map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return objects(output, "sessions")
+	var response struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	if err := decodeJSON(output, &response); err != nil {
+		return nil, err
+	}
+	if response.Sessions == nil {
+		return nil, errors.New("herdr session list did not report sessions")
+	}
+	for _, session := range response.Sessions {
+		if session == nil {
+			return nil, errors.New("herdr session list contains a null entry")
+		}
+	}
+	return response.Sessions, nil
 }

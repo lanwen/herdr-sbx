@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -14,28 +15,29 @@ import (
 )
 
 func TestProjectWorkspaceRegistration(t *testing.T) {
-	for _, scenario := range []string{"new", "fresh server", "existing pane", "upgrade", "no project", "invalid directory", "missing directory", "ambiguous created", "ambiguous absent", "rejected", "replacement during resolve", "replacement during create", "cancel during resolve"} {
+	for _, scenario := range []string{"new", "fresh server", "existing pane", "no project", "invalid directory", "missing directory", "ambiguous created", "ambiguous absent", "rejected", "replacement during resolve", "replacement during create", "cancel during resolve"} {
 		t.Run(scenario, func(t *testing.T) {
 			fixture := newRegistrationFixture(t, "[]")
 			const cwd = "/guest/project spaces ' $(touch nope) "
-			sandbox := sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running", Workspace: "/host/clone-source"}
+			sandbox := sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running", Workspace: cwd}
+			switch scenario {
+			case "invalid directory", "missing directory", "replacement during resolve", "cancel during resolve":
+				sandbox.WorkspaceNeedsProbe = true
+			}
 			if scenario == "no project" {
 				sandbox.Workspace = ""
 			}
 			setFixtureInventory(fixture, sandbox)
 			adds, creates, resolves := 0, 0, 0
 			bootstrapWorkspaces := 0
-			label, renames := sandboxMachineLabel("demo"), 0
-			if scenario == "upgrade" {
-				label = "demo"
-			}
+			label := sandboxMachineLabel("demo")
 			paneExists := scenario == "existing pane"
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
 				joined := strings.Join(command.Args, " ")
 				if command.Name == "ssh" && strings.Contains(joined, "--session default status server --json") {
-					return fmt.Sprintf(`{"result":{"running":%t}}`, scenario != "fresh server"), nil
+					return fmt.Sprintf(`{"running":%t}`, scenario != "fresh server"), nil
 				}
 				if command.Name == "ssh" && strings.Contains(joined, "HERDR_STARTUP_CWD=") {
 					bootstrapWorkspaces++
@@ -45,7 +47,7 @@ func TestProjectWorkspaceRegistration(t *testing.T) {
 				switch command.Name + " " + joined {
 				case "herdr --version":
 					return "herdr 0.9.1", nil
-				case "sbx --version":
+				case "sbx version":
 					return "sbx 0.45.1", nil
 				case "ssh -V":
 					return "OpenSSH", nil
@@ -63,11 +65,7 @@ func TestProjectWorkspaceRegistration(t *testing.T) {
 					if adds == 0 {
 						return "[]", nil
 					}
-					return fmt.Sprintf(`[{"profile_id":"machine-1","label":%q,"ssh_target":"demo.sbx","remote_session":"default"}]`, label), nil
-				case "herdr machine rename machine-1 --label sbx · demo":
-					renames++
-					label = sandboxMachineLabel("demo")
-					return "renamed", nil
+					return fmt.Sprintf(`[{"id":"machine-1","label":%q,"target":"demo.sbx","session":"default"}]`, label), nil
 				case "herdr machine add --label sbx · demo demo.sbx":
 					if scenario == "fresh server" && !paneExists {
 						bootstrapWorkspaces++
@@ -150,12 +148,16 @@ func TestProjectWorkspaceRegistration(t *testing.T) {
 			if adds != 1 || item.ProfileID != "machine-1" {
 				t.Fatalf("ownership lost: adds=%d item=%#v", adds, item)
 			}
+			expectedResolves := 0
+			if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+				expectedResolves = 1
+			}
 			switch scenario {
 			case "fresh server":
-				if bootstrapWorkspaces+creates != 1 {
-					t.Fatalf("new machine opened %d workspaces: %d bootstrap and %d project", bootstrapWorkspaces+creates, bootstrapWorkspaces, creates)
+				if bootstrapWorkspaces+creates != 1 || resolves != expectedResolves {
+					t.Fatalf("new machine opened %d workspaces: %d bootstrap and %d project, probes=%d", bootstrapWorkspaces+creates, bootstrapWorkspaces, creates, resolves)
 				}
-			case "new", "upgrade", "existing pane":
+			case "new", "existing pane":
 				if !item.ProjectWorkspaceDone {
 					t.Fatalf("not completed: %s", output.String())
 				}
@@ -169,10 +171,7 @@ func TestProjectWorkspaceRegistration(t *testing.T) {
 				if scenario == "existing pane" {
 					expected = 0
 				}
-				if scenario == "upgrade" && renames != 1 {
-					t.Fatalf("rename calls=%d", renames)
-				}
-				if creates != expected || resolves != 1 || adds != 1 {
+				if creates != expected || resolves != expectedResolves || adds != 1 {
 					t.Fatalf("repeated setup: creates=%d resolves=%d adds=%d", creates, resolves, adds)
 				}
 			case "ambiguous created":
@@ -221,21 +220,25 @@ func TestProjectWorkspaceRegistration(t *testing.T) {
 }
 
 func setFixtureInventory(fixture *registrationFixture, sandbox sbx.Sandbox) {
-	data, _ := json.Marshal([]map[string]string{{"uuid": sandbox.ID, "name": sandbox.Name, "status": sandbox.Status, "workspace": sandbox.Workspace}})
+	item := map[string]any{"uuid": sandbox.ID, "name": sandbox.Name, "status": sandbox.Status, "workspace": sandbox.Workspace}
+	if sandbox.WorkspaceNeedsProbe {
+		item["labels"] = map[string]string{"com.docker.sandbox.usesWorktree": "true"}
+	}
+	data, _ := json.Marshal([]map[string]any{item})
 	fixture.inventory = string(data)
 }
 
 func TestInitialProjectStartupRetriesSavedIntent(t *testing.T) {
 	f := newRegistrationFixture(t, "[]")
-	sb := sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running", Workspace: "/host/project"}
 	const cwd = "/guest/project"
+	sb := sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running", Workspace: cwd}
 	probes, resolves, starts := 0, 0, 0
 	f.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
 		joined := strings.Join(command.Args, " ")
 		switch {
 		case command.Name == "ssh" && strings.Contains(joined, "--session default status server --json"):
 			probes++
-			return `{"result":{"running":false}}`, nil
+			return `{"running":false}`, nil
 		case command.Name == "sbx" && joined == "exec demo -- pwd -P":
 			resolves++
 			return cwd + "\n", nil
@@ -266,8 +269,56 @@ func TestInitialProjectStartupRetriesSavedIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A saved startup intent wins over changed or uncertain inventory metadata.
+	sb.Workspace = "/different/project"
+	sb.WorkspaceNeedsProbe = true
 	got, err := f.service.prepareInitialProjectWorkspace(context.Background(), "scope", &st, sb, current)
-	if err != nil || got != cwd || probes != 1 || resolves != 1 || starts != 2 || len(st.Scopes["scope"]) != 1 {
+	expectedResolves := 0
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		expectedResolves = 1
+	}
+	if err != nil || got != cwd || probes != 1 || resolves != expectedResolves || starts != 2 || len(st.Scopes["scope"]) != 1 {
 		t.Fatalf("cwd=%q err=%v probes=%d resolves=%d starts=%d state=%#v", got, err, probes, resolves, starts, st)
+	}
+}
+
+func TestProjectDirectoryUsesInventoryOrGuestFallback(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		workspace  string
+		probe      bool
+		output     string
+		commandErr error
+		wantErr    bool
+	}{
+		{"inventory", "/project", false, "/guest/project\n", nil, false},
+		{"legacy", "/host/project", true, "/guest/project\n", nil, false},
+		{"relative inventory", "project", false, "/guest/project\n", nil, false},
+		{"unclean inventory", "/project/../other", false, "/guest/project\n", nil, false},
+		{"control in inventory", "/project\nnoise", false, "/guest/project\n", nil, false},
+		{"unknown inventory", "", false, "/guest/project\n", nil, false},
+		{"invalid guest", "project", false, "/guest/../project\n", nil, true},
+		{"probe failure", "project", false, "workspace unavailable", errors.New("exit 1"), true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newRegistrationFixture(t, "[]")
+			calls := 0
+			f.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
+				if command.Name != "sbx" || strings.Join(command.Args, " ") != "exec demo -- pwd -P" {
+					t.Fatalf("unexpected command: %#v", command)
+				}
+				calls++
+				return test.output, test.commandErr
+			}
+			f.rebuildClients()
+			got, err := f.service.projectDirectory(context.Background(), sbx.Sandbox{Name: "demo", Workspace: test.workspace, WorkspaceNeedsProbe: test.probe})
+			want, wantCalls := "/guest/project", 1
+			if test.name == "inventory" && (runtime.GOOS == "darwin" || runtime.GOOS == "linux") {
+				want, wantCalls = "/project", 0
+			}
+			if (err != nil) != test.wantErr || (!test.wantErr && got != want) || calls != wantCalls {
+				t.Fatalf("cwd=%q err=%v probes=%d", got, err, calls)
+			}
+		})
 	}
 }

@@ -30,7 +30,7 @@ func TestPreparationCooldownIsSharedThroughStatusStore(t *testing.T) {
 }
 
 func TestPolicyAttemptRetainsOriginalScope(t *testing.T) {
-	for _, selector := range []string{"", "demo"} {
+	for _, selector := range []string{"sandbox-id", "demo"} {
 		attempt := PolicyAttempt{PolicySandbox: selector, Scope: "scope", Sandbox: sbx.Sandbox{ID: "old", Name: "demo"}, Intent: &sbx.PolicyAccess{Host: "herdr.dev:443", Path: "/latest.json"}}
 		encoded, err := json.Marshal(attempt)
 		if err != nil || !strings.Contains(string(encoded), `"host":`) || !strings.Contains(string(encoded), `"path":`) {
@@ -40,12 +40,8 @@ func TestPolicyAttemptRetainsOriginalScope(t *testing.T) {
 		if err := json.Unmarshal(encoded, &restored); err != nil {
 			t.Fatal(err)
 		}
-		want := selector
-		if want == "" {
-			want = "old"
-		}
-		if restored.PolicySandboxName() != want {
-			t.Fatalf("restored selector=%q, want %q", restored.PolicySandboxName(), want)
+		if restored.PolicySandbox != selector {
+			t.Fatalf("restored selector=%q, want %q", restored.PolicySandbox, selector)
 		}
 	}
 }

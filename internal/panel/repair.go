@@ -1,20 +1,12 @@
 package panel
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
 )
-
-func (s *Service) repair(action string, reader *bufio.Reader, out io.Writer) {
-	if err := s.Repair(action, out); err != nil {
-		fmt.Fprintln(out, "Action failed:", err)
-	}
-	waitForReturn(reader, out)
-}
 
 // Repair runs interactive SSH setup and refreshes
 // prerequisite status when it finishes.
@@ -43,9 +35,4 @@ func (s *Service) runSSHSetup() (error, bool) {
 	defer stop()
 	err := s.sbx.SetupSSHInteractive(ctx)
 	return err, ctx.Err() != nil
-}
-
-func waitForReturn(reader *bufio.Reader, out io.Writer) {
-	fmt.Fprintln(out, "Press Enter to return to status.")
-	_, _ = reader.ReadString('\n')
 }

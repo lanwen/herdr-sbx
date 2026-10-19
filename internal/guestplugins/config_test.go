@@ -10,7 +10,7 @@ prefix = ["ctrl+b", "ctrl+a"]
 [[keys.command]]
 key = "prefix+ctrl+r"
 type = "plugin_action"
-command = "persiyanov.reviewr.toggle"
+command = "example.actions.toggle"
 [[keys.command]]
 key = "prefix+z"
 type = "plugin_action"
@@ -19,7 +19,7 @@ command = "other.toggle"
 
 func TestMergeKeys(t *testing.T) {
 	guest := []byte("# keep a backup of comments\n[theme]\nname = 'sand'\n")
-	merged, err := mergeKeys([]byte(hostKeys), guest, reviewrID)
+	merged, err := mergeKeys([]byte(hostKeys), guest, "example.actions")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestMergeKeys(t *testing.T) {
 	if len(keyNames(keys["prefix"])) != 2 {
 		t.Fatal("missing local prefix")
 	}
-	again, err := mergeKeys([]byte(hostKeys), merged, reviewrID)
+	again, err := mergeKeys([]byte(hostKeys), merged, "example.actions")
 	if err != nil || !bytes.Equal(again, merged) {
 		t.Fatalf("not idempotent: %v", err)
 	}
@@ -58,7 +58,7 @@ quit="ctrl+a"`,
 		"invalid": "[broken",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := mergeKeys([]byte(hostKeys), []byte(guest), reviewrID); err == nil {
+			if _, err := mergeKeys([]byte(hostKeys), []byte(guest), "example.actions"); err == nil {
 				t.Fatal("accepted conflict")
 			}
 		})

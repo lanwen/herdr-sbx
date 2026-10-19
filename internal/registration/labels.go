@@ -14,7 +14,7 @@ import (
 func sandboxMachineLabel(name string) string { return "sbx · " + name }
 
 // The SSH target retains the sandbox name independently of its display label,
-// including state written before labels had a prefix.
+// so custom labels do not affect sandbox identity.
 func SandboxName(item store.Tracked) string {
 	if !strings.HasSuffix(item.Target, ".sbx") {
 		return ""
@@ -30,14 +30,17 @@ func ownedTrackedMachine(machines []herdr.Machine, item store.Tracked) *herdr.Ma
 	if owned := ownedMachineByID(machines, item.ProfileID, item.Label, item.Target); owned != nil {
 		return owned
 	}
-	if item.PendingLabel != "" && item.PendingLabel == sandboxMachineLabel(SandboxName(item)) {
+	if item.PendingLabel != "" {
 		return ownedMachineByID(machines, item.ProfileID, item.PendingLabel, item.Target)
 	}
 	return nil
 }
 
-func (s *Service) migrateMachineLabel(ctx context.Context, scope string, st *store.State, machines []herdr.Machine, sb sbx.Sandbox, item *store.Tracked, current func() bool) error {
-	wanted := sandboxMachineLabel(sb.Name)
+func (s *Service) recoverMachineLabel(ctx context.Context, scope string, st *store.State, machines []herdr.Machine, sb sbx.Sandbox, item *store.Tracked, current func() bool) error {
+	wanted := item.Label
+	if item.PendingLabel != "" {
+		wanted = item.PendingLabel
+	}
 	owned := ownedTrackedMachine(machines, *item)
 	if owned == nil || SandboxName(*item) != sb.Name {
 		return errors.New("saved machine is no longer the owned profile")
@@ -55,7 +58,7 @@ func (s *Service) migrateMachineLabel(ctx context.Context, scope string, st *sto
 			return err
 		}
 		if current == nil || !current() {
-			return errors.New("sandbox changed before label migration")
+			return errors.New("sandbox changed before label recovery")
 		}
 		return nil
 	}

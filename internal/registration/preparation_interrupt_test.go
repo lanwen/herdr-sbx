@@ -81,7 +81,7 @@ func runPreparationInterruptHelper(t *testing.T, action string) {
 		switch joined {
 		case "herdr --version":
 			return "herdr 0.9.3\n", nil
-		case "sbx --version":
+		case "sbx version":
 			return "sbx 0.45.1\n", nil
 		case "ssh -V":
 			return "OpenSSH_9.9\n", nil

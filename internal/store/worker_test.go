@@ -21,7 +21,7 @@ func TestWorkerHealthUsesLockAndPreservesLastSync(t *testing.T) {
 	}()
 	status, err = ReadWorkerStatus()
 	if err != nil || status.State != "unknown" {
-		t.Fatalf("legacy worker status: %#v %v", status, err)
+		t.Fatalf("starting worker status: %#v %v", status, err)
 	}
 	if err := RecordWorkerStatus("running", "connected", true); err != nil {
 		t.Fatal(err)

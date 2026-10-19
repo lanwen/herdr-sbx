@@ -20,24 +20,27 @@ cd herdr-sbx
 mise trust
 mise install
 mise run deps
-mise run build
-mise exec -- herdr plugin link . --enabled
+mise run link
 ```
 
-The worker is the process that follows sandbox changes in the background.
-From a terminal inside local Herdr, start the worker and open the status panel:
+The auto-sync daemon follows sandbox changes in the background.
+From a terminal inside local Herdr, open the sandbox manager:
 
 ```sh
-herdr plugin action invoke daemon --plugin lanwen.herdr-sbx
 herdr plugin action invoke open-status --plugin lanwen.herdr-sbx
 ```
 
-Starting it again has no effect while it is running.
-The panel shows prerequisites, sandbox results, and worker status.
+On first use, the manager starts one daemon automatically.
+Closing the manager leaves the daemon running.
+Use the table to watch sandboxes, rename Herdr labels, and select synchronized plugins.
+Use Auto-sync controls to stop it or start it again.
+Run `bin/herdr-sbx status` for cached observations, or add `--json` for a detailed snapshot.
+Use `bin/herdr-sbx daemon start` or `bin/herdr-sbx daemon stop` to control it.
+Run `bin/herdr-sbx daemon status` to inspect only the daemon, or add `--json` for its JSON status.
 
 ## How it works
 
-The worker follows sandbox events and scans again every 30 seconds.
+The daemon follows sandbox events and scans again every 30 seconds.
 It downloads missing Herdr binaries on the host, compares their checksums, and copies them over SSH.
 Stopped sandboxes keep their machine entries.
 Deleted sandboxes lose only entries that the plugin manages.
