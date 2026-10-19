@@ -22,39 +22,42 @@ Review and approve the installation prompt.
 Herdr enables the installed plugin.
 If you already use a local checkout, follow the [switching instructions](docs/reference.md#local-checkout) first.
 
-The worker is the process that follows sandbox changes in the background.
-From a terminal inside local Herdr, start the worker and open the status panel:
+The auto-sync daemon follows sandbox changes in the background.
+From a terminal inside local Herdr, open the sandbox manager:
 
 ```sh
-herdr plugin action invoke daemon --plugin lanwen.herdr-sbx
 herdr plugin action invoke open-status --plugin lanwen.herdr-sbx
 ```
 
-Starting it again has no effect while it is running.
-The panel shows prerequisites, sandbox results, and worker status.
+On first use, the manager starts one daemon automatically.
+Closing the manager leaves the daemon running.
+Use the table to watch sandboxes, rename Herdr labels, and select synchronized plugins.
+Use Auto-sync controls to stop it or start it again.
+The plugin binary also provides `status` for cached observations and `status --json` for a detailed snapshot.
+Use `daemon start` or `daemon stop` to control auto-sync, and `daemon status` or `daemon status --json` to inspect only the daemon.
+For a local checkout, run these subcommands with `bin/herdr-sbx`.
 
 ## Upgrade
 
-Open the status panel, then disable the plugin from another local Herdr terminal:
+Open the sandbox manager, set Auto-sync to OFF, and wait for Stopped.
+Then disable the plugin from another local Herdr terminal:
 
 ```sh
 herdr plugin disable lanwen.herdr-sbx
 ```
 
-In the open panel, press `c`, then Enter, until `Worker: STOPPED` appears.
-Reinstall from GitHub and start the new worker:
+Reinstall from GitHub:
 
 ```sh
 herdr plugin install lanwen/herdr-sbx
-herdr plugin action invoke daemon --plugin lanwen.herdr-sbx
 ```
 
-Close and reopen the panel to load the new version.
+Close and reopen the manager to load the new version, then accept the Start prompt or set Auto-sync to ON.
 The upgrade keeps plugin state and managed machine entries.
 
 ## How it works
 
-The worker follows sandbox events and scans again every 30 seconds.
+The daemon follows sandbox events and scans again every 30 seconds.
 It downloads missing Herdr binaries on the host, compares their checksums, and copies them over SSH.
 Stopped sandboxes keep their machine entries.
 Deleted sandboxes lose only entries that the plugin manages.

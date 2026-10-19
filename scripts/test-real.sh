@@ -76,6 +76,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 go build -o bin/herdr-sbx ./cmd/herdr-sbx
+go build -o "$HERDR_SANDBOX_TEST_ROOT/real-driver" ./scripts/real-driver
 "$HERDR_BIN_PATH" --session "$HERDR_SESSION" server >"$HERDR_SANDBOX_TEST_ROOT/herdr-server.log" 2>&1 &
 server_pid=$!
 
@@ -108,12 +109,12 @@ if [ "${HERDR_SANDBOX_TEST_TEMPORARY_ACCESS:-}" = 1 ]; then
   # This opt-in authorizes only the named disposable sandbox's temporary rules.
   sandbox_id=$(printf '%s' "$inventory" | python3 -c 'import json,sys; value=json.load(sys.stdin)["sandboxes"][0]["id"]; assert isinstance(value,str) and value; print(value)')
   policy_snapshot >"$HERDR_SANDBOX_TEST_ROOT/policy-before.json"
-  # The explicit legacy strategy still requires a blocked-download fixture.
-  # Default registration now transfers a host download and would succeed here.
+  # Temporary download access requires a blocked-download fixture.
+  # Default registration transfers a host download and would succeed here.
   denied_code=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$HERDR_SANDBOX_TEST_NAME.sbx" 'curl --silent --show-error --location --max-time 30 --output /dev/null --write-out "%{http_code}" https://herdr.dev/install.sh')
   [ "$denied_code" = 403 ] || { echo 'Temporary access fixture must block guest installer downloads with HTTP 403.' >&2; exit 2; }
   sbx --app-name "$HERDR_SANDBOXES_SBX_APP_NAME" ls --json | python3 -c 'import json,sys; rows=json.load(sys.stdin)["sandboxes"]; assert len(rows)==1 and rows[0].get("name")==sys.argv[1] and rows[0].get("id")==sys.argv[2], "sandbox identity changed"' "$HERDR_SANDBOX_TEST_NAME" "$sandbox_id"
-  first=$(printf 'n\n1\nallow\n\nq\n' | bin/herdr-sbx panel)
+  first=$("$HERDR_SANDBOX_TEST_ROOT/real-driver" temporary)
   printf '%s\n' "$first" >"$HERDR_SANDBOX_TEST_ROOT/temporary-install.log"
   policy_snapshot >"$HERDR_SANDBOX_TEST_ROOT/policy-after.json"
   cmp "$HERDR_SANDBOX_TEST_ROOT/policy-before.json" "$HERDR_SANDBOX_TEST_ROOT/policy-after.json"
@@ -125,20 +126,20 @@ PY
   sbx --app-name "$HERDR_SANDBOXES_SBX_APP_NAME" ls --json | python3 -c 'import json,sys; rows=json.load(sys.stdin)["sandboxes"]; assert len(rows)==1 and rows[0].get("name")==sys.argv[1] and rows[0].get("id")==sys.argv[2], "sandbox identity changed"' "$HERDR_SANDBOX_TEST_NAME" "$sandbox_id"
 else
   policy_snapshot >"$HERDR_SANDBOX_TEST_ROOT/policy-before.json"
-  first=$(bin/herdr-sbx reconcile)
+  first=$("$HERDR_SANDBOX_TEST_ROOT/real-driver")
   policy_snapshot >"$HERDR_SANDBOX_TEST_ROOT/policy-after.json"
   cmp "$HERDR_SANDBOX_TEST_ROOT/policy-before.json" "$HERDR_SANDBOX_TEST_ROOT/policy-after.json"
 fi
 project_workspace=$(printf '%s' "$inventory" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sandboxes"][0].get("workspace", ""))')
 if [ -n "$project_workspace" ]; then
   guest_project=$(sbx --app-name "$HERDR_SANDBOXES_SBX_APP_NAME" exec "$HERDR_SANDBOX_TEST_NAME" -- pwd -P)
-  project_profile=$("$HERDR_BIN_PATH" machine list --json | python3 -c 'import json,sys; rows=json.load(sys.stdin); assert len(rows)==1; print(rows[0]["profile_id"])')
+  project_profile=$("$HERDR_BIN_PATH" machine list --json | python3 -c 'import json,sys; rows=json.load(sys.stdin); assert len(rows)==1; print(rows[0]["id"])')
   project_workspace_ids() {
     "$HERDR_BIN_PATH" --machine "$project_profile" pane list | python3 -c 'import json,sys; result=json.load(sys.stdin)["result"]; ids=sorted({p["workspace_id"] for p in result["panes"] if p.get("cwd")==sys.argv[1]}); assert ids, "No Herdr workspace at guest project directory"; print(json.dumps(ids))' "$guest_project"
   }
   project_workspace_ids >"$HERDR_SANDBOX_TEST_ROOT/project-workspaces-before.json"
 fi
-second=$(bin/herdr-sbx reconcile)
+second=$("$HERDR_SANDBOX_TEST_ROOT/real-driver")
 if [ -n "$project_workspace" ]; then
   project_workspace_ids >"$HERDR_SANDBOX_TEST_ROOT/project-workspaces-after.json"
   cmp "$HERDR_SANDBOX_TEST_ROOT/project-workspaces-before.json" "$HERDR_SANDBOX_TEST_ROOT/project-workspaces-after.json"
@@ -151,7 +152,7 @@ printf '%s\n' "$catalog" | python3 -c 'import json,sys; rows=json.load(sys.stdin
 
 if [ "${HERDR_SANDBOX_TEST_LIFECYCLE:-}" = 1 ]; then
   sandbox_id=$(printf '%s' "$inventory" | python3 -c 'import json,sys; value=json.load(sys.stdin)["sandboxes"][0]["id"]; assert isinstance(value,str) and value, "sandbox has no stable identity"; print(value)')
-  profile_id=$(printf '%s' "$catalog" | python3 -c 'import json,sys; rows=json.load(sys.stdin); print(rows[0]["profile_id"])')
+  profile_id=$(printf '%s' "$catalog" | python3 -c 'import json,sys; rows=json.load(sys.stdin); print(rows[0]["id"])')
   verify_identity() {
     sbx --app-name "$HERDR_SANDBOXES_SBX_APP_NAME" ls --json | python3 -c 'import json,sys; rows=[row for row in json.load(sys.stdin)["sandboxes"] if row.get("name")==sys.argv[1]]; assert len(rows)==1 and rows[0].get("id")==sys.argv[2], "sandbox identity changed"' "$HERDR_SANDBOX_TEST_NAME" "$sandbox_id"
   }
@@ -160,12 +161,12 @@ if [ "${HERDR_SANDBOX_TEST_LIFECYCLE:-}" = 1 ]; then
   trap 'kill "$worker_pid" >/dev/null 2>&1 || true; cleanup' EXIT INT TERM
   verify_identity
   sbx --app-name "$HERDR_SANDBOXES_SBX_APP_NAME" stop "$HERDR_SANDBOX_TEST_NAME"
-  "$HERDR_BIN_PATH" machine list --json | python3 -c 'import json,sys; assert any(row.get("profile_id")==sys.argv[1] for row in json.load(sys.stdin)), "stop removed the machine"' "$profile_id"
+  "$HERDR_BIN_PATH" machine list --json | python3 -c 'import json,sys; assert any(row.get("id")==sys.argv[1] for row in json.load(sys.stdin)), "stop removed the machine"' "$profile_id"
   "$HERDR_BIN_PATH" --machine "$profile_id" status server >/dev/null
   verify_identity
   sbx --app-name "$HERDR_SANDBOXES_SBX_APP_NAME" rm --force "$HERDR_SANDBOX_TEST_NAME"
   attempts=0
-  until "$HERDR_BIN_PATH" machine list --json | python3 -c 'import json,sys; assert not any(row.get("profile_id")==sys.argv[1] for row in json.load(sys.stdin))' "$profile_id"; do
+  until "$HERDR_BIN_PATH" machine list --json | python3 -c 'import json,sys; assert not any(row.get("id")==sys.argv[1] for row in json.load(sys.stdin))' "$profile_id"; do
     attempts=$((attempts + 1)); [ "$attempts" -lt 20 ] || { echo 'Worker did not remove the owned machine.' >&2; exit 1; }; sleep 1
   done
 fi

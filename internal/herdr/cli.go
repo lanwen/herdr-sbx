@@ -3,8 +3,12 @@ package herdr
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -79,10 +83,15 @@ func (c *Client) command(ctx context.Context, timeout time.Duration, bound bool,
 	} else {
 		command.Unset = []string{"HERDR_SOCKET_PATH", "HERDR_CLIENT_SOCKET_PATH"}
 	}
-	return c.runner.CombinedOutput(ctx, command)
+	output, err := c.runner.CombinedOutput(ctx, command)
+	return output, parseCommandError(err, output)
 }
 
 func commandError(err error, output string) string {
+	var upstream *CommandError
+	if errors.As(err, &upstream) {
+		return upstream.Error()
+	}
 	message := strings.TrimSpace(output)
 	if message == "" {
 		return err.Error()
@@ -92,4 +101,53 @@ func commandError(err error, output string) string {
 		message = message[:177] + "..."
 	}
 	return message
+}
+
+// CommandError preserves a failure reported by herdr rather than its process wrapper.
+// Code is the upstream code, when the CLI supplied a structured error response.
+type CommandError struct {
+	Code    string
+	Message string
+	Err     error
+}
+
+func (e *CommandError) Error() string {
+	if e.Code != "" {
+		return fmt.Sprintf("herdr [%s]: %s", e.Code, e.Message)
+	}
+	return "herdr: " + e.Message
+}
+
+func (e *CommandError) Unwrap() error { return e.Err }
+
+// MachineForwardingUnsupported identifies an explicit remote executable
+// compatibility rejection. Different version numbers alone do not establish it.
+func MachineForwardingUnsupported(err error) bool {
+	var upstream *CommandError
+	return errors.As(err, &upstream) && strings.Contains(strings.ToLower(upstream.Message), "remote herdr does not support machine api forwarding")
+}
+
+var debugCommandError = regexp.MustCompile(`^Error: Custom \{ kind: [A-Za-z_][A-Za-z0-9_]*, error: ("(?:[^"\\]|\\.)*") \}$`)
+
+func parseCommandError(cause error, output string) error {
+	var response struct {
+		Error *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	message := strings.TrimSpace(output)
+	if json.Unmarshal([]byte(message), &response) == nil && response.Error != nil && strings.TrimSpace(response.Error.Message) != "" {
+		return &CommandError{Code: response.Error.Code, Message: response.Error.Message, Err: cause}
+	}
+	// Rust's Debug rendering is not JSON. Accept only the known complete wrapper
+	// and decode its quoted string; arbitrary output is never a herdr error node.
+	if cause != nil {
+		if matches := debugCommandError.FindStringSubmatch(message); len(matches) == 2 {
+			if detail, err := strconv.Unquote(matches[1]); err == nil {
+				return &CommandError{Message: detail, Err: cause}
+			}
+		}
+	}
+	return cause
 }

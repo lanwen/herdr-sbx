@@ -37,14 +37,57 @@ func (c *Client) Inventory(ctx context.Context, socket string) ([]Sandbox, error
 	}
 	result := make([]Sandbox, 0, len(items))
 	for _, item := range items {
+		workspace, err := sandboxWorkspace(item)
+		if err != nil {
+			return nil, fmt.Errorf("read sandbox inventory: %w", err)
+		}
 		result = append(result, Sandbox{
-			ID:        first(item, "uuid", "id", "sandbox_id"),
-			Name:      first(item, "name", "sandbox_name"),
-			Status:    first(item, "status", "state"),
-			Workspace: first(item, "workspace"),
+			ID:                  first(item, "uuid", "id", "sandbox_id"),
+			Name:                first(item, "name", "sandbox_name"),
+			Status:              first(item, "status", "state"),
+			Workspace:           workspace,
+			WorkspaceNeedsProbe: workspaceNeedsProbe(item),
 		})
 	}
 	return result, nil
+}
+
+func sandboxWorkspace(item map[string]any) (string, error) {
+	value, exists := item["workspace"]
+	if !exists {
+		return "", nil
+	}
+	workspace, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("sandbox workspace is not a string")
+	}
+	return workspace, nil
+}
+
+func workspaceNeedsProbe(item map[string]any) bool {
+	raw := item["labels"]
+	if raw == nil {
+		return false
+	}
+	labels, ok := raw.(map[string]any)
+	if !ok {
+		return true
+	}
+	const prefix = "com.docker.sandbox."
+	for _, key := range []string{"usesWorktree", "worktreePath", "workingDirectory"} {
+		if value, exists := labels[prefix+key]; exists {
+			if _, ok := value.(string); !ok {
+				return true
+			}
+		}
+	}
+	worktree, _ := labels[prefix+"usesWorktree"].(string)
+	worktreePath, _ := labels[prefix+"worktreePath"].(string)
+	if (worktree != "" && worktree != "false") || worktreePath != "" {
+		return true
+	}
+	workingDirectory, _ := labels[prefix+"workingDirectory"].(string)
+	return workingDirectory != "" && workingDirectory != item["workspace"]
 }
 
 // SandboxAbsent proves that the named sandbox no longer has the expected ID.
@@ -145,7 +188,11 @@ func parseSandbox(raw string) (Sandbox, error) {
 	if err := decodeJSON(raw, &item); err != nil {
 		return Sandbox{}, err
 	}
-	result := Sandbox{ID: first(item, "uuid", "id", "sandbox_id"), Name: first(item, "name", "sandbox_name"), Status: first(item, "status", "state"), Workspace: first(item, "workspace")}
+	workspace, err := sandboxWorkspace(item)
+	if err != nil {
+		return Sandbox{}, err
+	}
+	result := Sandbox{ID: first(item, "uuid", "id", "sandbox_id"), Name: first(item, "name", "sandbox_name"), Status: first(item, "status", "state"), Workspace: workspace, WorkspaceNeedsProbe: workspaceNeedsProbe(item)}
 	if result.ID == "" || result.Name == "" {
 		return Sandbox{}, fmt.Errorf("sandbox daemon returned an incomplete sandbox")
 	}

@@ -35,7 +35,7 @@ func TestGuestHandoffRequiresVerifiedServerWithoutRestartFallback(t *testing.T) 
 					if scenario == "not running" {
 						return `{"running":false}`, nil
 					}
-					return `{"result":{"running":true,"version":"0.9.3"}}`, nil
+					return `{"running":true,"version":"0.9.3"}`, nil
 				default:
 					t.Fatalf("unexpected recovery command: %s", script)
 					return "", nil

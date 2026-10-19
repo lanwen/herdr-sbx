@@ -53,7 +53,7 @@ func TestRegistrationIdentityChangesKeepSafeJournalState(t *testing.T) {
 			case "herdr machine add --label sbx · demo demo.sbx":
 				return "Saved SSH machine machine-1. Remote server is ready.\n", nil
 			case "herdr machine list --json":
-				return `[{"profile_id":"machine-1","label":"sbx · demo","ssh_target":"demo.sbx","remote_session":"default"}]`, nil
+				return `[{"id":"machine-1","label":"sbx · demo","target":"demo.sbx","session":"default"}]`, nil
 			default:
 				return "", fmt.Errorf("unexpected call: %s", call)
 			}
@@ -71,7 +71,7 @@ func TestRegistrationIdentityChangesKeepSafeJournalState(t *testing.T) {
 		}
 	})
 
-	t.Run("changed after readiness", func(t *testing.T) {
+	t.Run("changed during setup", func(t *testing.T) {
 		fixture := newRegistrationFixture(t, "[]")
 		fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
 			call := command.Name + " " + strings.Join(command.Args, " ")
@@ -81,7 +81,7 @@ func TestRegistrationIdentityChangesKeepSafeJournalState(t *testing.T) {
 			case "herdr machine add --label sbx · demo demo.sbx":
 				return "Saved SSH machine machine-1. Remote server is ready.\n", nil
 			case "herdr machine list --json":
-				return `[{"profile_id":"machine-1","label":"sbx · demo","ssh_target":"demo.sbx","remote_session":"default"}]`, nil
+				return `[{"id":"machine-1","label":"sbx · demo","target":"demo.sbx","session":"default"}]`, nil
 			case "herdr --machine machine-1 status server":
 				return "running\n", nil
 			default:
@@ -95,7 +95,7 @@ func TestRegistrationIdentityChangesKeepSafeJournalState(t *testing.T) {
 			checks++
 			return checks < 5
 		})
-		if result.Status != "stale" || !strings.Contains(result.Detail, "remote readiness") {
+		if result.Status != "stale" || !strings.Contains(result.Detail, "sandbox changed") {
 			t.Fatalf("result=%#v", result)
 		}
 	})
@@ -133,35 +133,6 @@ func TestCatalogCapacityFailureClearsIntentForRetry(t *testing.T) {
 	}
 }
 
-func TestSavedMachineReadinessCanBeRetriedWithoutLosingOwnership(t *testing.T) {
-	fixture := newRegistrationFixture(t, "[]")
-	readinessChecks := 0
-	fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
-		if command.Name == "herdr" && strings.Join(command.Args, " ") == "--machine machine-1 status server" {
-			readinessChecks++
-			if readinessChecks == 1 {
-				return "remote unavailable", errors.New("bridge failed")
-			}
-			return "running\n", nil
-		}
-		return "", fmt.Errorf("unexpected command %s %v", command.Name, command.Args)
-	}
-	fixture.rebuildClients()
-	state := store.State{Version: 1, Scopes: map[string][]store.Tracked{}}
-	item := store.Tracked{SandboxID: "sandbox-1", Label: sandboxMachineLabel("demo"), Target: "demo.sbx", ProfileID: "machine-1"}
-	state.Scopes["scope"] = []store.Tracked{item}
-	current := func() bool { return true }
-	sandbox := sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"}
-	first := fixture.service.projectReadiness(context.Background(), "scope", &state, sandbox, &item, true, current)
-	if first.Status != "failed" || !strings.Contains(first.Detail, "Retry registration") || item.ProfileID != "machine-1" || item.Pending {
-		t.Fatalf("first=%#v item=%#v", first, item)
-	}
-	second := fixture.service.projectReadiness(context.Background(), "scope", &state, sandbox, &item, true, current)
-	if second.Status != "ready" || readinessChecks != 2 || item.ProfileID != "machine-1" {
-		t.Fatalf("second=%#v checks=%d item=%#v", second, readinessChecks, item)
-	}
-}
-
 func TestFailedAddCannotAdoptManualMachineOnRetry(t *testing.T) {
 	fixture := newRegistrationFixture(t, `[{"uuid":"sandbox-1","name":"demo","status":"running"}]`)
 	adds, lists, readinessChecks := 0, 0, 0
@@ -170,7 +141,7 @@ func TestFailedAddCannotAdoptManualMachineOnRetry(t *testing.T) {
 		switch call {
 		case "herdr --version":
 			return "herdr 0.9.1", nil
-		case "sbx --version":
+		case "sbx version":
 			return "sbx 0.45.1", nil
 		case "ssh -V":
 			return "OpenSSH_9.9", nil
@@ -189,7 +160,7 @@ func TestFailedAddCannotAdoptManualMachineOnRetry(t *testing.T) {
 			if adds == 0 {
 				return "[]", nil
 			}
-			return `[{"profile_id":"manual-1","label":"demo","ssh_target":"demo.sbx","remote_session":"default"}]`, nil
+			return `[{"id":"manual-1","label":"demo","target":"demo.sbx","session":"default"}]`, nil
 		case "herdr machine add --label sbx · demo demo.sbx":
 			adds++
 			return "connection closed", errors.New("connection closed")
@@ -234,7 +205,7 @@ func TestProfilePersistenceFailureDoesNotClaimReadiness(t *testing.T) {
 		switch call {
 		case "herdr --version":
 			return "herdr 0.9.1", nil
-		case "sbx --version":
+		case "sbx version":
 			return "sbx 0.45.1", nil
 		case "ssh -V":
 			return "OpenSSH_9.9", nil
@@ -252,7 +223,7 @@ func TestProfilePersistenceFailureDoesNotClaimReadiness(t *testing.T) {
 			if adds == 0 {
 				return "[]", nil
 			}
-			return `[{"profile_id":"machine-1","label":"sbx · demo","ssh_target":"demo.sbx","remote_session":"default"}]`, nil
+			return `[{"id":"machine-1","label":"sbx · demo","target":"demo.sbx","session":"default"}]`, nil
 		case "herdr machine add --label sbx · demo demo.sbx":
 			adds++
 			if err := os.Rename(stateDir, stateDir+"-moved"); err != nil {

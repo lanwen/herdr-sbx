@@ -441,12 +441,19 @@ func (p *policyFixture) mutate(request *http.Request) string {
 	}
 }
 
+func TestPolicyCleanupRequiresSavedSelector(t *testing.T) {
+	service := &Service{}
+	attempt := store.PolicyAttempt{Scope: "scope", Sandbox: sbx.Sandbox{ID: "sandbox-id", Name: "human-name"}}
+	err := service.cleanupPolicy("/tmp/policy.sock", attempt)
+	var pending *installationError
+	if !errors.As(err, &pending) || pending.State != "cleanup pending" || !strings.Contains(pending.Detail, "saved sandbox selector is missing") {
+		t.Fatalf("missing selector result: %v", err)
+	}
+}
+
 func TestPolicyAttemptRetainsOriginalSelectorAndLowercaseAccessSchema(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	attempt := store.PolicyAttempt{Scope: "scope", Sandbox: sbx.Sandbox{ID: "sandbox-id", Name: "human-name"}, PolicySandbox: "human-name", Intent: &sbx.PolicyAccess{Host: "herdr.dev:443", Path: "/install.sh"}}
-	if attempt.PolicySandboxName() != "human-name" {
-		t.Fatal("policy selector did not preserve the original name")
-	}
 	if err := store.UpdateStatusStore(func(status *store.StatusStore) {
 		status.Installations[store.StatusKey("scope", "sandbox-id")] = attempt
 	}); err != nil {

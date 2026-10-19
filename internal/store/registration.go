@@ -9,18 +9,31 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 // Tracked records one owned or unresolved sandbox registration.
 type Tracked struct {
-	SandboxID               string `json:"sandbox_id"`
-	Label                   string `json:"label"`
-	PendingLabel            string `json:"pending_label,omitempty"`
-	Target                  string `json:"target"`
-	ProfileID               string `json:"profile_id,omitempty"`
-	Pending                 bool   `json:"pending,omitempty"`
-	ProjectWorkspaceDone    bool   `json:"project_workspace_done,omitempty"`
-	ProjectWorkspacePending string `json:"project_workspace_pending,omitempty"`
+	SandboxID               string                `json:"sandbox_id"`
+	Label                   string                `json:"label"`
+	CustomLabel             bool                  `json:"custom_label,omitempty"`
+	PendingLabel            string                `json:"pending_label,omitempty"`
+	Target                  string                `json:"target"`
+	ProfileID               string                `json:"profile_id,omitempty"`
+	Pending                 bool                  `json:"pending,omitempty"`
+	ProjectWorkspaceDone    bool                  `json:"project_workspace_done,omitempty"`
+	ProjectWorkspacePending string                `json:"project_workspace_pending,omitempty"`
+	GuestSync               *GuestSyncObservation `json:"guest_sync,omitempty"`
+}
+
+// GuestSyncObservation remembers the result for an exact desired source and
+// configuration, so routine catalog reconciliation need not open another SSH connection.
+type GuestSyncObservation struct {
+	Fingerprint    string          `json:"fingerprint"`
+	CheckedAt      time.Time       `json:"checked_at"`
+	Status         string          `json:"status"`
+	Detail         string          `json:"detail,omitempty"`
+	PluginFailures []PluginFailure `json:"plugin_failures,omitempty"`
 }
 
 // State is the version 1 registration ownership document.
@@ -116,6 +129,9 @@ func StatePath() (string, error) {
 	return filepath.Join(dir, "state.json"), nil
 }
 
+// ErrStateLocked means another reconciliation owns the registration lock.
+var ErrStateLocked = errors.New("another reconciliation is already running")
+
 // LockState obtains the non-blocking registration lock.
 func LockState() (func(), error) {
 	path, err := StatePath()
@@ -131,7 +147,10 @@ func LockState() (func(), error) {
 	}
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		file.Close()
-		return nil, errors.New("another reconciliation is already running")
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, ErrStateLocked
+		}
+		return nil, err
 	}
 	return func() {
 		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)

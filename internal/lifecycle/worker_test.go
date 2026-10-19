@@ -2,13 +2,82 @@ package lifecycle
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 
+	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/store"
 )
+
+func TestWorkerLogCompactionKeepsInheritedOutput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json.worker.log")
+	log, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	// Keep using the same inherited descriptor across multiple compactions,
+	// just like a long-lived detached daemon's stdout and stderr.
+	for _, marker := range []string{"first", "second", "third"} {
+		command := exec.Command("sh", "-c", "cat; printf stderr-tail >&2")
+		command.Stdin = strings.NewReader(strings.Repeat(marker, workerLogLimit/len(marker)+1))
+		command.Stdout, command.Stderr = log, log
+		if err := command.Run(); err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := compactWorkerLog(path); err != nil {
+			t.Fatal(err)
+		}
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(after) != workerLogRetained || !bytes.Equal(after, before[len(before)-workerLogRetained:]) {
+			t.Fatalf("compaction did not preserve the latest %d bytes: got %d", workerLogRetained, len(after))
+		}
+		if !bytes.HasSuffix(after, []byte("stderr-tail")) {
+			t.Fatal("inherited stderr output was lost")
+		}
+	}
+}
+
+func TestWorkerLogCompactionHandlesMissingSmallAndUnreadableFiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json.worker.log")
+	if err := compactWorkerLog(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing log was created: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("recent output"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := compactWorkerLog(path); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "recent output" {
+		t.Fatalf("small log changed: %q, %v", data, err)
+	}
+	badPath := path + ".bad"
+	if err := os.Symlink(badPath, badPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := compactWorkerLog(badPath); !errors.Is(err, syscall.ELOOP) {
+		t.Fatalf("unreadable log error = %v", err)
+	}
+}
 
 func TestWorkerStartIsNoopWhileActive(t *testing.T) {
 	dir := t.TempDir()
@@ -47,8 +116,230 @@ func TestWorkerStartReportsStorageErrors(t *testing.T) {
 	if err := service.StartWorker(); err == nil {
 		t.Fatal("start hid storage error")
 	}
+	if err := service.StopWorker(context.Background()); err == nil || errors.Is(err, ErrDaemonStopUnconfirmed) {
+		t.Fatalf("Stop write failure was misclassified: %v", err)
+	}
 	var out bytes.Buffer
 	if err := service.Worker(&out); err == nil {
 		t.Fatal("worker hid storage error")
+	}
+}
+
+func TestSavedStopBlocksAutomaticAndQueuedWorkerStarts(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	service := &Service{}
+	if err := service.StopWorker(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.StartWorker(); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := service.Worker(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("stopped worker started: %q", out.String())
+	}
+	status, err := store.ReadStatusStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.WorkerControl == nil || !status.WorkerControl.Stopped {
+		t.Fatal("automatic startup cleared Stop")
+	}
+}
+
+func TestStopRequestKeepsAuthoritativeWorkerState(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	unlock, err := store.LockWorker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	service := &Service{}
+	if err := service.StopWorker(ctx); !errors.Is(err, ErrDaemonStopUnconfirmed) || !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), store.CodeDaemonUnreachable) || !strings.Contains(err.Error(), "Cannot confirm") {
+		t.Fatalf("unresponsive daemon stop = %v, want coded confirmation timeout", err)
+	}
+	status, err := store.ReadWorkerStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State == "stopped" {
+		t.Fatal("reported stopped while lock still held")
+	}
+	control, err := store.ReadStatusStore()
+	if err != nil || control.WorkerControl == nil || !control.WorkerControl.Stopped {
+		t.Fatalf("Stop intent lost: %+v %v", control, err)
+	}
+}
+
+func TestExplicitStartWaitsForStoppingWorkerExit(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	unlock, err := store.LockWorker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	if err := store.SetWorkerControl(true); err != nil {
+		t.Fatal(err)
+	}
+	// The active daemon has already cancelled its context after seeing OFF.
+	// Clearing OFF cannot revive that process; ON must wait for its lock to end.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := prepareWorkerStart(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ON did not wait for stopping daemon: %v", err)
+	}
+	status, err := store.ReadStatusStore()
+	if err != nil || !status.WorkerControl.Stopped {
+		t.Fatalf("ON cleared OFF before daemon exit: %+v %v", status, err)
+	}
+	unlock()
+	if err := prepareWorkerStart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status, err = store.ReadStatusStore()
+	if err != nil || status.WorkerControl.Stopped {
+		t.Fatalf("ON did not clear OFF after daemon exit: %+v %v", status, err)
+	}
+}
+
+func TestStopWorkerWaitsForAuthoritativeExit(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	unlock, err := store.LockWorker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	if err := store.RecordWorkerStatus("running", "", false); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	stopped := make(chan error, 1)
+	go func() { stopped <- service.StopWorker(ctx) }()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		saved, err := store.ReadStatusStore()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.WorkerControl != nil && saved.WorkerControl.Stopped {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("Stop was not persisted")
+		case <-ticker.C:
+		}
+	}
+	select {
+	case err := <-stopped:
+		t.Fatalf("Stop returned before daemon exit: %v", err)
+	default:
+	}
+	// Exiting releases the OS lock even if the final telemetry write was lost.
+	unlock()
+	if err := <-stopped; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.StopWorker(ctx); err != nil {
+		t.Fatalf("repeated stop failed: %v", err)
+	}
+	status, err := store.ReadWorkerStatus()
+	if err != nil || status.State != "stopped" {
+		t.Fatalf("status=%+v error=%v", status, err)
+	}
+}
+
+func TestStopWorkerStopsCooperativeWorker(t *testing.T) {
+	f := newLifecycleFixture(t)
+	entered := make(chan struct{}, 1)
+	f.run = func(ctx context.Context, cmd process.Command) (string, error) {
+		switch cmd.Name + " " + strings.Join(cmd.Args, " ") {
+		case "herdr plugin list --plugin lanwen.herdr-sbx --json":
+			return `{"result":{"plugins":[{"plugin_id":"lanwen.herdr-sbx","enabled":true}]}}`, nil
+		case "herdr status server --json":
+			return `{"running":true}`, nil
+		case "sbx daemon status --json":
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			return `{"status":"stopped","socket":"/tmp/lifecycle-test.sock"}`, nil
+		}
+		return f.defaultRun(ctx, cmd)
+	}
+	f.service.workerReconnect = time.Millisecond
+	statePath, err := store.StatePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPath := statePath + ".worker.log"
+	if err := os.WriteFile(logPath, bytes.Repeat([]byte("x"), workerLogLimit+1), 0600); err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- f.service.Worker(io.Discard) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	defer store.SetWorkerControl(true)
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("daemon did not enter its watch loop")
+	}
+	logPoll := time.NewTicker(time.Millisecond)
+	defer logPoll.Stop()
+	for {
+		info, err := os.Stat(logPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Size() == workerLogRetained {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("running daemon did not compact its log")
+		case <-logPoll.C:
+		}
+	}
+	if err := f.service.StopWorker(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("daemon still running after successful Stop")
+	}
+}
+
+func TestStopWorkerReportsUnreadableConfirmation(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	path, err := store.StatePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A loop affects only the daemon lock read; saving Stop must still succeed.
+	if err := os.Symlink(path+".worker", path+".worker"); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{}
+	err = service.StopWorker(context.Background())
+	if !errors.Is(err, ErrDaemonStopUnconfirmed) || !errors.Is(err, syscall.ELOOP) || !strings.Contains(err.Error(), store.CodeDaemonUnreachable) || !strings.Contains(err.Error(), "Cannot confirm") {
+		t.Fatalf("unreadable confirmation = %v", err)
+	}
+	saved, err := store.ReadStatusStore()
+	if err != nil || saved.WorkerControl == nil || !saved.WorkerControl.Stopped {
+		t.Fatalf("Stop was lost: %+v %v", saved.WorkerControl, err)
 	}
 }
