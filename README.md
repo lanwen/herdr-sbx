@@ -37,6 +37,26 @@ The plugin binary also provides `status` for cached observations and `status --j
 Use `daemon start` or `daemon stop` to control auto-sync, and `daemon status` or `daemon status --json` to inspect only the daemon.
 For a local checkout, run these subcommands with `bin/herdr-sbx`.
 
+## Screenshots
+
+These screenshots use simulated data and `claude-*` sandbox names.
+
+Sandbox table:
+
+![Sandbox manager table with simulated claude sandboxes](docs/screenshots/sandboxes.png)
+
+Sandbox details and recovery actions:
+
+![Expanded sandbox details with simulated claude data](docs/screenshots/sandbox-details.png)
+
+Herdr plugin defaults:
+
+![Herdr plugin defaults with simulated data](docs/screenshots/plugins.png)
+
+Compact layout:
+
+![Compact sandbox manager with simulated claude sandboxes](docs/screenshots/compact.png)
+
 ## Upgrade
 
 Open the sandbox manager, set Auto-sync to OFF, and wait for Stopped.
