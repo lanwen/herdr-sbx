@@ -11,18 +11,16 @@ Use a macOS or Linux host with Herdr 0.9.1 or later, `sbx` 0.45.1 or later, and 
 Start the sandbox daemon and sign in through Docker Sandboxes before using the plugin.
 Configure sandbox SSH with `sbx setup ssh`.
 
-Install [mise](https://mise.jdx.dev/) to use the pinned Go version and build tasks.
-Run these commands on the host:
+Install Go 1.27.1 or later and Git on the host, with `go` and `git` available on `PATH`.
+Herdr downloads and builds the plugin from GitHub:
 
 ```sh
-git clone https://github.com/lanwen/herdr-sbx.git
-cd herdr-sbx
-mise trust
-mise install
-mise run deps
-mise run build
-mise exec -- herdr plugin link . --enabled
+herdr plugin install lanwen/herdr-sbx
 ```
+
+Review and approve the installation prompt.
+Herdr enables the installed plugin.
+If you already use a local checkout, follow the [switching instructions](docs/reference.md#local-checkout) first.
 
 The worker is the process that follows sandbox changes in the background.
 From a terminal inside local Herdr, start the worker and open the status panel:
@@ -34,6 +32,25 @@ herdr plugin action invoke open-status --plugin lanwen.herdr-sbx
 
 Starting it again has no effect while it is running.
 The panel shows prerequisites, sandbox results, and worker status.
+
+## Upgrade
+
+Open the status panel, then disable the plugin from another local Herdr terminal:
+
+```sh
+herdr plugin disable lanwen.herdr-sbx
+```
+
+In the open panel, press `c`, then Enter, until `Worker: STOPPED` appears.
+Reinstall from GitHub and start the new worker:
+
+```sh
+herdr plugin install lanwen/herdr-sbx
+herdr plugin action invoke daemon --plugin lanwen.herdr-sbx
+```
+
+Close and reopen the panel to load the new version.
+The upgrade keeps plugin state and managed machine entries.
 
 ## How it works
 

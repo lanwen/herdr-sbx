@@ -2,7 +2,38 @@
 
 See the [README](../README.md) for installation and requirements.
 The plugin ID is `lanwen.herdr-sbx`.
-Run the following commands from the checkout on the host, inside local Herdr when they need a server.
+The command table lists subcommands of `herdr-sbx`.
+For a local checkout, use `bin/herdr-sbx <command>`.
+Run commands inside local Herdr when they need a server.
+
+## Local checkout
+
+Use a checkout to develop the plugin or change its source.
+Install [mise](https://mise.jdx.dev/) for the pinned Go version and build tasks.
+Run these commands on the host:
+
+```sh
+git clone https://github.com/lanwen/herdr-sbx.git
+cd herdr-sbx
+mise trust
+mise install
+mise run deps
+mise run build
+mise exec -- herdr plugin link . --enabled
+```
+
+For checkout upgrades, follow the README steps to disable the plugin and wait for the worker to stop.
+Run `git pull --ff-only`, `mise run deps`, and `mise run build` in the checkout.
+Run `mise exec -- herdr plugin link . --enabled` again, then invoke the `daemon` action.
+
+To switch from a checkout to GitHub installation, first disable the plugin and wait for the worker to stop.
+Unlink it before running `herdr plugin install lanwen/herdr-sbx`:
+
+```sh
+herdr plugin unlink lanwen.herdr-sbx
+```
+
+The unlink command removes the registration, not your checkout.
 
 ## Public sources
 
