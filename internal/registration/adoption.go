@@ -129,6 +129,7 @@ func (s *Service) Adopt(ctx context.Context, selected Adoption) error {
 	item.SandboxID = selected.Sandbox.ID
 	item.ProfileID = selected.Machine.ID
 	item.Label = selected.Machine.Label
+	item.CustomLabel = true
 	item.Target = selected.Machine.Target
 	item.Pending = false
 	item.PendingLabel = ""
@@ -139,6 +140,9 @@ func (s *Service) Adopt(ctx context.Context, selected Adoption) error {
 		return err
 	}
 	if err := store.SaveState(state); err != nil {
+		return err
+	}
+	if err := store.SetManagement(selected.Scope, selected.Sandbox.ID, store.Watched); err != nil {
 		return err
 	}
 	if err := store.RecordSandboxStatus(selected.Scope, selected.Sandbox, "adopted", "existing machine is now managed; registration will check readiness", false); err != nil {

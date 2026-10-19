@@ -20,6 +20,9 @@ type Sandbox struct {
 	Name      string
 	Status    string
 	Workspace string
+	// WorkspaceNeedsProbe marks legacy or contradictory workspace metadata.
+	// Keep internal inventory metadata out of status JSON.
+	WorkspaceNeedsProbe bool `json:"-"`
 }
 
 // Daemon describes the status command's observable daemon fields.
@@ -82,10 +85,6 @@ func NewWithTransport(runner process.Runner, transport http.RoundTripper) *Clien
 
 // Version returns the installed Docker Sandboxes version output.
 func (c *Client) Version(ctx context.Context) (string, error) {
-	output, err := c.cli(ctx, 5*time.Second, false, "--version")
-	if err == nil {
-		return output, nil
-	}
 	return c.cli(ctx, 5*time.Second, false, "version")
 }
 
@@ -98,9 +97,6 @@ func (c *Client) DaemonStatus(ctx context.Context) (Daemon, error) {
 	var value map[string]any
 	if err := decodeJSON(output, &value); err != nil {
 		return Daemon{}, fmt.Errorf("%w: %v", ErrInvalidDaemonStatus, err)
-	}
-	if result, ok := value["result"].(map[string]any); ok {
-		value = result
 	}
 	return Daemon{Status: text(value["status"]), Socket: text(value["socket"])}, nil
 }

@@ -3,11 +3,51 @@ package registration
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/lanwen/herdr-sbx/internal/sbx"
+	"github.com/lanwen/herdr-sbx/internal/store"
 	"github.com/lanwen/herdr-sbx/internal/version"
 )
+
+// observeGuestServer runs only during active reconciliation, never passive polls.
+// Its independent audit also covers workspace failures before plugin inspection.
+func (s *Service) observeGuestServer(ctx context.Context, scope string, sb sbx.Sandbox, current func() bool) {
+	if ctx.Err() != nil || sb.ID == "" || !strings.EqualFold(sb.Status, "running") || current == nil || !current() {
+		return
+	}
+	status, err := store.ReadStatusStore()
+	if err != nil {
+		slog.WarnContext(ctx, "Read guest server observation", slog.Any("error", err))
+		return
+	}
+	explicit, _ := ctx.Value(guestPluginRetryKey{}).(bool)
+	fresh, _ := ctx.Value(freshGuestObservationKey{}).(bool)
+	if observed := status.Sandboxes[store.StatusKey(scope, sb.ID)].GuestServer; !explicit && !fresh && observed != nil {
+		age := time.Since(observed.CheckedAt)
+		if age >= 0 && age < guestObservationAuditInterval {
+			return
+		}
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	running, actual, err := s.herdr.GuestServerVersion(probeCtx, sb.Name+".sbx")
+	if ctx.Err() != nil || !current() {
+		return
+	}
+	if err != nil {
+		running, actual = false, ""
+	}
+	s.recordGuestServerObservation(ctx, scope, sb, running, actual)
+}
+
+func (s *Service) recordGuestServerObservation(ctx context.Context, scope string, sb sbx.Sandbox, running bool, actual string) {
+	if err := store.RecordGuestServerObservation(scope, sb, running, actual); err != nil {
+		slog.WarnContext(ctx, "Save guest server observation", slog.Any("error", err))
+	}
+}
 
 const missingRemoteHerdr = "__herdr_missing__"
 const remoteHerdrOnPath = "__herdr_on_path__"

@@ -66,9 +66,12 @@ func existingAccess(rules []sbx.PolicyRule, access sbx.PolicyAccess) bool {
 // Cleanup has its own deadline so canceling installation still restores access.
 // An unacknowledged creation is never adopted from a matching destination.
 func (s *Service) cleanupPolicy(socket string, attempt store.PolicyAttempt) error {
+	if attempt.PolicySandbox == "" {
+		return policyPending("Cannot clean up temporary access: the saved sandbox selector is missing; inspect its policy manually")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	rules, err := s.sbx.ListPolicyRules(ctx, socket, attempt.PolicySandboxName())
+	rules, err := s.sbx.ListPolicyRules(ctx, socket, attempt.PolicySandbox)
 	if err != nil {
 		return policyPending("Cannot inspect temporary access: " + err.Error())
 	}
@@ -85,12 +88,12 @@ func (s *Service) cleanupPolicy(socket string, attempt store.PolicyAttempt) erro
 		if found == nil {
 			continue
 		}
-		if !scopedRule(*found, attempt.PolicySandboxName()) || !found.Editable || found.Decision != "allow" || found.ResourceType != "http" || len(found.Targets) != 1 || found.Targets[0] != owned.Access || len(found.Methods) != 1 || found.Methods[0] != "GET" {
+		if !scopedRule(*found, attempt.PolicySandbox) || !found.Editable || found.Decision != "allow" || found.ResourceType != "http" || len(found.Targets) != 1 || found.Targets[0] != owned.Access || len(found.Methods) != 1 || found.Methods[0] != "GET" {
 			failures = append(failures, fmt.Errorf("owned rule %s changed since creation; inspect it manually", id))
 			continue
 		}
-		_, removeErr := s.sbx.RemovePolicyRule(ctx, socket, attempt.PolicySandboxName(), id)
-		after, listErr := s.sbx.ListPolicyRules(ctx, socket, attempt.PolicySandboxName())
+		_, removeErr := s.sbx.RemovePolicyRule(ctx, socket, attempt.PolicySandbox, id)
+		after, listErr := s.sbx.ListPolicyRules(ctx, socket, attempt.PolicySandbox)
 		if listErr != nil {
 			failures = append(failures, listErr)
 			continue
@@ -102,12 +105,12 @@ func (s *Service) cleanupPolicy(socket string, attempt store.PolicyAttempt) erro
 			}
 		}
 	}
-	rules, err = s.sbx.ListPolicyRules(ctx, socket, attempt.PolicySandboxName())
+	rules, err = s.sbx.ListPolicyRules(ctx, socket, attempt.PolicySandbox)
 	if err != nil {
 		failures = append(failures, err)
 	} else if attempt.Intent != nil {
 		for _, rule := range rules {
-			if scopedRule(rule, attempt.PolicySandboxName()) && sameAccess(rule, *attempt.Intent) {
+			if scopedRule(rule, attempt.PolicySandbox) && sameAccess(rule, *attempt.Intent) {
 				failures = append(failures, fmt.Errorf("creation outcome uncertain for %s%s; inspect policy for sandbox ID %s manually; matching rules are not owned", attempt.Intent.Host, attempt.Intent.Path, attempt.Sandbox.ID))
 				break
 			}

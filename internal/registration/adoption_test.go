@@ -41,12 +41,12 @@ func TestAdoptPreservesMachineAndRejectsStaleSelection(t *testing.T) {
 	for _, change := range []string{"none", "sandbox replaced", "machine changed", "already owned"} {
 		t.Run(change, func(t *testing.T) {
 			f := newRegistrationFixture(t, `[{"uuid":"sb-1","name":"demo","status":"running"}]`)
-			catalog := `[{"profile_id":"manual-1","label":"My sandbox","ssh_target":"demo.sbx","remote_session":"default"}]`
+			catalog := `[{"id":"manual-1","label":"My sandbox","target":"demo.sbx","session":"default"}]`
 			f.runner.Execute = func(_ context.Context, cmd process.Command) (string, error) {
 				switch cmd.Name + " " + strings.Join(cmd.Args, " ") {
 				case "herdr --version":
 					return "herdr 0.9.1", nil
-				case "sbx --version":
+				case "sbx version":
 					return "sbx 0.45.1", nil
 				case "ssh -V":
 					return "OpenSSH", nil

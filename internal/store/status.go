@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -14,15 +15,68 @@ import (
 
 // SandboxStatus stores the most recent observation and connection result.
 type SandboxStatus struct {
-	Scope      string    `json:"scope"`
-	SandboxID  string    `json:"sandbox_id"`
-	Name       string    `json:"name"`
-	Observed   string    `json:"observed"`
-	Connection string    `json:"connection"`
-	Detail     string    `json:"detail"`
-	Stale      bool      `json:"stale,omitempty"`
-	ObservedAt time.Time `json:"observed_at"`
-	Updated    time.Time `json:"updated"`
+	Scope       string                  `json:"scope"`
+	Management  ManagementChoice        `json:"management,omitempty"`
+	Owned       bool                    `json:"owned"`
+	Label       string                  `json:"label,omitempty"`
+	ProfileID   string                  `json:"profile_id,omitempty"`
+	SandboxID   string                  `json:"sandbox_id"`
+	Name        string                  `json:"name"`
+	Observed    string                  `json:"observed"`
+	Connection  string                  `json:"connection"`
+	Detail      string                  `json:"detail"`
+	Stale       bool                    `json:"stale,omitempty"`
+	ObservedAt  time.Time               `json:"observed_at"`
+	Updated     time.Time               `json:"updated"`
+	GuestServer *GuestServerObservation `json:"guest_server,omitempty"`
+}
+
+// GuestServerObservation records the running server, never the executable version.
+// A failed or stopped probe retains the last verified version with Current false.
+type GuestServerObservation struct {
+	Version    string    `json:"version,omitempty"`
+	ObservedAt time.Time `json:"observed_at,omitempty"`
+	CheckedAt  time.Time `json:"checked_at"`
+	Current    bool      `json:"current"`
+}
+
+// RecordGuestServerObservation preserves the last verified version on failure.
+func RecordGuestServerObservation(scope string, sandbox sbx.Sandbox, running bool, version string) error {
+	return UpdateStatusStore(func(status *StatusStore) {
+		key := StatusKey(scope, sandbox.ID)
+		cached := status.Sandboxes[key]
+		cached.Scope, cached.SandboxID, cached.Name = scope, sandbox.ID, sandbox.Name
+		if cached.GuestServer == nil {
+			cached.GuestServer = &GuestServerObservation{}
+		}
+		observed := cached.GuestServer
+		observed.CheckedAt = time.Now()
+		observed.Current = running && version != ""
+		if observed.Current {
+			observed.Version, observed.ObservedAt = version, observed.CheckedAt
+		}
+		status.Sandboxes[key] = cached
+	})
+}
+
+// DeletionUnconfirmedDetail explains why an existing registration was retained.
+const DeletionUnconfirmedDetail = "Cannot confirm whether this sandbox was deleted. Its herdr registration was kept."
+
+// ConfirmPresent clears deletion uncertainty after the sandbox is observed again.
+// Other connection and preparation explanations remain unchanged.
+func (s *SandboxStatus) ConfirmPresent() {
+	s.Stale = false
+	if s.GuestServer != nil && !strings.EqualFold(s.Observed, "running") {
+		s.GuestServer.Current = false
+	}
+	s.clearDeletionUncertainty()
+}
+
+func (s *SandboxStatus) clearDeletionUncertainty() {
+	switch s.Detail {
+	case DeletionUnconfirmedDetail, "sandbox deletion recovery is unavailable", "not present in latest inventory; deletion is unconfirmed":
+		s.Detail = ""
+	}
 }
 
 // OwnedPolicyRule binds cleanup to a daemon-created rule ID and its destination.
@@ -41,23 +95,20 @@ type PolicyAttempt struct {
 	Detail        string            `json:"detail,omitempty"`
 }
 
-// PolicySandboxName keeps the original selector for old journal records.
-func (a PolicyAttempt) PolicySandboxName() string {
-	if a.PolicySandbox != "" {
-		return a.PolicySandbox
-	}
-	return a.Sandbox.ID
-}
-
 // StatusStore is the existing sidecar JSON document.
 type StatusStore struct {
-	ReviewrEnabled    bool                     `json:"reviewr_enabled,omitempty"`
-	Worker            *WorkerStatus            `json:"worker,omitempty"`
-	Sandboxes         map[string]SandboxStatus `json:"sandboxes"`
-	Preparation       map[string]time.Time     `json:"preparation"`
-	PreparationErrors map[string]string        `json:"preparation_errors,omitempty"`
-	Warnings          map[string]string        `json:"warnings"`
-	Installations     map[string]PolicyAttempt `json:"installations,omitempty"`
+	Errors               map[string]ErrorRecord        `json:"errors,omitempty"`
+	DismissedErrorGroups map[string]bool               `json:"dismissed_error_groups,omitempty"`
+	Events               []EventRecord                 `json:"events,omitempty"`
+	Management           map[string]ManagementChoice   `json:"management,omitempty"`
+	WorkerControl        *WorkerControl                `json:"worker_control,omitempty"`
+	Worker               *WorkerStatus                 `json:"worker,omitempty"`
+	Sandboxes            map[string]SandboxStatus      `json:"sandboxes"`
+	Preparation          map[string]time.Time          `json:"preparation"`
+	PreparationErrors    map[string]string             `json:"preparation_errors,omitempty"`
+	Warnings             map[string]string             `json:"warnings"`
+	Installations        map[string]PolicyAttempt      `json:"installations,omitempty"`
+	GuestPluginAttempts  map[string]GuestPluginAttempt `json:"guest_plugin_attempts,omitempty"`
 }
 
 // StatusSnapshot returns in-scope observations and pending temporary rules.
@@ -84,6 +135,8 @@ func ReadStatusStore() (StatusStore, error) {
 		return StatusStore{}, err
 	}
 	store.ensureMaps()
+	normalizeEvents(&store)
+	normalizeErrorDismissals(&store)
 	return store, nil
 }
 
@@ -110,7 +163,9 @@ func UpdateStatusStore(change func(*StatusStore)) error {
 	if err != nil {
 		return err
 	}
+	ensureErrorRefs(&store)
 	change(&store)
+	normalizeErrorDismissals(&store)
 	data, err := json.Marshal(store)
 	if err != nil {
 		return err
@@ -188,9 +243,10 @@ func ObserveSandbox(scope string, sandbox sbx.Sandbox) error {
 		}
 		status.Name = sandbox.Name
 		status.Observed = sandbox.Status
-		status.Stale = false
+		status.ConfirmPresent()
 		status.ObservedAt = time.Now()
 		store.Sandboxes[key] = status
+		store.SetSandboxDeletionFailure(key, "")
 	})
 }
 
@@ -279,6 +335,12 @@ func newStatusStore() StatusStore {
 }
 
 func (s *StatusStore) ensureMaps() {
+	if s.Errors == nil {
+		s.Errors = map[string]ErrorRecord{}
+	}
+	if s.Management == nil {
+		s.Management = map[string]ManagementChoice{}
+	}
 	if s.PreparationErrors == nil {
 		s.PreparationErrors = map[string]string{}
 	}
@@ -293,6 +355,9 @@ func (s *StatusStore) ensureMaps() {
 	}
 	if s.Warnings == nil {
 		s.Warnings = map[string]string{}
+	}
+	if s.GuestPluginAttempts == nil {
+		s.GuestPluginAttempts = map[string]GuestPluginAttempt{}
 	}
 }
 

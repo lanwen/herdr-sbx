@@ -9,6 +9,11 @@ run = "go mod download"
 description = "Build the linked plugin executable"
 run = "go build -o bin/herdr-sbx ./cmd/herdr-sbx"
 
+[tasks.link]
+description = "Build and link the plugin into Herdr"
+depends = ["build"]
+run = "herdr plugin link . --enabled"
+
 [tasks.fmt]
 description = "Format Go source"
 run = "gofmt -w cmd internal"
