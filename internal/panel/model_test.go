@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/lanwen/herdr-sbx/internal/guestplugins"
 	"github.com/lanwen/herdr-sbx/internal/precheck"
 	"github.com/lanwen/herdr-sbx/internal/registration"
@@ -136,23 +137,32 @@ func TestMouseSelectionAndPreviewShareLayout(t *testing.T) {
 	}
 }
 func TestSmallViewPreservesWorkerErrorsAndState(t *testing.T) {
-	m := modelFixture(t)
-	m.width, m.height = 60, 18
-	m.selected = "b"
-	m.expanded = "b"
-	m.addError(store.CodeSSHSetup, "Host", errors.New("missing configuration"))
-	view := m.View()
-	for _, want := range []string{"Management OFF", "beta (stopped)", "Release desk", "? help"} {
-		if !strings.Contains(view.Content, want) {
-			t.Fatalf("missing %q in %s", want, view.Content)
-		}
-	}
-	m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
-	view = m.View()
-	if strings.Contains(view.Content, "Resize") || m.selected != "b" || m.expanded != "b" {
-		t.Fatal("resize lost state")
+	for _, mode := range []string{"colored", "plain"} {
+		t.Run(mode, func(t *testing.T) {
+			unsetNoColor(t)
+			if mode == "plain" {
+				t.Setenv("NO_COLOR", "1")
+			}
+			m := modelFixture(t)
+			m.width, m.height = 60, 18
+			m.selected, m.expanded = "b", "b"
+			m.addError(store.CodeSSHSetup, "Host", errors.New("missing configuration"))
+			view := m.View()
+			visible := ansi.Strip(view.Content)
+			for _, want := range []string{"Management OFF", "beta (stopped)", "Release desk", "? help"} {
+				if !strings.Contains(visible, want) {
+					t.Fatalf("missing %q in %s", want, visible)
+				}
+			}
+			m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
+			view = m.View()
+			if strings.Contains(ansi.Strip(view.Content), "Resize") || m.selected != "b" || m.expanded != "b" {
+				t.Fatal("resize lost state")
+			}
+		})
 	}
 }
+
 func TestPluginOverrideShowsLiveDefaultAndSavedChoice(t *testing.T) {
 	m := modelFixture(t)
 	m.plugins = []guestplugins.Choice{{ID: "test.plugin", Enabled: true}}
@@ -286,7 +296,7 @@ func TestErrorKeyboardSelectionRevealsRecoveryTarget(t *testing.T) {
 		m.key(keyMsg(tea.KeyDown, ""))
 	}
 	view := m.View()
-	if !strings.Contains(view.Content, "> H0002 · i") {
+	if !strings.Contains(ansi.Strip(view.Content), "> H0002 · i") {
 		t.Fatalf("selected error hidden: %s", view.Content)
 	}
 }
