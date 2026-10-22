@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lanwen/herdr-sbx/internal/precheck"
 	"github.com/lanwen/herdr-sbx/internal/store"
@@ -889,6 +890,16 @@ func (m *model) diagnosticScope(scope, name string) string {
 	return safeText(scope)
 }
 
+// styledHardwrap makes each physical row restore its own style before borders
+// or padding can reset the terminal pen between continuation rows.
+func styledHardwrap(text string, width int) string {
+	var result strings.Builder
+	writer := lipgloss.NewWrapWriter(&result)
+	_, _ = writer.Write([]byte(ansi.Hardwrap(text, max(1, width), true)))
+	_ = writer.Close()
+	return result.String()
+}
+
 // fitLines keeps text and control bounds in the same layout at narrow widths.
 func fitLines(lines []line, width int) []line {
 	var result []line
@@ -897,7 +908,7 @@ func fitLines(lines []line, width int) []line {
 			for _, h := range l.hits {
 				text := ansi.Cut(l.text, h.x, h.x+h.w)
 				h.x = 0
-				for _, part := range strings.Split(ansi.Hardwrap(text, max(1, width), true), "\n") {
+				for _, part := range strings.Split(styledHardwrap(text, width), "\n") {
 					h.w = ansi.StringWidth(part)
 					result = append(result, line{text: part, hits: []hit{h}})
 				}
@@ -905,7 +916,7 @@ func fitLines(lines []line, width int) []line {
 			continue
 		}
 		if len(l.hits) == 0 {
-			for _, text := range strings.Split(ansi.Hardwrap(l.text, max(1, width), true), "\n") {
+			for _, text := range strings.Split(styledHardwrap(l.text, width), "\n") {
 				result = append(result, textLine(text))
 			}
 		} else {

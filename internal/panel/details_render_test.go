@@ -1,9 +1,12 @@
 package panel
 
 import (
+	"io"
+	"reflect"
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lanwen/herdr-sbx/internal/guestplugins"
 	"github.com/lanwen/herdr-sbx/internal/store"
@@ -136,6 +139,40 @@ func TestDetailFocusMutesPrimaryAndShowsRenameSaveState(t *testing.T) {
 		}
 		if got := m.renderedInput(40); got != "New█ label" {
 			t.Fatalf("block cursor at wrong position: %q", got)
+		}
+	}
+}
+
+func TestCompactDetailsPreserveWrappedLabelAndIdentityStyles(t *testing.T) {
+	unsetNoColor(t)
+	m := modelFixture(t)
+	m.width = 40
+	row := m.rows[0]
+	row.Sandbox.ID = "bbfd38ff-8151-4ca2-a2dd-ef04e0995857"
+	row.ProfileID = "25a9b0f5f63eab13de0b68573e18cd92"
+	row.Label = "sbx · claude-testcontainers"
+	// Inspect the terminal pen at distinctive continuation fragments after the
+	// real card has inserted each row's borders and padding.
+	for fragment, want := range map[string]string{"testcontainers": colorSand, "5857": colorMuted, "cd92": colorMuted} {
+		found := false
+		for _, line := range m.sandboxDetails(row) {
+			if index := strings.Index(line.text, fragment); index >= 0 {
+				pen := lipgloss.NewWrapWriter(io.Discard)
+				_, _ = pen.Write([]byte(line.text[:index]))
+				got := pen.Style().Fg
+				_ = pen.Close()
+				expected := lipgloss.NewWrapWriter(io.Discard)
+				_, _ = expected.Write([]byte(want))
+				color := expected.Style().Fg
+				_ = expected.Close()
+				if !reflect.DeepEqual(got, color) {
+					t.Fatalf("%q continuation lost style: got=%v want=%v line=%q", fragment, got, color, line.text)
+				}
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("fixture continuation %q not rendered", fragment)
 		}
 	}
 }

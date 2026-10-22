@@ -125,6 +125,7 @@ Its colored title shows the sandbox name with runtime, then the herdr label with
 The known herdr version occupies the top-right border.
 Actions appear directly below the title with a blank line before and after.
 The next line shows muted `sandbox ID → herdr ID`, followed by plugin controls.
+At narrow widths, wrapped labels and IDs retain their styling on every continuation line.
 Disable preserves the label and entry while disabling its native connection.
 Remove from herdr becomes available only after native disable is confirmed and preserves the durable Disabled choice.
 Rename edits the label inline for any uniquely associated entry, regardless of who created it.

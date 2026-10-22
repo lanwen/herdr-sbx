@@ -198,6 +198,7 @@ Contextual help shows the actual Space action, `enable` or `disable`, rather tha
 Tab and Shift+Tab switch tabs; arrows never do.
 Show operation progress, status details, and relevant recovery actions for that sandbox.
 At narrow widths, wrap the colored title into the card body above its actions when needed.
+Wrapped labels and IDs retain their color and typeface styling on every continuation line.
 Keep the primary action and internal controls reachable, and retain omitted version context in Hint.
 Place Details action confirmations in the Hint section. The Hint names the action and shows its confirm and cancel choices. During an active action, show an animated spinner and the action name in Hint instead of a text phase such as Waiting, Pending, or Executing. Show its result in Hint; keep coded failures in diagnostics.
 When any Details action has focus, Hint explains that action instead of the general sandbox status.

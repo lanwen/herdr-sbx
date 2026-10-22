@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lanwen/herdr-sbx/internal/registration"
 	"github.com/lanwen/herdr-sbx/internal/store"
@@ -52,7 +53,7 @@ func (m *model) sandboxDetails(r registration.SandboxRow) []line {
 		observedWidth += 2
 	}
 	titleWidth := max(1, width-indent-ansi.StringWidth(badge)-observedWidth-6)
-	summary := strings.Split(ansi.Wrap(title, titleWidth, ""), "\n")
+	summary := strings.Split(lipgloss.Wrap(title, titleWidth, ""), "\n")
 	title = summary[0]
 	var lines []line
 	for _, continuation := range summary[1:] {
