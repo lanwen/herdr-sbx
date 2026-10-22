@@ -134,12 +134,12 @@ func printStatus(out io.Writer, asJSON bool) error {
 			if row.Enabled == store.Enabled {
 				enabled = "Enabled"
 			}
-			fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", enabled, row.Name, label, readiness, row.Observed, native, observed)
+			fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", enabled, terminalField(row.Name), terminalField(label), terminalField(readiness), terminalField(row.Observed), native, observed)
 			if row.Detail != "" {
-				fmt.Fprintf(table, "\t%s\n", row.Detail)
+				fmt.Fprintf(table, "\t%s\n", terminalField(row.Detail))
 			}
 			if row.AssociationIssue != "" {
-				fmt.Fprintf(table, "\t%s\n", row.AssociationIssue)
+				fmt.Fprintf(table, "\t%s\n", terminalField(row.AssociationIssue))
 			}
 		}
 		if err := table.Flush(); err != nil {
@@ -193,7 +193,7 @@ func printStatusIssues(out io.Writer, report daemonStatusReport, paint func(stri
 			if store.SeverityForCode(item.Code) == store.SeverityWarning {
 				tone = "33"
 			}
-			fmt.Fprintf(out, "%s · %s · %s\n", paint(item.Code, tone), item.Scope, item.Detail)
+			fmt.Fprintf(out, "%s · %s · %s\n", paint(terminalField(item.Code), tone), terminalField(item.Scope), terminalMessage(item.Detail))
 		}
 	}
 }
@@ -256,13 +256,13 @@ func printDaemonSummary(out io.Writer, report daemonStatusReport, paint func(str
 		management, managementTone = "ON", "34"
 	}
 	fmt.Fprintf(out, "Management: %s\n", paint(management, managementTone))
-	state := strings.ToUpper(report.Daemon.State)
+	state := strings.ToUpper(terminalField(report.Daemon.State))
 	if report.Daemon.State == "cancelling" {
 		state = "Cancelling"
 	}
 	fmt.Fprintf(out, "Daemon: %s %s\n", paint(state, tone), paint(symbol, tone))
 	if report.Daemon.Detail != "" && report.Daemon.State != "stopped" {
-		fmt.Fprintln(out, report.Daemon.Detail)
+		fmt.Fprintln(out, terminalMessage(report.Daemon.Detail))
 	}
 	if report.Daemon.LastSync.IsZero() {
 		fmt.Fprintln(out, "Last sync: not yet observed")

@@ -18,7 +18,7 @@ func main() {
 		err = errors.New(rootUsage)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Docker Sandboxes:", err)
+		fmt.Fprintln(os.Stderr, "Docker Sandboxes:", terminalMessage(err.Error()))
 		os.Exit(1)
 	}
 }

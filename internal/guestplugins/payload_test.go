@@ -162,3 +162,141 @@ func TestPayloadSkipsExternalLinksAndSpecialFiles(t *testing.T) {
 		t.Fatalf("payload=%+v err=%v", files, err)
 	}
 }
+
+func TestPayloadReadConfinesPathsAndChecksIdentity(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "source")
+	if err := os.WriteFile(path, []byte("source"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if data, err := readPayloadFile(root, "source", selected, 6); err != nil || string(data) != "source" {
+		t.Fatalf("unchanged file: data=%q err=%v", data, err)
+	}
+	if err := os.Rename(path, filepath.Join(dir, "original")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("replacement"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := readPayloadFile(root, "source", selected, 64); err == nil || data != nil {
+		t.Fatalf("accepted replaced entry: data=%q err=%v", data, err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(path, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := readPayloadFile(root, "source", selected, 64); err == nil || data != nil {
+		t.Fatalf("accepted special file: data=%q err=%v", data, err)
+	}
+	outside := filepath.Join(t.TempDir(), "fixture")
+	if err := os.WriteFile(outside, []byte("outside fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	outsideInfo, err := os.Stat(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "external")); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := readPayloadFile(root, "external", outsideInfo, 64); err == nil || data != nil {
+		t.Fatalf("read outside root: data=%q err=%v", data, err)
+	}
+}
+
+func TestPayloadReadLimitsActualBytes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "source")
+	if err := os.WriteFile(path, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep the inode but grow its contents beyond the selected size.
+	if err := os.WriteFile(path, []byte("grown"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if data, err := readPayloadFile(root, "source", selected, selected.Size()); err == nil || data != nil || !strings.Contains(err.Error(), "128 MiB") {
+		t.Fatalf("accepted grown file: data=%q err=%v", data, err)
+	}
+	if data, err := readPayloadFile(root, "source", selected, 5); err != nil || string(data) != "grown" {
+		t.Fatalf("rejected exact budget: data=%q err=%v", data, err)
+	}
+}
+
+func TestPayloadDirectoryRejectsReplacementAndPinsSelectedChildren(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "source")
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "file"), []byte("selected fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	child, err := openPayloadDirectory(root, "source", selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer child.Close()
+	if err := os.Rename(path, filepath.Join(dir, "original")); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(dir, ".cache")
+	if err := os.Mkdir(other, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "file"), []byte("other fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(".cache", path); err != nil {
+		t.Fatal(err)
+	}
+	if replacement, err := openPayloadDirectory(root, "source", selected); err == nil {
+		replacement.Close()
+		t.Fatal("accepted directory alias to a different selected entry")
+	}
+	info, err := child.Lstat("file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, err := readPayloadFile(child, "file", info, 64); err != nil || string(data) != "selected fixture" {
+		t.Fatalf("lost pinned directory: data=%q err=%v", data, err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(path, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if replacement, err := openPayloadDirectory(root, "source", selected); err == nil {
+		replacement.Close()
+		t.Fatal("accepted FIFO as a directory")
+	}
+}

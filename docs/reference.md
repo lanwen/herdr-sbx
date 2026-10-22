@@ -53,7 +53,10 @@ The `open-status-tab` and `open-status-split` actions open the same manager in a
 `herdr-sbx status` reads saved daemon and sandbox observations without contacting Docker, starting work, or changing choices.
 Its compact human summary includes Management, daemon health, sandbox choices, runtime, labels, status, and outstanding errors.
 Use text and symbols alongside color, honor `NO_COLOR`, and disable terminal styling when redirected.
+Human-readable CLI output removes terminal escape sequences and unsafe control characters from observed values and command errors.
+Sandbox table fields stay on one line; diagnostic messages retain line breaks.
 `herdr-sbx status --json` returns schema version 4 without terminal styling.
+JSON preserves the original field values through JSON escaping.
 It includes observation times, Management, daemon health, sandbox identity and enabled choices, native herdr state, stable entry associations, herdr plugin selections, and separate coded errors and warnings.
 Missing observations remain explicitly unknown; retained labels are last known rather than fresh catalog facts.
 Expose observation freshness instead of running slow active diagnostics.
@@ -123,6 +126,8 @@ After a daemon crash, reopen the TUI and accept the Start prompt.
 `RUNNING` means that the event stream is active, not that every sandbox is ready.
 The status includes the last successful sync and any reconnect error.
 Host downloads select the local Herdr CLI version and compare the release checksum before SSH transfer.
+Captured Herdr, sandbox CLI, and SSH command output is limited to 16 MiB per command, including stdout and stderr.
+If output exceeds this limit, the plugin stops the command and reports an error without returning a partial response.
 Recovery can replace a confirmed guest executable with that version and request a live handoff, which replaces the server while preserving panes.
 If the handoff fails, the plugin reports the error without forcing a restart.
 Broken or ambiguous installations require user action.
@@ -160,6 +165,8 @@ The daemon notices selection changes about once per second when idle.
 The main herdr instance supplies each plugin's ID, version, installed root, exact manifest path, and source metadata when available.
 Guest synchronization copies a source snapshot from that installed root, excluding `.git`, paths covered by its `.gitignore` rules, private state, and unsafe files.
 It skips symlinks and special files without following or transferring their targets; a skipped file alone does not make the plugin Unsupported.
+Source reads stay within the opened plugin directory and reject files and directories replaced after selection.
+The 128 MiB source limit counts bytes actually read, including files that grow during synchronization.
 It uses the snapshot digest as the guest revision instead of downloading an unpinned GitHub source archive or applying plugin-specific release recipes.
 Plugins without a local source, Linux support, or safe transferable files are marked Unsupported in the Plugins tab with a reason.
 An architecture mismatch found after inspecting a sandbox appears as a sync error for that sandbox.

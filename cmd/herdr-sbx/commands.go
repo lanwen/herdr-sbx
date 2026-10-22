@@ -53,7 +53,9 @@ func commands() *cli.Command {
 			command("open-status", "Open the sandbox manager", func(ctx context.Context, _ *cli.Command) error { return herdrClient.OpenPane(ctx, "status", "popup") }),
 			command("open-status-tab", "Open the sandbox manager in a tab", func(ctx context.Context, _ *cli.Command) error { return herdrClient.OpenPane(ctx, "status", "tab") }),
 			command("open-status-split", "Open the sandbox manager in a split", func(ctx context.Context, _ *cli.Command) error { return herdrClient.OpenPane(ctx, "status", "split") }),
-			command("worker", "Internal worker process", func(_ context.Context, _ *cli.Command) error { return lifecycleService.Worker(os.Stdout) }),
+			command("worker", "Internal worker process", func(_ context.Context, _ *cli.Command) error {
+				return lifecycleService.Worker(terminalWriter{out: os.Stdout})
+			}),
 			{
 				Name: "daemon", Usage: "Manage the background daemon",
 				Action: func(_ context.Context, _ *cli.Command) error {
