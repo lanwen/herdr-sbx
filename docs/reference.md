@@ -238,13 +238,17 @@ Repeatable verification and artifact tasks:
 
 ```sh
 mise run verify-panel  # Isolated panel tests, then build bin/herdr-sbx
-mise run verify-change # Read-only formatting, isolated race tests, vet, then build
+mise run verify-change # Action pins, formatting, isolated race tests, vet, then build
+mise run action-pins-check # Read-only GitHub Action SHA validation
 mise run capture-screenshots # macOS: simulated frames into docs/screenshots
 mise run capture-screenshots -- /tmp/herdr-sbx-contrast --terminal-background '#E8D8C8'
-python3 -m unittest discover -s scripts -p 'test_publish_pr_images.py'
+python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
 
-GitHub CI runs `verify-change` and the publishing helper's network-free tests.
+GitHub CI runs `verify-change` and the workflow helpers' network-free tests.
+The action-pin check uses Ruby's standard YAML parser (Psych); Ruby must be available locally and on CI.
+It checks workflow and tracked action metadata, rejects mutable remote references, and permits local `./` actions.
+Use literal YAML mappings and sequences for this check; aliases, anchors, explicit tags, and duplicate keys are rejected.
 Screenshot rendering requires macOS and Swift; worker tests require an installed Herdr binary and run separately.
 Neither verification task restarts, relinks, or reloads the live plugin.
 Reopen the panel after rebuilding to load the executable; daemon updates follow the recovery instructions above.

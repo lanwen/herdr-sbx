@@ -61,8 +61,8 @@ description = "Run isolated panel tests, then rebuild the linked executable"
 run = ["python3 scripts/test-go.py test ./internal/panel -count=1", "mise run build"]
 
 [tasks.verify-change]
-description = "Check formatting, run isolated race tests and vet, then build"
-run = ["mise run fmt-check", "mise run check", "mise run build"]
+description = "Check action pins and formatting, run isolated race tests and vet, then build"
+run = ["mise run action-pins-check", "mise run fmt-check", "mise run check", "mise run build"]
 
 [tasks.capture-screenshots]
 description = "Capture simulated terminal frames (macOS; optional output directory/background)"
@@ -71,3 +71,7 @@ run = "sh scripts/capture-screenshots.sh"
 [tasks.publish-pr-images]
 description = "Publish an explicit PR body and image files, then verify uploaded links"
 run = "python3 scripts/publish-pr-images.py"
+
+[tasks.action-pins-check]
+description = "Check immutable GitHub Action references (requires Ruby/Psych)"
+run = "ruby scripts/check-action-pins.rb"

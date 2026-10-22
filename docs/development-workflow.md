@@ -58,6 +58,7 @@ A visual correction usually needs implementation, rendered-output review, and on
 The main agent resolves findings and checks integration without repeating each specialist's investigation.
 
 Give legwork stable changes and the required verification scope after edits finish.
+For GitHub workflow changes, run `mise run action-pins-check`: remote action and reusable-workflow references must use full commit SHAs, with the release version retained in a comment.
 Legwork records the revision and working-tree changes being verified, runs the repository tasks through successful stages, and reports failures with their stage and relevant output.
 If the assigned source changes during verification, identify the affected results and rerun only the checks invalidated by those changes.
 Routine retries are limited to diagnosed environment failures with unchanged inputs and safely repeatable effects.
