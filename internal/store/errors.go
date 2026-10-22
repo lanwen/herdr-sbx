@@ -57,18 +57,18 @@ const (
 	CodeHerdrFix = "H0004"
 	// CodeRegistration means sandbox registration failed without a more specific outcome.
 	CodeRegistration = "R0001"
-	// CodeManagement means a sandbox management choice or owned machine removal failed.
+	// CodeManagement means changing enabled intent or removing an entry failed.
 	CodeManagement = "R0002"
-	// CodeAdoption means an existing Herdr machine could not be adopted.
-	CodeAdoption = "R0003"
 	// CodePreparation records a re-sync outcome as an informational event.
 	CodePreparation = "R0004"
-	// CodeOwnershipConflict means an existing Herdr machine conflicts with registration.
+	// CodeOwnershipConflict means the sandbox-to-entry association is ambiguous.
 	CodeOwnershipConflict = "R0005"
 	// CodeWorkspaceSetup means project workspace setup failed.
 	CodeWorkspaceSetup = "R0006"
 	// CodeSandboxSetup means sandbox or guest setup failed.
 	CodeSandboxSetup = "R0007"
+	// CodeSafeEntryUnsupported means herdr cannot safely create an offline entry.
+	CodeSafeEntryUnsupported = "R0008"
 	// CodePluginChoice means saving a plugin sync choice failed.
 	CodePluginChoice = "P0001"
 	// CodeGuestPluginSync means a guest plugin could not be synchronized.
@@ -92,7 +92,7 @@ func IsGuestPluginCode(code string) bool {
 
 func isRegistrationCode(code string) bool {
 	switch code {
-	case CodeRegistration, CodeOwnershipConflict, CodeWorkspaceSetup, CodeSandboxSetup, CodeHerdrCompatibility:
+	case CodeSafeEntryUnsupported, CodeRegistration, CodeOwnershipConflict, CodeWorkspaceSetup, CodeSandboxSetup, CodeHerdrCompatibility:
 		return true
 	}
 	return false

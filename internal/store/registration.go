@@ -12,18 +12,19 @@ import (
 	"time"
 )
 
-// Tracked records one owned or unresolved sandbox registration.
+// Tracked records a stable sandbox-to-machine association or unresolved creation.
 type Tracked struct {
-	SandboxID               string                `json:"sandbox_id"`
-	Label                   string                `json:"label"`
-	CustomLabel             bool                  `json:"custom_label,omitempty"`
-	PendingLabel            string                `json:"pending_label,omitempty"`
-	Target                  string                `json:"target"`
-	ProfileID               string                `json:"profile_id,omitempty"`
-	Pending                 bool                  `json:"pending,omitempty"`
-	ProjectWorkspaceDone    bool                  `json:"project_workspace_done,omitempty"`
-	ProjectWorkspacePending string                `json:"project_workspace_pending,omitempty"`
-	GuestSync               *GuestSyncObservation `json:"guest_sync,omitempty"`
+	LastObservedNativeEnabled *bool                 `json:"last_observed_native_enabled"`
+	SandboxID                 string                `json:"sandbox_id"`
+	Label                     string                `json:"label"`
+	CustomLabel               bool                  `json:"custom_label,omitempty"`
+	PendingLabel              string                `json:"pending_label,omitempty"`
+	Target                    string                `json:"target"`
+	ProfileID                 string                `json:"profile_id,omitempty"`
+	Pending                   bool                  `json:"pending,omitempty"`
+	ProjectWorkspaceDone      bool                  `json:"project_workspace_done,omitempty"`
+	ProjectWorkspacePending   string                `json:"project_workspace_pending,omitempty"`
+	GuestSync                 *GuestSyncObservation `json:"guest_sync,omitempty"`
 }
 
 // GuestSyncObservation remembers the result for an exact desired source and
@@ -36,7 +37,7 @@ type GuestSyncObservation struct {
 	PluginFailures []PluginFailure `json:"plugin_failures,omitempty"`
 }
 
-// State is the version 1 registration ownership document.
+// State is the version 1 registration association document.
 type State struct {
 	Version int                  `json:"version"`
 	Scopes  map[string][]Tracked `json:"scopes"`

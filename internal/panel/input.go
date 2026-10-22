@@ -19,6 +19,13 @@ func (m *model) key(key tea.KeyPressMsg) tea.Cmd {
 	if cancelDrag {
 		return nil
 	}
+	if m.helpOpen {
+		return m.helpKey(key)
+	}
+	if m.input == nil && m.dialog == "" && k == "?" {
+		m.helpOpen, m.helpScroll = true, 0
+		return nil
+	}
 	m.reveal = true
 	if m.input != nil {
 		return m.inputKey(key)
@@ -48,8 +55,8 @@ func (m *model) key(key tea.KeyPressMsg) tea.Cmd {
 	case "e":
 		m.focusErrors()
 		return nil
-	case "s", "p", "b", "?":
-		page := map[string]string{"s": "Status", "b": "Status", "p": "Plugins", "?": "Help"}[k]
+	case "s", "p", "b":
+		page := map[string]string{"s": "Status", "b": "Status", "p": "Plugins"}[k]
 		m.openTab(page)
 		return nil
 	case "c":
@@ -61,18 +68,32 @@ func (m *model) key(key tea.KeyPressMsg) tea.Cmd {
 			m.input = &inputState{kind: "filter", text: m.queries[m.page], cursor: len([]rune(m.queries[m.page]))}
 		}
 		return nil
-	case "tab", "shift+tab", "left", "right":
-		if m.focus == "diagnostics" && (k == "left" || k == "right") {
-			if m.showAllErrors != (k == "right") {
-				m.toggleDiagnostics()
-			}
-			return nil
-		}
+	case "tab", "shift+tab":
 		delta := 1
-		if k == "left" || k == "shift+tab" {
+		if k == "shift+tab" {
 			delta = -1
 		}
 		m.cycleTab(delta)
+		return nil
+	case "left", "right":
+		if m.focus == "diagnostics" {
+			if m.showAllErrors != (k == "right") {
+				m.toggleDiagnostics()
+			}
+		} else if m.page == "Sandboxes" && m.focus == "table" && k == "right" {
+			return m.activate()
+		} else if m.page == "Sandboxes" && k == "left" && (m.focus == "plugins" || m.focus == "actions" && m.button == 0) {
+			m.clearNotice()
+			m.focus = "table"
+		} else if m.page == "Sandboxes" && m.focus == "actions" {
+			if row, ok := m.row(); ok {
+				delta := 1
+				if k == "left" {
+					delta = -1
+				}
+				m.button = max(0, min(len(m.sandboxActions(row))-1, m.button+delta))
+			}
+		}
 		return nil
 	case "esc":
 		m.clearNotice()
@@ -82,12 +103,8 @@ func (m *model) key(key tea.KeyPressMsg) tea.Cmd {
 			return nil
 		}
 		if m.page != "Sandboxes" {
-			m.page = "Sandboxes"
-			m.focus = "table"
-			m.scroll = 0
-		} else if m.expanded != "" {
-			m.expanded = ""
-			m.focus = "table"
+			m.openTab("Sandboxes")
+			m.ensureSelection()
 		} else if m.focus != "table" {
 			m.focus = "table"
 		} else {
@@ -101,10 +118,6 @@ func (m *model) key(key tea.KeyPressMsg) tea.Cmd {
 		return nil
 	case "enter":
 		return m.activate()
-	case "w":
-		if m.page == "Sandboxes" && m.focus == "table" {
-			return m.toggleWatch()
-		}
 	case "r":
 		if m.page == "Sandboxes" && m.focus == "table" {
 			return m.beginRename()
@@ -116,6 +129,12 @@ func (m *model) key(key tea.KeyPressMsg) tea.Cmd {
 			m.toggleDiagnostics()
 		}
 	case "space", " ":
+		if m.page == "Status" && m.focus == "table" && m.button == 0 {
+			return m.statusAction()
+		}
+		if m.page == "Sandboxes" && (m.focus == "table" || m.focus == "actions") {
+			return m.toggleEnabled()
+		}
 		if m.focus == "events" {
 			m.eventsExpanded = !m.eventsExpanded
 			m.eventIndex = -1
@@ -229,75 +248,41 @@ func (m *model) move(key string) {
 		m.scroll = max(0, m.scroll+delta)
 		return
 	}
-	if (key == "down" || key == "j") && (len(m.errors) > 0 || len(m.events) > 0) && m.atMainEnd() {
+	if m.focus == "table" && (key == "down" || key == "j") && (len(m.errors) > 0 || len(m.events) > 0) && m.atMainEnd() {
 		m.focusFollowingSections()
 		return
 	}
 
-	if m.page == "Sandboxes" && m.expanded != "" && m.expanded == m.selected {
-		switch m.focus {
-		case "table":
-			if key == "down" || key == "j" {
-				if len(m.plugins) > 0 {
-					m.focus = "plugins"
-					m.detailIndex = 0
-				} else {
-					m.focus = "actions"
-					m.button = 0
-				}
-				return
-			}
-		case "plugins":
-			if key == "home" {
-				m.detailIndex = 0
-				return
-			}
-			if key == "end" {
-				m.detailIndex = max(0, len(m.plugins)-1)
-				return
-			}
-			next := m.detailIndex + delta
-			if next < 0 {
-				m.focus = "table"
-			} else if next >= len(m.plugins) {
-				m.focus = "actions"
-				m.button = 0
+	if m.page == "Sandboxes" && m.expanded == m.selected && (m.focus == "actions" || m.focus == "plugins") {
+		row, _ := m.row()
+		actionCount := len(m.sandboxActions(row))
+		if key == "home" {
+			if actionCount > 0 {
+				m.focus, m.button = "actions", 0
 			} else {
-				m.detailIndex = next
+				m.detailIndex = 0
 			}
-			return
-		case "actions":
-			row, _ := m.row()
-			actionCount := len(m.sandboxActions(row))
-			if actionCount == 0 {
-				m.focus = "table"
-				return
+		} else if key == "end" {
+			if len(m.plugins) > 0 {
+				m.focus, m.detailIndex = "plugins", len(m.plugins)-1
+			} else {
+				m.button = max(0, actionCount-1)
 			}
-			if key == "home" {
-				m.button = 0
-				return
+		} else if m.focus == "actions" {
+			if delta > 0 && len(m.plugins) > 0 {
+				m.focus, m.detailIndex = "plugins", 0
 			}
-			if key == "end" {
-				m.button = actionCount - 1
-				return
+		} else {
+			next := m.detailIndex + delta
+			if next < 0 && actionCount > 0 {
+				m.focus = "actions"
+			} else {
+				m.detailIndex = max(0, min(len(m.plugins)-1, next))
 			}
-			next := m.button + delta
-			if next < 0 {
-				if len(m.plugins) > 0 {
-					m.focus = "plugins"
-					m.detailIndex = len(m.plugins) - 1
-				} else {
-					m.focus = "table"
-				}
-				return
-			}
-			if next < actionCount {
-				m.button = next
-				return
-			}
-			m.focus = "table"
 		}
+		return
 	}
+
 	if m.page == "Plugins" {
 		n := len(m.visiblePlugins())
 		if key == "home" {
@@ -350,6 +335,7 @@ func (m *model) move(key string) {
 		m.focus = "table"
 	}
 	m.selected = rows[index].Sandbox.ID
+	m.expanded = m.selected
 	m.scroll = max(0, index-max(1, m.height-15))
 }
 
@@ -364,9 +350,7 @@ func (m *model) atMainEnd() bool {
 		if m.selected != last.Sandbox.ID {
 			return false
 		}
-		if m.expanded == m.selected {
-			return m.focus == "actions" && m.button >= len(m.sandboxActions(last))-1
-		}
+
 		return m.focus == "table"
 	case "Plugins":
 		return m.focus == "table" && m.pluginIndex >= len(m.visiblePlugins())-1
@@ -387,11 +371,8 @@ func (m *model) focusMainEnd() {
 		}
 		last := rows[len(rows)-1]
 		m.selected = last.Sandbox.ID
-		if m.expanded == m.selected {
-			if actions := m.sandboxActions(last); len(actions) > 0 {
-				m.focus, m.button = "actions", len(actions)-1
-			}
-		}
+		m.expanded = m.selected
+
 	case "Plugins":
 		m.pluginIndex = max(0, len(m.visiblePlugins())-1)
 		m.ensureSelection()
@@ -428,14 +409,12 @@ func (m *model) activate() tea.Cmd {
 			return nil
 		}
 		switch actions[m.button].id {
-		case "adopt":
-			return m.openAdoption(false)
-		case "watch":
-			return m.management(store.Watched)
-		case "unwatch":
-			return m.management(store.Unwatched)
+		case "enable":
+			return m.setEnabled(store.Enabled)
 		case "disable":
-			return m.management(store.Disabled)
+			return m.setEnabled(store.Disabled)
+		case "remove":
+			return m.removeEntry()
 		case "resync":
 			return m.retry()
 		case "rename":
@@ -452,12 +431,12 @@ func (m *model) activate() tea.Cmd {
 	switch m.page {
 	case "Sandboxes":
 		m.clearNotice()
-		if m.selected != "" {
-			if m.expanded == m.selected {
-				m.expanded = ""
-			} else {
-				m.expanded = m.selected
-				m.detailIndex = 0
+		if row, ok := m.row(); ok {
+			m.expanded = m.selected
+			if len(m.sandboxActions(row)) > 0 {
+				m.focus, m.button = "actions", 0
+			} else if len(m.plugins) > 0 {
+				m.focus, m.detailIndex = "plugins", 0
 			}
 		}
 	case "Plugins":
@@ -493,8 +472,13 @@ func (m *model) recoverError() tea.Cmd {
 				action := "resync"
 				if e.code == store.CodeManagement {
 					action = "disable"
-				} else if e.code == store.CodeOwnershipConflict {
-					action = "adopt"
+					if canRemoveEntry(r) {
+						action = "remove"
+					} else if !r.EntryPresent {
+						action = "enable"
+					}
+				} else if e.code == store.CodeSafeEntryUnsupported {
+					action = "enable"
 				} else if e.code == store.CodeHerdrCompatibility || e.code == store.CodeHerdrFix {
 					action = "fix-herdr"
 				} else if e.code == store.CodeRename {
@@ -544,7 +528,7 @@ func (m *model) toggleDefault() tea.Cmd {
 }
 func (m *model) retry() tea.Cmd {
 	r, ok := m.row()
-	if !ok {
+	if !ok || r.Enabled != store.Enabled || !strings.EqualFold(r.Sandbox.Status, "running") || r.AssociationIssue != "" {
 		return nil
 	}
 	return m.run(r.Sandbox.ID, store.CodePreparation, "Preparation completed", func() error {
@@ -576,29 +560,6 @@ func (m *model) dialogKey(k string) tea.Cmd {
 		m.dialog = ""
 		if m.button%2 == 1 {
 			return m.startWorker()
-		}
-
-	case "adopt":
-		if m.button%2 == 0 {
-			m.dialog = ""
-			return nil
-		}
-		if m.adoption == nil {
-			return m.openAdoption(m.renameAfterAdopt)
-		}
-		a := *m.adoption
-		if m.pending[a.Sandbox.ID] {
-			return nil
-		}
-		m.pending[a.Sandbox.ID] = true
-		m.dialog = ""
-		m.actionNotice(a.Sandbox.ID, store.CodeAdoption)
-		return func() tea.Msg {
-			err := m.service.registration.Adopt(context.Background(), a)
-			if err == nil {
-				err = m.service.registration.SetManagement(context.Background(), a.Scope, a.Sandbox.ID, store.Watched)
-			}
-			return operationMsg{target: a.Sandbox.ID, code: store.CodeAdoption, notice: "Adopted; existing label and connection preserved", err: err, adopt: true}
 		}
 
 	case "ssh":
@@ -690,6 +651,10 @@ func (m *model) inputKey(key tea.KeyPressMsg) tea.Cmd {
 			if m.pending[in.target] {
 				return nil
 			}
+			if label == r.Label {
+				m.input = nil
+				return nil
+			}
 			m.pending[in.target] = true
 			m.actionNotice(in.target, store.CodeRename)
 			submittedText := in.text
@@ -744,10 +709,12 @@ func (m *model) hitAction(h hit) tea.Cmd {
 		m.cycleTab(-1)
 	case "tab-next":
 		m.cycleTab(1)
+	case "enabled":
+		m.selected, m.expanded, m.focus = h.id, h.id, "table"
+		return m.toggleEnabled()
 	case "select", "expand":
-		m.selected = h.id
-		m.focus = "table"
-		return m.activate()
+		m.selected, m.expanded, m.focus = h.id, h.id, "table"
+		return nil
 	case "filter":
 		m.input = &inputState{kind: "filter", text: m.queries[m.page], cursor: len([]rune(m.queries[m.page]))}
 	case "clear":
@@ -895,10 +862,37 @@ func (m *model) statusAction() tea.Cmd {
 func (m *model) setWorkerEnabled(enabled bool) tea.Cmd {
 	m.workerIntentSet = true
 	if m.workerEnabled == enabled && !m.workerControlError {
+		if !enabled {
+			if err := store.SetWorkerControl(true); err != nil {
+				m.workerControlError = true
+				m.addError(store.CodeDaemonStop, "worker", err)
+			}
+		}
 		return nil
 	}
 	m.workerEnabled = enabled
 	m.workerControlError = false
+	// Persist OFF at acceptance so a queued or running start cannot schedule more work.
+	if !enabled {
+		m.stopRequestedAt = time.Now()
+		m.stopDelayReported = false
+		if err := store.SetWorkerControl(true); err != nil {
+			m.workerControlError = true
+			m.addError(store.CodeDaemonStop, "worker", fmt.Errorf("Could not save Management OFF: %w", err))
+			return nil
+		}
+	} else {
+		saved, err := store.ReadStatusStore()
+		if err != nil {
+			m.workerControlError = true
+			m.addError(store.CodeDaemonStart, "worker", err)
+			return nil
+		}
+		m.workerStartGeneration = 0
+		if saved.WorkerControl != nil {
+			m.workerStartGeneration = saved.WorkerControl.Generation
+		}
+	}
 	if m.pending["worker"] {
 		if enabled == m.workerCommandEnabled {
 			code := store.CodeDaemonStop
@@ -907,9 +901,9 @@ func (m *model) setWorkerEnabled(enabled bool) tea.Cmd {
 			}
 			m.actionNotice("worker", code)
 		} else {
-			m.notice, m.noticeTarget = "Waiting for auto-sync to start before stopping…", "worker"
+			m.notice, m.noticeTarget = "Cancelling", "worker"
 			if enabled {
-				m.notice = "Waiting for auto-sync to stop before starting…"
+				m.notice = "Cancelling. Management will read current sandbox and herdr state before resuming."
 			}
 		}
 		return nil
@@ -918,15 +912,14 @@ func (m *model) setWorkerEnabled(enabled bool) tea.Cmd {
 }
 
 func (m *model) applyWorkerChoice(enabled bool) tea.Cmd {
-	if enabled {
+	if enabled && !m.managementCancelling() {
 		return m.startWorker()
 	}
-	m.workerEnabled = false
 	m.workerCommandEnabled = false
 	m.workerControlError = false
 	m.stopRequestedAt = time.Now()
 	m.stopDelayReported = false
-	return m.run("worker", store.CodeDaemonStop, "Auto-sync stop requested", func() error {
+	return m.run("worker", store.CodeDaemonStop, "Management stop requested", func() error {
 		return m.stopWorkerFn(context.Background())
 	})
 }
@@ -966,7 +959,7 @@ func (m *model) blockedInputHint(h hit) string {
 	case "worker", "docker":
 		target = "opening Status"
 	case "default", "plugin":
-		target = "changing " + safeText(h.id) + " auto-sync"
+		target = "changing herdr plugin sync for " + safeText(h.id)
 	case "override":
 		target = "changing " + safeText(h.id) + " for this sandbox"
 	case "action":
@@ -986,10 +979,10 @@ func (m *model) blockedInputHint(h hit) string {
 		actions := m.statusActions()
 		var index int
 		if _, err := fmt.Sscanf(h.id, "%d", &index); err == nil && index >= 0 && index < len(actions) {
-			target = map[string]string{"toggle": "changing auto-sync", "ssh": "opening SSH setup", "refresh": "refreshing status"}[actions[index].id]
+			target = map[string]string{"toggle": "changing Management", "ssh": "opening SSH setup", "refresh": "refreshing status"}[actions[index].id]
 		}
 	case "status-choice":
-		target = "setting auto-sync " + strings.ToUpper(h.id)
+		target = "setting Management " + strings.ToUpper(h.id)
 	case "refresh":
 		target = "refreshing observations"
 	}

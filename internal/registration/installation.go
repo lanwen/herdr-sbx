@@ -66,6 +66,9 @@ func existingAccess(rules []sbx.PolicyRule, access sbx.PolicyAccess) bool {
 // Cleanup has its own deadline so canceling installation still restores access.
 // An unacknowledged creation is never adopted from a matching destination.
 func (s *Service) cleanupPolicy(socket string, attempt store.PolicyAttempt) error {
+	if err := CheckAutomaticWork(context.Background()); err != nil {
+		return policyPending("Management is OFF; temporary policy cleanup remains pending")
+	}
 	if attempt.PolicySandbox == "" {
 		return policyPending("Cannot clean up temporary access: the saved sandbox selector is missing; inspect its policy manually")
 	}
@@ -91,6 +94,9 @@ func (s *Service) cleanupPolicy(socket string, attempt store.PolicyAttempt) erro
 		if !scopedRule(*found, attempt.PolicySandbox) || !found.Editable || found.Decision != "allow" || found.ResourceType != "http" || len(found.Targets) != 1 || found.Targets[0] != owned.Access || len(found.Methods) != 1 || found.Methods[0] != "GET" {
 			failures = append(failures, fmt.Errorf("owned rule %s changed since creation; inspect it manually", id))
 			continue
+		}
+		if err := CheckAutomaticWork(ctx); err != nil {
+			return policyPending("Management is OFF; temporary policy cleanup remains pending")
 		}
 		_, removeErr := s.sbx.RemovePolicyRule(ctx, socket, attempt.PolicySandbox, id)
 		after, listErr := s.sbx.ListPolicyRules(ctx, socket, attempt.PolicySandbox)
@@ -133,6 +139,9 @@ func (s *Service) cleanupPolicy(socket string, attempt store.PolicyAttempt) erro
 
 // Activation may restore previously authorized temporary access. Refresh stays observational.
 func (s *Service) recoverPendingPolicy(scope, socket string) error {
+	if err := CheckAutomaticWork(context.Background()); err != nil {
+		return err
+	}
 	status, err := store.ReadStatusStore()
 	if err != nil {
 		return err

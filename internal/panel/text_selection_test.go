@@ -36,7 +36,7 @@ func TestMouseClickActivatesOriginalTargetOnceOnRelease(t *testing.T) {
 	m := modelFixture(t)
 	h := selectionHit(t, m, "select", "b")
 	m.Update(tea.MouseClickMsg{X: h.x, Y: h.y, Button: tea.MouseLeft})
-	if m.selected != "a" || m.expanded != "" {
+	if m.selected != "a" || m.expanded != "a" {
 		t.Fatal("mouse press activated the row before release")
 	}
 	// Even if a later observation provides different hit targets, release must
@@ -67,7 +67,7 @@ func TestDragCopiesWithoutActivatingAndLatchesAfterOneCell(t *testing.T) {
 		}
 		_, command := m.Update(tea.MouseReleaseMsg{X: end, Y: 0, Button: tea.MouseLeft})
 		assertClipboard(t, command, want)
-		if m.selected != "a" || m.expanded != "" || m.textSelection == nil || m.textSelection.pressed {
+		if m.selected != "a" || m.expanded != "a" || m.textSelection == nil || m.textSelection.pressed {
 			t.Fatal("drag activated a row or lost its completed highlight")
 		}
 		view := m.View()
@@ -249,7 +249,7 @@ func TestNonLeftPressDoesNotNavigateOrStartSelection(t *testing.T) {
 	for _, button := range []tea.MouseButton{tea.MouseMiddle, tea.MouseRight} {
 		m.Update(tea.MouseClickMsg{X: h.x, Y: h.y, Button: button})
 		m.Update(tea.MouseReleaseMsg{X: h.x, Y: h.y, Button: button})
-		if m.textSelection != nil || m.selected != "a" || m.expanded != "" {
+		if m.textSelection != nil || m.selected != "a" || m.expanded != "a" {
 			t.Fatal("non-left press started selection or activated a control")
 		}
 	}

@@ -162,7 +162,7 @@ func TestDiagnosticSwitchStylesAndKeyboardDismissal(t *testing.T) {
 		}
 	}
 	m.focusErrors()
-	if help := m.renderHelp(110, false); !strings.Contains(help, "d dismiss") {
+	if help := ansi.Strip(m.renderHelp(110, false)); !strings.Contains(help, "d dismiss") {
 		t.Fatalf("dismiss hotkey missing: %q", help)
 	}
 	m.key(keyMsg('d', "d"))

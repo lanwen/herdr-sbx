@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
@@ -133,7 +134,7 @@ func TestCatalogCapacityFailureClearsIntentForRetry(t *testing.T) {
 	}
 }
 
-func TestFailedAddCannotAdoptManualMachineOnRetry(t *testing.T) {
+func TestUncertainAddRecoversUniqueCatalogEntryWithoutDuplicate(t *testing.T) {
 	fixture := newRegistrationFixture(t, `[{"uuid":"sandbox-1","name":"demo","status":"running"}]`)
 	adds, lists, readinessChecks := 0, 0, 0
 	fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
@@ -183,7 +184,7 @@ func TestFailedAddCannotAdoptManualMachineOnRetry(t *testing.T) {
 	if err := fixture.service.ReconcileContext(context.Background(), &second); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(second.String(), "OWNERSHIP CONFLICT") || adds != 1 || readinessChecks != 0 || lists != 2 {
+	if !strings.Contains(second.String(), "READY") || adds != 1 || readinessChecks != 0 || lists != 2 {
 		t.Fatalf("second reconcile=%s adds=%d lists=%d readiness=%d", second.String(), adds, lists, readinessChecks)
 	}
 	state, err := store.LoadState()
@@ -191,8 +192,8 @@ func TestFailedAddCannotAdoptManualMachineOnRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	item := state.Scopes[store.ScopeID("/tmp/registration-retry.sock")][0]
-	if !item.Pending || item.ProfileID != "" {
-		t.Fatalf("manual machine was adopted: %#v", item)
+	if item.Pending || item.ProfileID != "manual-1" || item.Label != "demo" {
+		t.Fatalf("verified association was not retained: %#v", item)
 	}
 }
 
@@ -245,7 +246,7 @@ func TestProfilePersistenceFailureDoesNotClaimReadiness(t *testing.T) {
 	if err := fixture.service.ReconcileContext(context.Background(), &output); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "OWNERSHIP CONFLICT") || readinessChecks != 0 {
+	if !strings.Contains(output.String(), "ASSOCIATION WARNING") || readinessChecks != 0 {
 		t.Fatalf("output=%s readiness=%d", output.String(), readinessChecks)
 	}
 	if _, err := os.Stat(filepath.Join(stateDir+"-moved", "state.json")); err != nil {
@@ -314,5 +315,61 @@ func TestCooldownRetainsInstallationFailure(t *testing.T) {
 	}
 	if statusChecks != 2 || architectureChecks != 1 {
 		t.Fatalf("status checks=%d host downloads=%d", statusChecks, architectureChecks)
+	}
+}
+
+func TestFailedRecreationRetainsCompletedGuestState(t *testing.T) {
+	for _, scenario := range []string{"cancel before add", "deterministic add failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newRegistrationFixture(t, "[]")
+			checked := time.Now()
+			previous := store.Tracked{SandboxID: "one", Target: "demo.sbx", Label: "Previous", ProjectWorkspaceDone: true, GuestSync: &store.GuestSyncObservation{Fingerprint: "completed", CheckedAt: checked, Status: "ready"}}
+			state := store.State{Version: 1, Scopes: map[string][]store.Tracked{"scope": {previous}}}
+			if err := store.SaveState(state); err != nil {
+				t.Fatal(err)
+			}
+			adds := 0
+			f.runner.Execute = func(_ context.Context, c process.Command) (string, error) {
+				call := c.Name + " " + strings.Join(c.Args, " ")
+				switch call {
+				case "ssh -o BatchMode=yes -o ConnectTimeout=8 demo.sbx " + remoteHerdrStatusShell():
+					return remoteHerdrOnPath + "\nherdr 0.9.3", nil
+				case "herdr machine add --label sbx · demo demo.sbx":
+					adds++
+					return "machine catalog capacity reached", errors.New("catalog full")
+				default:
+					return "", fmt.Errorf("unexpected repeated guest work: %s", call)
+				}
+			}
+			f.rebuildClients()
+			current := func() bool {
+				if scenario != "cancel before add" {
+					return true
+				}
+				saved, err := store.LoadState()
+				if err != nil {
+					t.Fatal(err)
+				}
+				return !saved.Scopes["scope"][0].Pending
+			}
+			outcome, _ := f.service.registerPreparedContext(context.Background(), "scope", &state, nil, sbx.Sandbox{ID: "one", Name: "demo", Status: "running", Workspace: "/workspace/demo"}, current)
+			if scenario == "cancel before add" && (outcome.Status != "stale" || adds != 0) {
+				t.Fatalf("cancel=%+v adds=%d", outcome, adds)
+			}
+			if scenario == "deterministic add failure" && (outcome.Status != "catalog full" || adds != 1) {
+				t.Fatalf("failure=%+v adds=%d", outcome, adds)
+			}
+			saved, err := store.LoadState()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(saved.Scopes["scope"]) != 1 {
+				t.Fatalf("guest history removed: %+v", saved)
+			}
+			item := saved.Scopes["scope"][0]
+			if item.Pending || item.ProfileID != "" || !item.ProjectWorkspaceDone || item.GuestSync == nil || item.GuestSync.Fingerprint != "completed" || !item.GuestSync.CheckedAt.Equal(checked) {
+				t.Fatalf("completed state lost: %+v", item)
+			}
+		})
 	}
 }

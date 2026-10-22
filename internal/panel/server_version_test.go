@@ -1,7 +1,6 @@
 package panel
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -27,15 +26,12 @@ func TestDetailsCachedServerVersionAndWidth(t *testing.T) {
 				t.Fatalf("current: %q", got)
 			}
 			lines := m.sandboxDetails(r)
-			footer := lines[len(lines)-1]
-			if !strings.HasSuffix(ansi.Strip(footer.text), " herdr 0.9.2 ─╯") {
-				t.Fatalf("not in bottom-right border: %q", footer.text)
+			header := lines[0]
+			if width >= 60 && !strings.HasSuffix(ansi.Strip(header.text), " herdr 0.9.2 ╮") {
+				t.Fatalf("not in top-right badge: %q", header.text)
 			}
-			if !noColor && footer.text != ink(colorSeparator, ansi.Strip(footer.text)) {
-				t.Fatalf("version does not share border color: %q", footer.text)
-			}
-			if !strings.Contains(ansi.Strip(lines[1].text), "alpha →") {
-				t.Fatalf("version displaced sandbox summary: %q", lines[1].text)
+			if !strings.Contains(ansi.Strip(header.text), "alpha") {
+				t.Fatalf("version displaced sandbox name: %q", header.text)
 			}
 			for _, line := range lines {
 				if ansi.StringWidth(line.text) > width-4 {
@@ -68,12 +64,7 @@ func TestDetailsCachedServerVersionAndWidth(t *testing.T) {
 				t.Fatal("invented version")
 			}
 			withoutVersion := m.sandboxDetails(r)
-			for i, line := range lines {
-				if !reflect.DeepEqual(line.hits, withoutVersion[i].hits) {
-					t.Fatal("version changed control hit targets")
-				}
-			}
-			if strings.Contains(ansi.Strip(withoutVersion[len(withoutVersion)-1].text), "herdr") {
+			if strings.Contains(ansi.Strip(withoutVersion[0].text), "herdr") {
 				t.Fatal("unknown version has a border label")
 			}
 			r.Status.GuestServer = &store.GuestServerObservation{}
@@ -126,7 +117,7 @@ func TestDetailsObservationAgeStartsAfterTwoMinutes(t *testing.T) {
 		r := m.rows[0]
 		r.Status.ObservedAt = now
 		header := ansi.Strip(m.sandboxDetails(r)[0].text)
-		if strings.Contains(header, "just now") || !strings.HasSuffix(header, " running ╮") {
+		if strings.Contains(header, "just now") || !strings.Contains(header, "alpha (running)") {
 			t.Fatalf("width %d: header %q", width, header)
 		}
 	}

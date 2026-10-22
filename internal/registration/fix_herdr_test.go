@@ -30,7 +30,7 @@ func TestFixGuestHerdrValidatesOwnershipAndIdentityBeforeSSH(t *testing.T) {
 			case "stopped":
 				f.inventory = `[{"uuid":"sandbox-1","name":"demo","status":"stopped"}]`
 			case "unwatched":
-				if err := store.SetManagement(scope, "sandbox-1", store.Unwatched); err != nil {
+				if err := store.SetEnabled(scope, "sandbox-1", store.Disabled); err != nil {
 					t.Fatal(err)
 				}
 			case "pending":
@@ -138,7 +138,7 @@ func newFixHerdrFixture(t *testing.T, failHandoff bool) (*registrationFixture, s
 	if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {{SandboxID: "sandbox-1", Label: "custom label", Target: "demo.sbx", ProfileID: "machine-1", ProjectWorkspaceDone: true}}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetManagement(scope, "sandbox-1", store.Watched); err != nil {
+	if err := store.SetEnabled(scope, "sandbox-1", store.Enabled); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.ObserveSandbox(scope, sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"}); err != nil {

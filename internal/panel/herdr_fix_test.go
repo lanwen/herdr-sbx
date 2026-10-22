@@ -31,12 +31,12 @@ func TestGuestVersionArrowsCompareHostWithoutChangingBorderStyle(t *testing.T) {
 		for _, width := range []int{36, 60, 110} {
 			m.width = width
 			lines := m.sandboxDetails(r)
-			footer := lines[len(lines)-1].text
-			if !strings.HasSuffix(ansi.Strip(footer), " "+want+" ─╯") || ansi.StringWidth(footer) > width-4 {
-				t.Fatalf("width %d: %q", width, footer)
+			header := lines[0].text
+			if width >= 60 && !strings.HasSuffix(ansi.Strip(header), " "+want+" ╮") {
+				t.Fatalf("width %d: version not in top-right badge: %q", width, header)
 			}
-			if colorsEnabled() && footer != ink(colorSeparator, ansi.Strip(footer)) {
-				t.Fatal("version arrow changed border style")
+			if ansi.StringWidth(header) > width-4 {
+				t.Fatalf("width %d: %q", width, header)
 			}
 		}
 	}
@@ -59,7 +59,7 @@ func TestFixHerdrEligibilityAndConfirmation(t *testing.T) {
 	}
 	view := ansi.Strip(m.View().Content)
 	hint := strings.Index(view, "╭─ Hint")
-	if hint < 0 || (!strings.Contains(view[hint:], "downgrades") || !strings.Contains(view[hint:], "this sandbox to herdr 0.9.3")) || !strings.Contains(view[hint:], "last known") || !strings.Contains(view, "╭─ Details") {
+	if hint < 0 || (!strings.Contains(view[hint:], "downgrades") || !strings.Contains(view[hint:], "this sandbox to herdr 0.9.3")) || !strings.Contains(view[hint:], "last known") || !strings.Contains(view, "alpha (running)") {
 		t.Fatalf("missing contextual downgrade confirmation: %s", view)
 	}
 	hostVersionFixture(m, "0.9.4")
@@ -85,15 +85,15 @@ func TestFixHerdrEligibilityAndConfirmation(t *testing.T) {
 			t.Fatalf("fix available while %s", state)
 		}
 	}
-	for _, management := range []store.ManagementChoice{store.Unmanaged, store.Unwatched, store.Disabled} {
+	for _, management := range []store.EnabledChoice{store.Disabled, store.Disabled, store.Disabled} {
 		row := m.rows[0]
-		row.Management = management
+		row.Enabled = management
 		if m.canFixHerdr(row) {
 			t.Fatalf("fix available for %s", management)
 		}
 	}
 	row := m.rows[0]
-	row.Owned = false
+	row.EntryPresent = false
 	if m.canFixHerdr(row) {
 		t.Fatal("fix available for unowned machine")
 	}
@@ -104,6 +104,8 @@ func TestFixHerdrEligibilityAndConfirmation(t *testing.T) {
 }
 func TestEveryFocusedDetailsActionExplainsItsEffect(t *testing.T) {
 	m := modelFixture(t)
+	native := true
+	m.rows[0].NativeEnabled = &native
 	hostVersionFixture(m, "0.9.3")
 	m.rows[0].Status.GuestServer = &store.GuestServerObservation{Version: "0.9.2", Current: true, CheckedAt: time.Now()}
 	m.expanded, m.focus = "a", "actions"
@@ -119,13 +121,13 @@ func TestEveryFocusedDetailsActionExplainsItsEffect(t *testing.T) {
 	if m.notice != "" {
 		t.Fatal("completed action notice survived navigation")
 	}
-	m.rows[0].Management = store.Unwatched
+	m.rows[0].Enabled = store.Disabled
 	m.button = 0
-	if hint, _ := m.contextHint(); !strings.HasPrefix(hint, "Watch lets") {
+	if hint, _ := m.contextHint(); !strings.HasPrefix(hint, "Enable this sandbox") {
 		t.Fatal(hint)
 	}
-	m.rows[0].Management = store.Unmanaged
-	if hint, color := m.contextHint(); !strings.HasPrefix(hint, "Adopt lets") || color != colorAccent {
+	m.rows[0].Enabled = store.Disabled
+	if hint, color := m.contextHint(); !strings.HasPrefix(hint, "Enable this sandbox") || color != colorAccent {
 		t.Fatal(hint, color)
 	}
 }

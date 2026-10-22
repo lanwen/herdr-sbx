@@ -31,6 +31,15 @@ func (svc *Service) watchContext(ctx context.Context, out io.Writer) error {
 }
 
 func (svc *Service) watchWithStatus(ctx context.Context, out io.Writer, report func(string, string, bool)) error {
+	baseline := managementBaseline{}
+	return svc.watchManaged(ctx, out, report, &baseline)
+}
+
+type managementBaseline struct{ scope, socket string }
+
+// watchManaged retains the ON baseline across event-stream reconnects. A new
+// management period receives a new baseline only after the old worker settles.
+func (svc *Service) watchManaged(ctx context.Context, out io.Writer, report func(string, string, bool), baseline *managementBaseline) error {
 	out = &lockedWriter{out: out}
 	schedulerCtx, stopScheduler := context.WithCancel(ctx)
 	var scheduler *lifecycleScheduler
@@ -42,10 +51,10 @@ func (svc *Service) watchWithStatus(ctx context.Context, out io.Writer, report f
 	}()
 
 	for {
-		p := svc.registrations.Inspect()
-		if err := svc.registrations.RecoverPendingPolicy(p.Scope, p.Socket); err != nil {
-			return err
+		if !automaticAllowed(ctx) {
+			return nil
 		}
+		p := svc.registrations.Inspect()
 		svc.checks(out, p)
 		if p.Scope == "" || p.Socket == "" || !hasLevel(p, "Sandbox capability", precheck.Ready) || !hasLevel(p, "Sandbox daemon", precheck.Ready) || hasBlocked(p, "Docker authorization") {
 			if scheduler != nil {
@@ -56,6 +65,21 @@ func (svc *Service) watchWithStatus(ctx context.Context, out io.Writer, report f
 			}
 			return errors.New("watch needs a running sandbox daemon and readable sandbox inventory")
 		}
+		if scheduler != nil && (scheduler.scope != p.Scope || scheduler.socket != p.Socket) {
+			return errors.New("sandbox daemon scope changed; restart the lifecycle watch")
+		}
+		if baseline.scope != p.Scope || baseline.socket != p.Socket {
+			if err := svc.registrations.CaptureBaseline(ctx, p.Socket); err != nil {
+				return fmt.Errorf("read management baseline before automatic work: %w", err)
+			}
+			*baseline = managementBaseline{scope: p.Scope, socket: p.Socket}
+		}
+		if !automaticAllowed(ctx) {
+			return nil
+		}
+		if err := svc.registrations.RecoverPendingPolicy(p.Scope, p.Socket); err != nil {
+			return err
+		}
 		if err := store.ClearWarning(p.Scope + "/discovery"); err != nil {
 			fmt.Fprintln(out, "Sandbox warning state was not saved:", err)
 		}
@@ -63,8 +87,6 @@ func (svc *Service) watchWithStatus(ctx context.Context, out io.Writer, report f
 		fmt.Fprintln(out, "Watching sandbox lifecycle. Press Ctrl-C to stop.")
 		if scheduler == nil {
 			scheduler = svc.newScheduler(schedulerCtx, p.Scope, p.Socket, out, report)
-		} else if scheduler.scope != p.Scope || scheduler.socket != p.Socket {
-			return errors.New("sandbox daemon scope changed; restart the lifecycle watch")
 		}
 		scheduler.beginStream()
 		streamReported := false
@@ -77,6 +99,9 @@ func (svc *Service) watchWithStatus(ctx context.Context, out io.Writer, report f
 		})
 		if ctx.Err() != nil {
 			fmt.Fprintln(out, "Lifecycle watch stopped.")
+			return nil
+		}
+		if !automaticAllowed(ctx) {
 			return nil
 		}
 		if report != nil {
@@ -119,7 +144,7 @@ func (w *lockedWriter) Write(p []byte) (int, error) {
 }
 
 type lifecycleScheduler struct {
-	management     map[string]store.ManagementChoice
+	enabled        map[string]store.EnabledChoice
 	pluginDefaults store.GuestPluginDefaults
 	report         func(string, string, bool)
 	owner          *Service
@@ -141,7 +166,7 @@ type lifecycleScheduler struct {
 func (owner *Service) newScheduler(ctx context.Context, scope, socket string, out io.Writer, report func(string, string, bool)) *lifecycleScheduler {
 	s := &lifecycleScheduler{report: report, owner: owner, ctx: ctx, scope: scope, socket: socket, out: out, retired: map[string]bool{}, deletes: map[string]sbx.LifecycleEvent{}, queue: make(chan sbx.LifecycleEvent, 128)}
 	s.pluginDefaults, _ = store.ReadGuestPluginDefaults()
-	s.management, _ = store.ReadManagement()
+	s.enabled, _ = store.ReadEnabled()
 	s.jobs.Add(1)
 	go s.run()
 	return s
@@ -217,23 +242,29 @@ func (s *lifecycleScheduler) run() {
 // Settings have a separate, atomically replaced file. Polling it also works
 // across CLI processes and saves made while the worker was not running.
 func (s *lifecycleScheduler) processPluginDefaults() {
+	if !automaticAllowed(s.ctx) {
+		return
+	}
 	settings, err := store.ReadGuestPluginDefaults()
 	if err != nil {
 		return
 	} // Periodic reconciliation reports unreadable defaults.
-	management, err := store.ReadManagement()
+	enabled, err := store.ReadEnabled()
 	if err != nil {
 		return
 	}
-	if reflect.DeepEqual(settings, s.pluginDefaults) && maps.Equal(management, s.management) {
+	if reflect.DeepEqual(settings, s.pluginDefaults) && maps.Equal(enabled, s.enabled) {
 		return
 	}
 	s.pluginDefaults = settings
-	s.management = management
+	s.enabled = enabled
 	s.processCatchup(true)
 }
 
 func (s *lifecycleScheduler) processCatchup(periodic bool) {
+	if !automaticAllowed(s.ctx) {
+		return
+	}
 	s.mu.Lock()
 	needed := s.catchup
 	fresh := s.freshCatchup
@@ -259,10 +290,11 @@ func (s *lifecycleScheduler) processCatchup(periodic bool) {
 			s.mu.Unlock()
 		}
 		if !errors.Is(err, context.Canceled) {
-			if statusErr := store.MarkScopeStale(s.scope, "sandbox catch-up is unavailable"); statusErr != nil {
+			detail := fmt.Sprintf("Could not refresh sandbox state: %v", err)
+			if statusErr := store.MarkScopeStale(s.scope, detail); statusErr != nil {
 				fmt.Fprintln(s.out, "Sandbox status was not saved:", statusErr)
 			}
-			s.owner.warnBlocking(s.ctx, s.out, s.scope+"/catch-up", "Sandbox catch-up is unavailable. Known machines were preserved.")
+			s.owner.warnBlocking(s.ctx, s.out, s.scope+"/catch-up", detail)
 			fmt.Fprintln(s.out, "Lifecycle catch-up failed:", err)
 		}
 	} else {
@@ -281,6 +313,9 @@ func (s *lifecycleScheduler) wait() {
 }
 
 func (s *lifecycleScheduler) handle(event sbx.LifecycleEvent) {
+	if !automaticAllowed(s.ctx) {
+		return
+	}
 	switch strings.ToLower(event.Action) {
 	case "sync", "complete":
 		if s.report != nil {
@@ -301,7 +336,10 @@ func (s *lifecycleScheduler) handle(event sbx.LifecycleEvent) {
 			s.removeDeleted(event)
 		}
 	case "stopped":
-		fmt.Fprintf(s.out, "%s stopped; its registration is retained for SSH reconnects.\n", event.SandboxName)
+		// A stopped event is an observation, not a no-wake guarantee: an
+		// independently enabled herdr reconnect may already be in flight.
+		fmt.Fprintf(s.out, "%s stopped; deferring guest work.\n", event.SandboxName)
+		s.processCatchup(true)
 	case "deleted":
 		s.removeDeleted(event)
 	}
@@ -318,10 +356,13 @@ func (s *lifecycleScheduler) stillRunning(event sbx.LifecycleEvent) bool {
 }
 
 func (s *lifecycleScheduler) current(event sbx.LifecycleEvent) bool {
-	return !s.isRetired(event.SandboxID) && event.SandboxName != "" && s.stillRunning(event)
+	return automaticAllowed(s.ctx) && !s.isRetired(event.SandboxID) && event.SandboxName != "" && s.stillRunning(event)
 }
 
 func (s *lifecycleScheduler) processDeletes() {
+	if !automaticAllowed(s.ctx) {
+		return
+	}
 	s.mu.Lock()
 	deletes := make([]sbx.LifecycleEvent, 0, len(s.deletes))
 	for _, event := range s.deletes {
@@ -338,6 +379,9 @@ func (s *lifecycleScheduler) processDeletes() {
 }
 
 func (s *lifecycleScheduler) recoverMissedDeletes() {
+	if !automaticAllowed(s.ctx) {
+		return
+	}
 	sandboxes, err := s.owner.sbx.Inventory(s.ctx, s.socket)
 	if err != nil {
 		fmt.Fprintln(s.out, "Lifecycle deletion check deferred:", err)
@@ -368,11 +412,20 @@ func (s *lifecycleScheduler) recoverMissedDeletes() {
 		fmt.Fprintln(s.out, "Sandbox status was not saved:", err)
 	}
 	for _, item := range st.Scopes[s.scope] {
-		if registration.SandboxName(item) == "" || item.Pending || item.ProfileID == "" {
+		if !automaticAllowed(s.ctx) {
+			return
+		}
+		if registration.SandboxName(item) == "" || item.Pending {
 			continue
 		}
 		warningKey := store.StatusKey(s.scope, item.SandboxID) + "/absence"
 		if present[item.SandboxID] {
+			continue
+		}
+		if item.ProfileID == "" {
+			// Registration verifies the dead identity before clearing local-only state.
+			// Its no-profile path also handles a verified same-name replacement safely.
+			s.removeDeleted(sbx.LifecycleEvent{Type: "sandbox.lifecycle", Action: "deleted", SandboxID: item.SandboxID, SandboxName: registration.SandboxName(item)})
 			continue
 		}
 		absent, err := s.owner.sbx.SandboxAbsent(s.ctx, s.socket, registration.SandboxName(item), item.SandboxID)
@@ -408,6 +461,9 @@ func (s *lifecycleScheduler) recoverMissedDeletes() {
 }
 
 func (s *lifecycleScheduler) removeDeleted(event sbx.LifecycleEvent) bool {
+	if !automaticAllowed(s.ctx) {
+		return false
+	}
 	result, err := s.owner.registrations.RemoveDeletedSandbox(s.ctx, s.scope, s.socket, event.SandboxID)
 	if err != nil {
 		fmt.Fprintln(s.out, "Lifecycle deletion deferred:", err)
@@ -417,4 +473,10 @@ func (s *lifecycleScheduler) removeDeleted(event sbx.LifecycleEvent) bool {
 		fmt.Fprintln(s.out, result.Detail)
 	}
 	return !result.Retry
+}
+
+// Unreadable permission fails closed. Host observations and explicit actions
+// use their own paths; this gate is only for the automatic lifecycle worker.
+func automaticAllowed(ctx context.Context) bool {
+	return registration.CheckAutomaticWork(ctx) == nil
 }

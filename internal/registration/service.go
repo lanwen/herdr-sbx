@@ -15,7 +15,7 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 )
 
-// Service coordinates sandbox identity, saved ownership, guest preparation,
+// Service coordinates sandbox identity, saved associations, guest preparation,
 // and Herdr registration using the typed clients it receives at startup.
 type Service struct {
 	herdr                 *herdr.Client
@@ -56,6 +56,9 @@ func (s *Service) inventory(ctx context.Context, socket string) ([]sbx.Sandbox, 
 // runSSH keeps guest commands bounded and passes each remote shell operation as
 // one argument, so local command parsing cannot change its meaning.
 func (s *Service) runSSH(ctx context.Context, timeout time.Duration, target, command string) (string, error) {
+	if err := CheckAutomaticWork(ctx); err != nil {
+		return "", err
+	}
 	return s.runner.CombinedOutput(ctx, process.Command{
 		Name: "ssh", Timeout: timeout,
 		Args: []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=8", target, command},

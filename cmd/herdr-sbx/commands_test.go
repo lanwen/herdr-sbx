@@ -187,7 +187,7 @@ func TestDaemonStopReportsUnconfirmedExit(t *testing.T) {
 		t.Fatalf("Stop was lost: %+v %v", saved.WorkerControl, err)
 	}
 	status, err := store.ReadWorkerStatus()
-	if err != nil || status.State != "running" {
+	if err != nil || status.State != "cancelling" {
 		t.Fatalf("authoritative status=%+v error=%v", status, err)
 	}
 }

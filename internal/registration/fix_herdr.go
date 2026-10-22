@@ -12,9 +12,10 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/version"
 )
 
-// FixGuestHerdr explicitly aligns an owned sandbox with the host release and
+// FixGuestHerdr explicitly aligns an associated sandbox with the host release and
 // then rechecks its setup. It never stops the guest server to force an update.
 func (s *Service) FixGuestHerdr(ctx context.Context, out io.Writer, scope, socket, id, name, expectedHostVersion string) error {
+	ctx = WithExplicitAction(ctx)
 	if id == "" || name == "" || scope == "" || socket == "" {
 		return errors.New("refresh the sandbox inventory before fixing herdr")
 	}
@@ -34,7 +35,7 @@ func (s *Service) FixGuestHerdr(ctx context.Context, out io.Writer, scope, socke
 		return errors.New("sandbox daemon changed; refresh before re-syncing")
 	}
 	return s.ReconcileSandbox(WithFreshGuestObservation(ctx), out, id, name, func() bool {
-		return s.fixSandboxCurrent(ctx, socket, id, name)
+		return s.fixSandboxCurrent(ctx, socket, id, name) && sandboxWorkAllowed(ctx, scope, id)
 	})
 }
 
@@ -50,8 +51,8 @@ func (s *Service) fixOwnedGuestHerdr(ctx context.Context, out io.Writer, scope, 
 	if err != nil {
 		return err
 	}
-	if status.Management[store.StatusKey(scope, id)] != store.Watched {
-		return errors.New("watch and adopt this sandbox before fixing herdr")
+	if status.EnabledChoices[store.StatusKey(scope, id)] == store.Disabled {
+		return errors.New("enable this sandbox before fixing herdr")
 	}
 	state, err := store.LoadState()
 	if err != nil {
@@ -66,14 +67,14 @@ func (s *Service) fixOwnedGuestHerdr(ctx context.Context, out io.Writer, scope, 
 		}
 	}
 	if tracked == nil || tracked.Pending || tracked.ProfileID == "" || tracked.Target != name+".sbx" {
-		return errors.New("adopt or refresh the registration before fixing herdr")
+		return errors.New("refresh the registration before fixing herdr")
 	}
 	machines, output, err := s.herdr.ListMachines(ctx)
 	if err != nil {
 		return fmt.Errorf("inspect herdr catalog: %s", commandError(err, output))
 	}
-	if ownedTrackedMachine(machines, *tracked) == nil {
-		return errors.New("saved registration is no longer the owned herdr machine")
+	if associatedTrackedMachine(machines, *tracked) == nil {
+		return errors.New("saved registration is no longer the associated herdr entry")
 	}
 	local, err := s.herdr.Version(ctx)
 	if err != nil {
@@ -85,7 +86,7 @@ func (s *Service) fixOwnedGuestHerdr(ctx context.Context, out io.Writer, scope, 
 	}
 	sb := sbx.Sandbox{ID: id, Name: name, Status: "running"}
 	return s.recoverGuestVersionTo(ctx, scope, sb, func() bool {
-		return s.fixSandboxCurrent(ctx, socket, id, name)
+		return s.fixSandboxCurrent(ctx, socket, id, name) && sandboxWorkAllowed(ctx, scope, id)
 	}, func(message string) { fmt.Fprintln(out, message) }, false, wanted)
 }
 

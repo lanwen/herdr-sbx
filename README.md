@@ -1,7 +1,7 @@
 # herdr-sbx
 
 Connect local [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) to [Herdr](https://github.com/herdrdev/herdr).
-The plugin discovers running sandboxes and adds them as machines named `sbx · <sandbox-name>`.
+The plugin discovers sandboxes and adds running ones as machines named `sbx · <sandbox-name>`.
 It installs Herdr inside sandboxes when needed and creates workspaces in their project directories.
 You can also select local plugins to install inside sandboxes with their shortcuts.
 
@@ -11,7 +11,7 @@ Use a macOS or Linux host with Herdr 0.9.1 or later, `sbx` 0.45.1 or later, and 
 Start the sandbox daemon and sign in through Docker Sandboxes before using the plugin.
 Configure sandbox SSH with `sbx setup ssh`.
 
-Install Go 1.27.1 or later and Git on the host, with `go` and `git` available on `PATH`.
+Install Go 1.27.3 or later and Git on the host, with `go` and `git` available on `PATH`.
 Herdr downloads and builds the plugin from GitHub:
 
 ```sh
@@ -22,7 +22,7 @@ Review and approve the installation prompt.
 Herdr enables the installed plugin.
 If you already use a local checkout, follow the [switching instructions](docs/reference.md#local-checkout) first.
 
-The auto-sync daemon follows sandbox changes in the background.
+Management follows sandbox changes in the background while it is ON.
 From a terminal inside local Herdr, open the sandbox manager:
 
 ```sh
@@ -31,10 +31,12 @@ herdr plugin action invoke open-status --plugin lanwen.herdr-sbx
 
 On first use, the manager starts one daemon automatically.
 Closing the manager leaves the daemon running.
-Use the table to watch sandboxes, rename Herdr labels, and select synchronized plugins.
-Use Auto-sync controls to stop it or start it again.
+Use the table to enable or disable sandboxes, rename herdr labels, and select synchronized herdr plugins.
+Use the Management control to turn automatic work ON or OFF.
+Disabling a sandbox keeps its herdr entry and label; after it is disabled in herdr, you can remove the entry separately.
+An explicit Enable, Disable, or Rename action remains available while Management is OFF.
 The plugin binary also provides `status` for cached observations and `status --json` for a detailed snapshot.
-Use `daemon start` or `daemon stop` to control auto-sync, and `daemon status` or `daemon status --json` to inspect only the daemon.
+Use `daemon start` or `daemon stop` to control Management, and `daemon status` or `daemon status --json` to inspect its saved choice and daemon state.
 For a local checkout, run these subcommands with `bin/herdr-sbx`.
 
 ## Screenshots
@@ -59,7 +61,7 @@ Compact layout:
 
 ## Upgrade
 
-Open the sandbox manager, set Auto-sync to OFF, and wait for Stopped.
+Open the sandbox manager, set Management to OFF, and wait until cancellation settles.
 Then disable the plugin from another local Herdr terminal:
 
 ```sh
@@ -72,15 +74,19 @@ Reinstall from GitHub:
 herdr plugin install lanwen/herdr-sbx
 ```
 
-Close and reopen the manager to load the new version, then accept the Start prompt or set Auto-sync to ON.
-The upgrade keeps plugin state and managed machine entries.
+Close and reopen the manager to load the new version, then accept the Start prompt or set Management to ON.
+The upgrade keeps herdr plugin state and verified machine entries.
 
 ## How it works
 
 The daemon follows sandbox events and scans again every 30 seconds.
 It downloads missing Herdr binaries on the host, compares their checksums, and copies them over SSH.
 Stopped sandboxes keep their machine entries.
-Deleted sandboxes lose only entries that the plugin manages.
+A stopped sandbox without an entry stays Disabled quietly.
+Start that sandbox independently before enabling it in the manager.
+If an entry already exists, Enable enables it in Herdr even while the sandbox is stopped.
+Herdr may then connect and start it; keep the entry Disabled to prevent future connections.
+Management removes an entry only after confirming its sandbox was deleted, including a disabled entry; it never removes entries automatically while OFF.
 
 The plugin reports registration failures through Herdr notifications.
 It tries to resolve version differences without stopping active panes.

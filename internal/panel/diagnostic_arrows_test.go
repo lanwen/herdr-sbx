@@ -40,7 +40,7 @@ func TestDiagnosticHeaderArrowsSelectNewAndAll(t *testing.T) {
 				}
 			}
 			for _, full := range []bool{false, true} {
-				if help := strings.Join(strings.Fields(m.renderHelp(110, full)), " "); !strings.Contains(help, "←/→ new/all") || strings.Contains(help, "←/→ cycle tabs") {
+				if help := strings.Join(strings.Fields(ansi.Strip(m.renderHelp(110, full))), " "); !strings.Contains(help, "←/→ new/all") || strings.Contains(help, "←/→ cycle tabs") {
 					t.Fatalf("incorrect header help: %q", help)
 				}
 			}
@@ -75,7 +75,7 @@ func TestDiagnosticHeaderRetainsTabCyclingAndActivation(t *testing.T) {
 	}
 	m.focus = "errors"
 	m.key(keyMsg(tea.KeyRight, ""))
-	if m.page != "Status" || m.focus != "table" {
-		t.Fatal("Right from diagnostic entry did not retain tab cycling")
+	if m.page != "Sandboxes" || m.focus != "errors" {
+		t.Fatal("Right from a diagnostic entry switched tabs or left its selection")
 	}
 }

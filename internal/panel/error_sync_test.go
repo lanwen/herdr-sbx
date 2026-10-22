@@ -203,13 +203,13 @@ func TestNoticeTracksCurrentActionAndNavigation(t *testing.T) {
 		t.Fatalf("current action not named: %q", m.notice)
 	}
 	m.openTab("Plugins")
-	if !strings.Contains(m.notice, "Saving herdr label for alpha") {
-		t.Fatal("navigation hid active operation")
+	if m.notice != "" {
+		t.Fatal("navigation retained previous action hint")
 	}
 	m.refreshing = true
 	m.Update(operationMsg{target: "a", code: store.CodeRename, notice: "herdr label saved"})
-	if m.notice != "herdr label saved" {
-		t.Fatalf("completion did not replace progress: %q", m.notice)
+	if m.notice != "" {
+		t.Fatalf("completion appeared outside its action context: %q", m.notice)
 	}
 	m.key(keyMsg('s', "s"))
 	if m.notice != "" {

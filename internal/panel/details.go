@@ -13,32 +13,95 @@ import (
 
 func (m *model) sandboxDetails(r registration.SandboxRow) []line {
 	id := r.Sandbox.ID
-	label := r.Label
-	if label == "" {
-		label = "—"
+	label := ink(colorSand, highlight(m.queries["Sandboxes"], safeText(r.Label)))
+	if m.input != nil && m.input.kind == "rename" && m.input.target == id {
+		label = ink(colorSand, m.renderedInput(max(1, m.width-18)))
 	}
-	lines := []line{textLine(safeText(r.Sandbox.Name) + " → " + ink(colorSand, safeText(label)) + " (" + readinessStyle(r.Status.Connection, readinessDescription(r)) + ")"), textLine("")}
-	ownership := "Unowned"
-	if r.Owned {
-		ownership = "Owned"
+	status := statusStyle(r.Status.Connection, statusDescription(r))
+	if r.Status.Stale || r.AssociationIssue != "" {
+		status = ink(colorWarning, statusDescription(r))
 	}
-	lines = append(lines, m.detailPluginLines(r)...)
+	if m.pending[id] {
+		status = m.sandboxProgress(id)
+	}
+	mark := enabledMark(r)
+	if choice, ok := m.pendingEnabled[id]; ok {
+		mark = ink(colorMuted, "·")
+		if choice == store.Enabled {
+			mark = ink(colorAccent, "✓")
+		}
+	}
+	name := ink(colorText, highlight(m.queries["Sandboxes"], safeText(r.Sandbox.Name)))
+	runtime := runtimeStyle(r.Sandbox.Status, runtimeDescription(r))
+	title := mark + " " + name + " (" + runtime + ") → " + label + " (" + status + ")"
+	width, indent := m.width-4, 2
+	observed := detailsObservationAge(r.Status.ObservedAt, time.Now())
+	badge := ""
+	if server := m.guestServerLabel(r); server != "" {
+		badge = badgeStyle(colorMuted, server)
+	}
+	// Preserve the identity and status before spending narrow title space on metadata.
+	if width-indent-ansi.StringWidth(badge)-6 < 24 {
+		badge = ""
+	}
+	if ansi.StringWidth(title)+ansi.StringWidth(badge)+ansi.StringWidth(observed)+8 > width-indent {
+		observed = ""
+	}
+	observedWidth := ansi.StringWidth(observed)
+	if observed != "" {
+		observedWidth += 2
+	}
+	titleWidth := max(1, width-indent-ansi.StringWidth(badge)-observedWidth-6)
+	summary := strings.Split(ansi.Wrap(title, titleWidth, ""), "\n")
+	title = summary[0]
+	var lines []line
+	for _, continuation := range summary[1:] {
+		lines = append(lines, textLine(continuation))
+	}
+	lines = append(lines, textLine(""))
 	availableActions := m.sandboxActions(r)
+	renaming := m.input != nil && m.input.kind == "rename" && m.input.target == id
 	var actions []line
 	capacity := max(1, m.width-10)
 	for i, action := range availableActions {
 		label := action.label
+		primary := action.id == "enable" || action.id == "disable"
+		if primary {
+			label += " (space)"
+		}
 		focused := m.focus == "actions" && m.button%len(availableActions) == i
 		if m.dialog == "fix-herdr" {
 			focused = action.id == "fix-herdr"
 		}
+		if renaming {
+			focused = action.id == "rename"
+		}
+		activePrimary := primary && !renaming && m.focus != "plugins" && (m.focus != "actions" || focused)
 		if focused {
 			label = "› " + label
 		}
 		button := controlLine([]string{label}, []string{"action"}, []string{action.id})
-		if action.id == "adopt" {
+		if activePrimary {
 			button.text = primaryButtonStyle(label, focused)
-			button.hits[0].w = ansi.StringWidth(button.text)
+		}
+		if renaming && action.id == "rename" {
+			button.text = styledButton(label, true, false, colorSand)
+		}
+		button.hits[0].w = ansi.StringWidth(button.text)
+		if ansi.StringWidth(button.text) > capacity {
+			text := strings.TrimPrefix(label, "› ")
+			if focused && ansi.StringWidth(text)+2 <= capacity {
+				text += " ↵"
+			}
+			text = buttonLabelWeight(text)
+			button.text = filled(colorText, backgroundTab, text)
+			if focused || activePrimary {
+				button.text = filled(foregroundSelected, backgroundSelected, text)
+			}
+			if renaming && action.id == "rename" {
+				button.text = filled("\x1b[38;2;0;0;0m", strings.Replace(colorSand, "[38;", "[48;", 1), text)
+			}
+			button.hits[0].w = ansi.StringWidth(text)
 		}
 		if len(actions) == 0 || ansi.StringWidth(actions[len(actions)-1].text)+2+ansi.StringWidth(button.text) > capacity {
 			actions = append(actions, button)
@@ -53,20 +116,20 @@ func (m *model) sandboxDetails(r registration.SandboxRow) []line {
 		}
 	}
 	lines = append(lines, fitLines(actions, capacity)...)
-	title := "Details · " + safeText(id) + " · " + ownership
-	result := outline(lines, title, m.width-4, 2)
+	lines = append(lines, textLine(""))
+	identity := safeText(id)
+	if r.ProfileID != "" {
+		identity += " → " + safeText(r.ProfileID)
+	}
+	lines = append(lines, textLine(ink(colorMuted, identity)))
+	lines = append(lines, m.detailPluginLines(r)...)
+	border := colorSeparator
+	if m.expanded == m.selected && (m.focus == "actions" || m.focus == "plugins") {
+		border = colorText
+	}
+	result := outline(lines, title, width, indent, border)
 	if len(result) > 0 {
-		observed := detailsObservationAge(r.Status.ObservedAt, time.Now())
-		runtime := runtimeDescription(r)
-		if m.width < 60 {
-			runtime = r.Sandbox.Status
-			observed = ""
-		}
-		result[0] = textLine(detailBorder(title, observed, runtimeBadge(r.Sandbox.Status, runtime), m.width-4, 2))
-		if server := m.guestServerLabel(r); server != "" && ansi.StringWidth(server) <= m.width-12 {
-			fill := m.width - ansi.StringWidth(server) - 11
-			result[len(result)-1] = textLine(ink(colorSeparator, "  ╰"+strings.Repeat("─", fill)+" "+server+" ─╯"))
-		}
+		result[0] = line{text: detailBorder(title, observed, badge, width, indent, border), hits: []hit{{x: indent + 3, w: 1, action: "enabled", id: id}, {x: indent + 5, w: max(1, titleWidth-2), action: "select", id: id}}}
 	}
 	return result
 }
@@ -90,23 +153,21 @@ type detailAction struct {
 	id, label string
 }
 
+func canRemoveEntry(r registration.SandboxRow) bool {
+	return r.EntryPresent && r.Enabled == store.Disabled && r.NativeEnabled != nil && !*r.NativeEnabled && r.AssociationIssue == ""
+}
 func (m *model) sandboxActions(r registration.SandboxRow) []detailAction {
-	switch r.Management {
-	case store.Unmanaged:
-		return []detailAction{{"adopt", "Adopt"}}
-	case store.Disabled, store.Untracked:
-		return []detailAction{{"watch", "Watch"}}
+	if r.AssociationIssue != "" {
+		return nil
 	}
-	actions := make([]detailAction, 0, 5)
-	if r.Management == store.Watched {
-		actions = append(actions, detailAction{"unwatch", "Unwatch"})
-	} else {
-		actions = append(actions, detailAction{"watch", "Watch"})
+	actions := []detailAction{{"enable", "Enable"}}
+	if r.EntryPresent && r.Enabled == store.Enabled {
+		actions = []detailAction{{"disable", "Disable"}}
 	}
-	if r.Owned {
-		actions = append(actions, detailAction{"disable", "Disable · remove from herdr"})
+	if canRemoveEntry(r) {
+		actions = append(actions, detailAction{"remove", "Remove from herdr"})
 	}
-	if r.Management == store.Watched && strings.EqualFold(r.Sandbox.Status, "running") {
+	if r.Enabled == store.Enabled && strings.EqualFold(r.Sandbox.Status, "running") {
 		needsResync := !strings.EqualFold(r.Status.Connection, "ready")
 		for _, e := range m.errors {
 			if (e.code == store.CodePreparation || store.IsGuestPluginCode(e.code)) && (e.scope == r.Sandbox.ID || e.scope == r.Scope || e.scope == store.StatusKey(r.Scope, r.Sandbox.ID)) {
@@ -121,8 +182,8 @@ func (m *model) sandboxActions(r registration.SandboxRow) []detailAction {
 	if m.canFixHerdr(r) {
 		actions = append(actions, detailAction{"fix-herdr", "Fix herdr"})
 	}
-	if r.Owned {
-		actions = append(actions, detailAction{"rename", "Rename herdr label…"})
+	if r.EntryPresent {
+		actions = append(actions, detailAction{"rename", "Rename"})
 	}
 	return actions
 }
@@ -130,7 +191,7 @@ func (m *model) sandboxActions(r registration.SandboxRow) []detailAction {
 func (m *model) detailPluginLines(r registration.SandboxRow) []line {
 	// Root section consumes four cells, Details six, and this outline four.
 	inner := max(1, m.width-14)
-	choiceWidth, effectiveWidth := 7, 11
+	choiceWidth, effectiveWidth := 7, 15
 	nameWidth := 6
 	for _, p := range m.plugins {
 		nameWidth = max(nameWidth, ansi.StringWidth(p.ID))
@@ -154,6 +215,14 @@ func (m *model) detailPluginLines(r registration.SandboxRow) []line {
 			prefix = "> "
 		}
 		effectiveText := enabledStyle(effective, onOff(effective))
+		source := ""
+		if !loading && p.UnsupportedReason == "" {
+			source = "default"
+			if choice != "Inherit" {
+				source = "override"
+			}
+			effectiveText += ink(colorMuted, " · "+source)
+		}
 		if loading {
 			effectiveText = ink(colorInfo, m.actionSpinner()+" Loading")
 		} else if p.UnsupportedReason != "" {
@@ -171,6 +240,10 @@ func (m *model) detailPluginLines(r registration.SandboxRow) []line {
 				lines = append(lines, line{text: "  " + ink(colorInfo, choice), hits: []hit{{x: 0, w: inner, action: "override", id: p.ID}}})
 				text = "  → " + effectiveText
 			}
+			if source != "" && ansi.StringWidth(text) > inner {
+				lines = append(lines, line{text: "  → " + enabledStyle(effective, onOff(effective)), hits: []hit{{x: 0, w: inner, action: "override", id: p.ID}}})
+				text = "  " + ink(colorMuted, source)
+			}
 			lines = append(lines, line{text: text, hits: []hit{{x: 0, w: inner, action: "override", id: p.ID}}})
 		}
 		if p.UnsupportedReason != "" {
@@ -183,20 +256,6 @@ func (m *model) detailPluginLines(r registration.SandboxRow) []line {
 		lines = append(lines, textLine(ink(colorMuted, "No herdr plugins available")))
 	}
 	return outline(lines, "Plugins", m.width-10, 0)
-}
-func runtimeBadge(state, text string) string {
-	color := colorInfo
-	switch strings.ToLower(state) {
-	case "running":
-		color = colorSuccess
-	case "stopped", "exited":
-		color = colorMuted
-	case "pending", "starting", "stopping", "creating":
-		color = colorWarning
-	case "failed", "error":
-		color = colorError
-	}
-	return badgeStyle(color, text)
 }
 func relativeTime(when time.Time) string {
 	age := time.Since(when)
@@ -211,15 +270,14 @@ func relativeTime(when time.Time) string {
 		return fmt.Sprintf("%dd ago", int(age/(24*time.Hour)))
 	}
 }
-func detailBorder(title, observed, badge string, width, indent int) string {
-	// Keep the status badge against the right corner, even with a long identity.
+func detailBorder(title, observed, badge string, width, indent int, border string) string {
 	if observed != "" {
 		observed = " " + observed + " "
 	}
 	title = truncate(title, max(1, width-indent-ansi.StringWidth(observed)-ansi.StringWidth(badge)-6))
-	left := strings.Repeat(" ", indent) + "╭─ " + title + " "
-	fill := max(0, width-ansi.StringWidth(left)-ansi.StringWidth(observed)-ansi.StringWidth(badge)-2)
-	return ink(colorSeparator, left+strings.Repeat("─", fill)) + ink(colorMuted, observed) + " " + badge + ink(colorSeparator, "╮")
+	left := strings.Repeat(" ", indent) + "╭─ "
+	fill := max(0, width-ansi.StringWidth(left)-ansi.StringWidth(title)-ansi.StringWidth(observed)-ansi.StringWidth(badge)-3)
+	return ink(border, left) + title + ink(border, " "+strings.Repeat("─", fill)) + ink(colorMuted, observed) + " " + badge + ink(border, "╮")
 }
 
 func (m *model) hostHerdrVersion() string {
@@ -253,7 +311,7 @@ func (m *model) guestServerLabel(r registration.SandboxRow) string {
 	return label
 }
 func (m *model) canFixHerdr(r registration.SandboxRow) bool {
-	if m.hostHerdrVersion() == "" || !r.Owned || r.Management != store.Watched || !strings.EqualFold(r.Sandbox.Status, "running") {
+	if m.hostHerdrVersion() == "" || !r.EntryPresent || r.AssociationIssue != "" || r.Enabled != store.Enabled || !strings.EqualFold(r.Sandbox.Status, "running") {
 		return false
 	}
 	if order, known := m.guestVersionComparison(r); known && order != 0 {
@@ -307,8 +365,20 @@ func (m *model) herdrCompatibilityHint(r registration.SandboxRow) string {
 	} else {
 		hint += " Update herdr inside the sandbox with its original installation method, then choose Re-sync."
 		if m.hostHerdrVersion() == "" {
-			hint += " Refresh observations to check the host version before using Fix herdr."
+			hint += " Refresh to check the host version before using Fix herdr."
 		}
 	}
 	return hint
+}
+
+// sandboxProgress names the operation independently of refreshed observations.
+func (m *model) sandboxProgress(id string) string {
+	text := "Updating"
+	if choice, ok := m.pendingEnabled[id]; ok {
+		text = "Enabling…"
+		if choice == store.Disabled {
+			text = "Disabling…"
+		}
+	}
+	return ink(colorInfo, m.actionSpinner()+" "+text)
 }

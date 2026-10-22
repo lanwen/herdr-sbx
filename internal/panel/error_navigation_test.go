@@ -21,14 +21,13 @@ func TestSandboxArrowsTraverseTableAndErrors(t *testing.T) {
 	} {
 		m := modelFixture(t)
 		m.errors = navigationErrors()
-		m.expanded = "a" // Moving into Errors must not collapse another row.
-		m.selected = "b"
+		m.selected, m.expanded = "b", "b" // Diagnostics retain the selected preview.
 		m.key(keys.down)
 		if m.focus != "diagnostics" {
 			t.Fatal("Down skipped diagnostics header")
 		}
 		m.key(keys.down)
-		if m.focus != "errors" || m.errorIndex != 0 || !m.reveal || m.expanded != "a" {
+		if m.focus != "errors" || m.errorIndex != 0 || !m.reveal || m.expanded != "b" {
 			t.Fatal("Down from the last row did not reveal the first error")
 		}
 		m.key(keys.down)
@@ -44,59 +43,60 @@ func TestSandboxArrowsTraverseTableAndErrors(t *testing.T) {
 			t.Fatal("Up skipped diagnostics header")
 		}
 		m.key(keys.up)
-		if m.focus != "table" || m.selected != "b" || m.expanded != "a" || !m.reveal {
+		if m.focus != "table" || m.selected != "b" || m.expanded != "b" || !m.reveal {
 			t.Fatal("Up from the first error did not return to the last sandbox")
 		}
 	}
 }
 
-func TestExpandedLastSandboxTraversesControlsBeforeErrorsAndReturns(t *testing.T) {
+func TestFocusedDetailsStayInsideUntilEscapeThenDiagnosticsReturnToPreview(t *testing.T) {
 	m := modelFixture(t)
 	m.width, m.height = 60, 18
 	m.errors = navigationErrors()
 	m.plugins = []guestplugins.Choice{{ID: "first.plugin"}, {ID: "second.plugin"}}
 	m.selected, m.expanded = "b", "b"
-	m.rows[1].Management, m.rows[1].Owned = store.Watched, true
+	m.rows[1].Enabled, m.rows[1].EntryPresent = store.Enabled, true
 	m.rows[1].Status.Connection = "ready"
-	lastAction := len(m.sandboxActions(m.rows[1])) - 1
+	m.key(keyMsg(tea.KeyEnter, ""))
+	if m.focus != "actions" || m.button != 0 {
+		t.Fatal("Enter missed primary action")
+	}
 	m.key(keyMsg(tea.KeyDown, ""))
 	if m.focus != "plugins" || m.detailIndex != 0 {
-		t.Fatal("last expanded sandbox skipped its plugins")
+		t.Fatal("Down missed first plugin")
 	}
 	m.key(keyMsg(tea.KeyDown, ""))
 	m.key(keyMsg(tea.KeyDown, ""))
-	if m.focus != "actions" || m.button != 0 {
-		t.Fatal("last expanded sandbox skipped its actions")
+	if m.focus != "plugins" || m.detailIndex != 1 || m.selected != "b" {
+		t.Fatal("Down escaped details into diagnostics")
 	}
-	for m.button < lastAction {
-		m.key(keyMsg(tea.KeyDown, ""))
+	m.key(keyMsg(tea.KeyEscape, ""))
+	if m.focus != "table" || m.expanded != "b" {
+		t.Fatal("Escape did not retain preview")
 	}
 	m.key(keyMsg(tea.KeyDown, ""))
 	if m.focus != "diagnostics" {
-		t.Fatal("Down skipped diagnostics header")
+		t.Fatal("list Down skipped diagnostic header")
 	}
 	m.key(keyMsg(tea.KeyDown, ""))
 	if m.focus != "errors" || m.errorIndex != 0 || m.expanded != "b" {
-		t.Fatal("last sandbox action did not lead into Errors")
+		t.Fatal("diagnostic entry not selected")
 	}
 	if content := ansi.Strip(m.View().Content); !strings.Contains(content, "> H0002 · alpha") {
-		t.Fatalf("first error not revealed below long details: %s", content)
+		t.Fatalf("first error not revealed below details: %s", content)
 	}
 	m.key(keyMsg(tea.KeyUp, ""))
 	m.key(keyMsg(tea.KeyUp, ""))
-	if m.focus != "actions" || m.button != lastAction || m.expanded != "b" || m.selected != "b" {
-		t.Fatal("Up did not return to the expanded sandbox's final action")
+	if m.focus != "table" || m.selected != "b" || m.expanded != "b" {
+		t.Fatal("diagnostics did not return to last sandbox preview")
 	}
 	m.View()
-	found := false
 	for _, h := range m.hits {
-		if h.action == "action" && h.id == m.sandboxActions(m.rows[1])[lastAction].id {
-			found = true
+		if h.action == "select" && h.id == "b" {
+			return
 		}
 	}
-	if !found {
-		t.Fatal("returning from Errors did not reveal the final action")
-	}
+	t.Fatal("returning from diagnostics did not reveal sandbox preview")
 }
 
 func TestEmptyFilteredTableCanReachErrorsWithoutClearingFilter(t *testing.T) {

@@ -93,6 +93,7 @@ func (f *lifecycleFixture) defaultRun(_ context.Context, cmd process.Command) (s
 		return f.catalog, nil
 	case "herdr machine remove machine-1":
 		f.removed = append(f.removed, "machine-1")
+		f.catalog = `[]`
 		return "", nil
 	}
 	if len(cmd.Args) > 0 && cmd.Name == "herdr" && cmd.Args[0] == "notification" {
@@ -367,7 +368,7 @@ func TestManualReconcilePreservesUnconfirmedOrUnownedMachines(t *testing.T) {
 					return original(r)
 				}
 			case "changed profile":
-				f.catalog = `[{"id":"machine-1","label":"manual","target":"demo.sbx","session":"default"}]`
+				f.catalog = `[{"id":"machine-1","label":"manual","target":"another.sbx","session":"default"}]`
 			case "pending intent":
 				item.Pending = true
 			case "other scope":
@@ -393,7 +394,8 @@ func TestLifecycleSchedulerIgnoresOtherEventTypes(t *testing.T) {
 func TestLifecycleDeletionRemovesOnlyOwnedProfileInItsScope(t *testing.T) {
 	f := newLifecycleFixture(t)
 	item := ownedRegistration()
-	if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{f.scope: {item}, "other-scope": {item}}}); err != nil {
+	other := store.Tracked{SandboxID: "other", Label: "other desk", Target: "other.sbx", ProfileID: "other-machine"}
+	if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{f.scope: {item}, "other-scope": {other}}}); err != nil {
 		t.Fatal(err)
 	}
 	if !f.scheduler().removeDeleted(sbx.LifecycleEvent{SandboxID: "old"}) || len(f.removed) != 1 {
@@ -403,6 +405,23 @@ func TestLifecycleDeletionRemovesOnlyOwnedProfileInItsScope(t *testing.T) {
 	state, _ := store.LoadState()
 	if len(state.Scopes["other-scope"]) != 1 {
 		t.Fatal("deletion changed another daemon scope")
+	}
+}
+
+func TestLifecycleDeletionRetainsCrossScopeMachineAssociation(t *testing.T) {
+	f := newLifecycleFixture(t)
+	item := ownedRegistration()
+	if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{f.scope: {item}, "other-scope": {item}}}); err != nil {
+		t.Fatal(err)
+	}
+	f.scheduler().removeDeleted(sbx.LifecycleEvent{SandboxID: "old"})
+	if len(f.removed) != 0 {
+		t.Fatalf("ambiguous cross-scope machine was removed: %v", f.removed)
+	}
+	f.assertCount(1)
+	state, err := store.LoadState()
+	if err != nil || len(state.Scopes["other-scope"]) != 1 {
+		t.Fatalf("cross-scope association changed: %+v %v", state, err)
 	}
 }
 
@@ -745,5 +764,69 @@ func TestLifecycleDeletionRetainsOwnershipWithMalformedMachineCatalog(t *testing
 				t.Fatalf("malformed catalog removed machines: %v", f.removed)
 			}
 		})
+	}
+}
+
+func TestCatchupFailureShowsReasonAndCancellationStaysQuiet(t *testing.T) {
+	for _, cancelled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancelled_%t", cancelled), func(t *testing.T) {
+			f := newLifecycleFixture(t)
+			sb := sbx.Sandbox{ID: "old", Name: "demo", Status: "stopped"}
+			if err := store.RecordSandboxStatus(f.scope, sb, "ready", "last observed status", false); err != nil {
+				t.Fatal(err)
+			}
+			failure := errors.New("sandbox inventory fixture unavailable")
+			if cancelled {
+				failure = fmt.Errorf("refresh interrupted: %w", context.Canceled)
+			}
+			requests := 0
+			f.request = func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path != "/sandbox" {
+					t.Fatalf("unexpected probe: %s", r.URL.Path)
+				}
+				requests++
+				if requests > 1 {
+					return nil, failure
+				}
+				return lifecycleResponse(200, `[{"uuid":"other","name":"other","status":"stopped"}]`), nil
+			}
+			var output strings.Builder
+			scheduler := f.scheduler()
+			scheduler.out = &output
+			scheduler.processCatchup(true)
+			saved, err := store.ReadStatusStore()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cached := saved.Sandboxes[store.StatusKey(f.scope, "old")]
+			warning := saved.Warnings[f.scope+"/catch-up"]
+			if cancelled {
+				if warning != "" || cached.Stale || cached.Detail != "last observed status" || strings.Contains(output.String(), "Docker Sandboxes warning:") {
+					t.Fatalf("cancellation reported failure: status=%+v warning=%q output=%s", cached, warning, output.String())
+				}
+				return
+			}
+			if !cached.Stale || !strings.HasPrefix(cached.Detail, "Could not refresh sandbox state: ") || !strings.Contains(cached.Detail, failure.Error()) || warning != cached.Detail || !strings.Contains(output.String(), warning) {
+				t.Fatalf("refresh cause lost: status=%+v warning=%q output=%s", cached, warning, output.String())
+			}
+		})
+	}
+}
+
+func TestMissedDeletionReleasesRemovedEntryMetadataOnNameReuse(t *testing.T) {
+	f := newLifecycleFixture(t)
+	item := ownedRegistration()
+	item.ProfileID = ""
+	f.save(item)
+	f.request = func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/sandbox" {
+			return lifecycleResponse(200, `[{"uuid":"replacement","name":"demo","status":"stopped"}]`), nil
+		}
+		return lifecycleResponse(200, `{"uuid":"replacement","name":"demo","status":"stopped"}`), nil
+	}
+	f.scheduler().recoverMissedDeletes()
+	f.assertCount(0)
+	if len(f.removed) != 0 {
+		t.Fatalf("local cleanup removed native replacement: %v", f.removed)
 	}
 }

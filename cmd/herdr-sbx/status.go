@@ -16,12 +16,12 @@ import (
 
 // statusReport is a versioned, read-only view of saved observations.
 type daemonStatusReport struct {
-	SchemaVersion int                  `json:"schema_version"`
-	ReadAt        time.Time            `json:"read_at"`
-	Worker        store.WorkerStatus   `json:"worker"`
-	WorkerControl *store.WorkerControl `json:"worker_control"`
-	Errors        []store.ErrorRecord  `json:"errors"`
-	Warnings      []store.ErrorRecord  `json:"warnings"`
+	SchemaVersion int                 `json:"schema_version"`
+	ReadAt        time.Time           `json:"read_at"`
+	Daemon        store.WorkerStatus  `json:"daemon"`
+	Management    managementStatus    `json:"management"`
+	Errors        []store.ErrorRecord `json:"errors"`
+	Warnings      []store.ErrorRecord `json:"warnings"`
 }
 
 // statusReport extends the daemon snapshot with sandbox and plugin observations.
@@ -31,16 +31,19 @@ type statusReport struct {
 	Plugins   store.GuestPluginDefaults `json:"plugins"`
 }
 
-// statusSandbox separates requested management from a removal still in progress.
-type statusSandbox struct {
-	store.SandboxStatus
-	DesiredManagement store.ManagementChoice `json:"desired_management"`
+// managementStatus keeps the saved permission separate from daemon health.
+type managementStatus struct {
+	Enabled     bool   `json:"enabled"`
+	Initialized bool   `json:"initialized"`
+	Generation  uint64 `json:"generation"`
 }
+
+type statusSandbox = store.SandboxStatus
 
 func readStatusReport() (statusReport, error) {
 	report := statusReport{Sandboxes: []statusSandbox{}}
 	var err error
-	report.Worker, err = store.ReadWorkerStatus()
+	report.Daemon, err = store.ReadWorkerStatus()
 	if err != nil {
 		return report, err
 	}
@@ -48,45 +51,22 @@ func readStatusReport() (statusReport, error) {
 	if err != nil {
 		return report, err
 	}
-	report.daemonStatusReport = daemonReport(report.Worker, saved)
+	report.daemonStatusReport = daemonReport(report.Daemon, saved)
 	report.Plugins, err = store.ReadGuestPluginDefaults()
 	if err != nil {
 		return report, err
 	}
-	owned, err := store.LoadState()
-	if err != nil {
-		return report, err
-	}
 	for key, row := range saved.Sandboxes {
-		outstanding := false
-		if choice, ok := saved.Management[key]; ok {
-			row.Management = choice
+		if choice, ok := saved.EnabledChoices[key]; ok {
+			row.Enabled = choice
 		}
-		for _, registration := range owned.Scopes[row.Scope] {
-			if registration.SandboxID == row.SandboxID {
-				outstanding = registration.Pending || registration.ProfileID != ""
-				// Ownership journals also contain unresolved intent. Never promote it
-				// to verified ownership or replace an observed unmanaged profile.
-				if row.Label == "" && row.ProfileID == "" && !registration.Pending && row.Management != store.Unmanaged {
-					row.Label, row.ProfileID = registration.Label, registration.ProfileID
-				}
-				if row.Management == "" {
-					row.Management = store.Watched
-				}
-				break
-			}
-		}
-		if row.Management == "" {
-			row.Management = store.Untracked
+		if row.Enabled == "" {
+			row.Enabled = store.Enabled
 		}
 		if row.Observed == "" {
 			row.Observed = "unknown"
 		}
-		desired := row.Management
-		if desired == store.Disabled && (row.Owned || outstanding) {
-			row.Management = store.Unwatched
-		}
-		report.Sandboxes = append(report.Sandboxes, statusSandbox{SandboxStatus: row, DesiredManagement: desired})
+		report.Sandboxes = append(report.Sandboxes, row)
 	}
 	sort.Slice(report.Sandboxes, func(i, j int) bool {
 		a, b := report.Sandboxes[i], report.Sandboxes[j]
@@ -124,11 +104,13 @@ func printStatus(out io.Writer, asJSON bool) error {
 		fmt.Fprintln(out, "No sandbox observations yet. Open the manager to discover sandboxes.")
 	} else {
 		table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(table, "MANAGEMENT\tSANDBOX\tRUNTIME\tHERDR LABEL\tREADINESS\tOBSERVED")
+		fmt.Fprintln(table, "ENABLED\tSANDBOX\tHERDR LABEL\tSTATUS\tRUNTIME\tNATIVE ENABLED\tOBSERVED")
 		for _, row := range report.Sandboxes {
 			label := row.Label
 			if label == "" {
 				label = "—"
+			} else if row.Stale {
+				label += " (last known)"
 			}
 			readiness := row.Connection
 			if readiness == "" {
@@ -141,7 +123,24 @@ func printStatus(out io.Writer, asJSON bool) error {
 			if row.Stale {
 				observed += " (stale)"
 			}
-			fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\n", row.Management, row.Name, row.Observed, label, readiness, observed)
+			native := "unknown"
+			if row.NativeEnabled != nil {
+				native = "OFF"
+				if *row.NativeEnabled {
+					native = "ON"
+				}
+			}
+			enabled := "Disabled"
+			if row.Enabled == store.Enabled {
+				enabled = "Enabled"
+			}
+			fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", enabled, row.Name, label, readiness, row.Observed, native, observed)
+			if row.Detail != "" {
+				fmt.Fprintf(table, "\t%s\n", row.Detail)
+			}
+			if row.AssociationIssue != "" {
+				fmt.Fprintf(table, "\t%s\n", row.AssociationIssue)
+			}
 		}
 		if err := table.Flush(); err != nil {
 			return err
@@ -154,7 +153,10 @@ func printStatus(out io.Writer, asJSON bool) error {
 
 // daemonReport uses the same fields and schema as the daemon subset of root status.
 func daemonReport(worker store.WorkerStatus, saved store.StatusStore) daemonStatusReport {
-	report := daemonStatusReport{SchemaVersion: 3, ReadAt: time.Now(), Worker: worker, WorkerControl: saved.WorkerControl, Errors: []store.ErrorRecord{}, Warnings: []store.ErrorRecord{}}
+	report := daemonStatusReport{SchemaVersion: 4, ReadAt: time.Now(), Daemon: worker, Management: managementStatus{Enabled: true}, Errors: []store.ErrorRecord{}, Warnings: []store.ErrorRecord{}}
+	if saved.WorkerControl != nil {
+		report.Management = managementStatus{Enabled: !saved.WorkerControl.Stopped, Initialized: saved.WorkerControl.Initialized, Generation: saved.WorkerControl.Generation}
+	}
 	if worker.State == "reconnecting" {
 		report.Errors = append(report.Errors, store.ErrorRecord{Code: store.CodeDaemonReconnect, Scope: "daemon", Detail: worker.Detail})
 	}
@@ -238,22 +240,33 @@ func statusPainter(out io.Writer) func(string, string) string {
 
 func printDaemonSummary(out io.Writer, report daemonStatusReport, paint func(string, string) string) {
 	symbol, tone := "—", "2"
-	switch report.Worker.State {
+	switch report.Daemon.State {
 	case "running":
 		symbol, tone = "✓", "32"
 	case "starting", "reconnecting":
 		symbol, tone = "…", "33"
+	case "cancelling":
+		symbol, tone = "…", "2"
 	case "unknown":
 		symbol, tone = "?", "33"
 	}
 	fmt.Fprintln(out, paint("herdr-sbx", "1"))
-	fmt.Fprintf(out, "Daemon: %s %s\n", strings.ToUpper(report.Worker.State), paint(symbol, tone))
-	if report.Worker.Detail != "" {
-		fmt.Fprintln(out, report.Worker.Detail)
+	management, managementTone := "OFF", "2"
+	if report.Management.Enabled {
+		management, managementTone = "ON", "34"
 	}
-	if report.Worker.LastSync.IsZero() {
+	fmt.Fprintf(out, "Management: %s\n", paint(management, managementTone))
+	state := strings.ToUpper(report.Daemon.State)
+	if report.Daemon.State == "cancelling" {
+		state = "Cancelling"
+	}
+	fmt.Fprintf(out, "Daemon: %s %s\n", paint(state, tone), paint(symbol, tone))
+	if report.Daemon.Detail != "" && report.Daemon.State != "stopped" {
+		fmt.Fprintln(out, report.Daemon.Detail)
+	}
+	if report.Daemon.LastSync.IsZero() {
 		fmt.Fprintln(out, "Last sync: not yet observed")
 	} else {
-		fmt.Fprintln(out, "Last sync:", report.Worker.LastSync.Format(time.RFC3339))
+		fmt.Fprintln(out, "Last sync:", report.Daemon.LastSync.Format(time.RFC3339))
 	}
 }

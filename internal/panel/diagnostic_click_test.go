@@ -17,20 +17,21 @@ func clickDiagnostic(t *testing.T, m *model, index string) {
 func TestDiagnosticClickSelectsBeforeOpeningRecovery(t *testing.T) {
 	m := modelFixture(t)
 	m.width, m.height = 110, 50
+	selected, preview := m.selected, m.expanded
 	m.errors = []uiError{
 		{code: store.CodeGuestPluginSync, scope: "a", detail: "first failure"},
 		{code: store.CodeOwnershipConflict, scope: "b", detail: "second failure"},
 	}
 	clickDiagnostic(t, m, "0")
-	if m.focus != "errors" || m.errorIndex != 0 || m.expanded != "" {
-		t.Fatalf("first click opened recovery instead of selecting: focus=%s index=%d expanded=%s", m.focus, m.errorIndex, m.expanded)
+	if m.focus != "errors" || m.errorIndex != 0 || m.selected != selected || m.expanded != preview {
+		t.Fatalf("first click changed sandbox preview instead of only selecting: focus=%s index=%d selected=%s expanded=%s", m.focus, m.errorIndex, m.selected, m.expanded)
 	}
 	clickDiagnostic(t, m, "1")
-	if m.focus != "errors" || m.errorIndex != 1 || m.expanded != "" {
-		t.Fatalf("clicking another group did not select it: focus=%s index=%d expanded=%s", m.focus, m.errorIndex, m.expanded)
+	if m.focus != "errors" || m.errorIndex != 1 || m.selected != selected || m.expanded != preview {
+		t.Fatalf("clicking another group changed sandbox preview: focus=%s index=%d selected=%s expanded=%s", m.focus, m.errorIndex, m.selected, m.expanded)
 	}
 	clickDiagnostic(t, m, "1")
-	if m.page != "Sandboxes" || m.focus != "actions" || m.expanded != "b" {
+	if m.page != "Sandboxes" || m.focus != "table" || m.selected != "b" || m.expanded != "b" {
 		t.Fatalf("second click did not open recovery: page=%s focus=%s expanded=%s", m.page, m.focus, m.expanded)
 	}
 }
@@ -47,12 +48,13 @@ func TestDiagnosticClickUsesVisibleGroupInNewAndAll(t *testing.T) {
 				{code: store.CodeGuestPluginSync, scope: "b", pluginID: "two", detail: "second plugin"},
 				{code: store.CodeGuestPluginSync, scope: "a", detail: "alpha failure"},
 			}
+			selected, preview := m.selected, m.expanded
 			clickDiagnostic(t, m, "1")
-			if m.focus != "errors" || m.visibleErrors()[m.errorIndex].scope != "b" || m.expanded != "" {
+			if m.focus != "errors" || m.visibleErrors()[m.errorIndex].scope != "b" || m.selected != selected || m.expanded != preview {
 				t.Fatalf("click selected wrong visible group: focus=%s index=%d expanded=%s", m.focus, m.errorIndex, m.expanded)
 			}
 			m.key(keyMsg(tea.KeyEnter, ""))
-			if m.expanded != "b" {
+			if m.selected != "b" || m.expanded != "b" || m.focus != "table" {
 				t.Fatalf("Enter did not recover selected group: expanded=%s", m.expanded)
 			}
 		})
@@ -81,7 +83,7 @@ func TestDiagnosticClickTracksGroupAcrossPolling(t *testing.T) {
 		"beta": {Code: store.CodeOwnershipConflict, Scope: "b", Detail: "beta failure"},
 	}})
 	clickDiagnostic(t, m, "0")
-	if m.focus != "errors" || m.expanded != "" {
+	if m.focus != "errors" || m.selected != "a" || m.expanded != "a" {
 		t.Fatal("replacement group opened recovery on its first click")
 	}
 }
@@ -94,7 +96,7 @@ func TestDiagnosticKeyboardNavigationResetsMouseActivation(t *testing.T) {
 	m.key(keyMsg(tea.KeyUp, ""))
 	m.key(keyMsg(tea.KeyDown, ""))
 	clickDiagnostic(t, m, "0")
-	if m.focus != "errors" || m.expanded != "" {
+	if m.focus != "errors" || m.selected != "a" || m.expanded != "a" {
 		t.Fatal("click after keyboard navigation opened recovery")
 	}
 	m.key(keyMsg(tea.KeyEnter, ""))
@@ -113,7 +115,7 @@ func TestDiagnosticRecoveryResetsMouseActivationForLaterFailure(t *testing.T) {
 		"alpha": {Code: store.CodeGuestPluginSync, Scope: "a", Detail: "later alpha failure"},
 	}})
 	clickDiagnostic(t, m, "0")
-	if m.focus != "errors" || m.expanded != "" {
+	if m.focus != "errors" || m.selected != "a" || m.expanded != "a" {
 		t.Fatal("first click on a later failure opened recovery")
 	}
 }
@@ -126,11 +128,11 @@ func TestDiagnosticDragDoesNotSelectOrOpenRecovery(t *testing.T) {
 	m.Update(tea.MouseClickMsg{X: h.x, Y: h.y, Button: tea.MouseLeft})
 	m.Update(tea.MouseMotionMsg{X: h.x + 3, Y: h.y, Button: tea.MouseLeft})
 	_, cmd := m.Update(tea.MouseReleaseMsg{X: h.x + 3, Y: h.y, Button: tea.MouseLeft})
-	if cmd == nil || m.focus == "errors" || m.expanded != "" {
+	if cmd == nil || m.focus == "errors" || m.selected != "a" || m.expanded != "a" {
 		t.Fatal("drag failed to copy or activated diagnostic")
 	}
 	clickDiagnostic(t, m, "0")
-	if m.focus != "errors" || m.expanded != "" {
+	if m.focus != "errors" || m.selected != "a" || m.expanded != "a" {
 		t.Fatal("first click after drag opened recovery")
 	}
 }
@@ -152,10 +154,10 @@ func TestDiagnosticReleaseKeepsPressedGroupAcrossPolling(t *testing.T) {
 			m.mergeErrors(workerMsg{errors: errors})
 			m.Update(tea.MouseReleaseMsg{X: h.x, Y: h.y, Button: tea.MouseLeft})
 			if recovered {
-				if m.focus == "errors" || m.expanded != "" {
+				if m.focus != "table" || m.selected != "a" || m.expanded != "a" {
 					t.Fatal("release selected a replacement for the recovered group")
 				}
-			} else if m.focus != "errors" || m.visibleErrors()[m.errorIndex].scope != "b" || m.expanded != "" {
+			} else if m.focus != "errors" || m.visibleErrors()[m.errorIndex].scope != "b" || m.selected != "a" || m.expanded != "a" {
 				t.Fatal("release lost the pressed group after polling")
 			}
 		})

@@ -58,6 +58,9 @@ func (s *Service) recoverGuestVersionTo(ctx context.Context, scope string, sb sb
 		return context.Canceled
 	}
 	if !force {
+		if err := CheckAutomaticWork(ctx); err != nil {
+			return err
+		}
 		running, actual, err := s.herdr.GuestServerVersion(ctx, target)
 		if current == nil || current() {
 			if err != nil {
@@ -84,6 +87,9 @@ func (s *Service) recoverGuestVersionTo(ctx context.Context, scope string, sb sb
 	}
 	if current != nil && !current() {
 		return context.Canceled
+	}
+	if err := CheckAutomaticWork(ctx); err != nil {
+		return err
 	}
 	err = s.herdr.HandoffGuest(ctx, target, wanted)
 	if current == nil || current() {
@@ -151,7 +157,7 @@ func registrationNotification(outcome result, entry store.ErrorRecord) string {
 	cause := "Sandbox registration needs attention"
 	switch entry.Code {
 	case store.CodeOwnershipConflict:
-		cause = "Existing herdr machine needs adoption"
+		cause = "herdr entry association needs attention"
 	case store.CodeWorkspaceSetup:
 		cause = "Project workspace setup failed"
 	case store.CodeSandboxSetup:

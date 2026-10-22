@@ -15,20 +15,22 @@ import (
 
 // SandboxStatus stores the most recent observation and connection result.
 type SandboxStatus struct {
-	Scope       string                  `json:"scope"`
-	Management  ManagementChoice        `json:"management,omitempty"`
-	Owned       bool                    `json:"owned"`
-	Label       string                  `json:"label,omitempty"`
-	ProfileID   string                  `json:"profile_id,omitempty"`
-	SandboxID   string                  `json:"sandbox_id"`
-	Name        string                  `json:"name"`
-	Observed    string                  `json:"observed"`
-	Connection  string                  `json:"connection"`
-	Detail      string                  `json:"detail"`
-	Stale       bool                    `json:"stale,omitempty"`
-	ObservedAt  time.Time               `json:"observed_at"`
-	Updated     time.Time               `json:"updated"`
-	GuestServer *GuestServerObservation `json:"guest_server,omitempty"`
+	Scope            string                  `json:"scope"`
+	Enabled          EnabledChoice           `json:"enabled"`
+	EntryPresent     bool                    `json:"entry_present"`
+	NativeEnabled    *bool                   `json:"native_enabled"`
+	AssociationIssue string                  `json:"association_issue,omitempty"`
+	Label            string                  `json:"label,omitempty"`
+	ProfileID        string                  `json:"profile_id,omitempty"`
+	SandboxID        string                  `json:"sandbox_id"`
+	Name             string                  `json:"name"`
+	Observed         string                  `json:"observed"`
+	Connection       string                  `json:"connection"`
+	Detail           string                  `json:"detail"`
+	Stale            bool                    `json:"stale,omitempty"`
+	ObservedAt       time.Time               `json:"observed_at"`
+	Updated          time.Time               `json:"updated"`
+	GuestServer      *GuestServerObservation `json:"guest_server,omitempty"`
 }
 
 // GuestServerObservation records the running server, never the executable version.
@@ -97,18 +99,20 @@ type PolicyAttempt struct {
 
 // StatusStore is the existing sidecar JSON document.
 type StatusStore struct {
-	Errors               map[string]ErrorRecord        `json:"errors,omitempty"`
-	DismissedErrorGroups map[string]bool               `json:"dismissed_error_groups,omitempty"`
-	Events               []EventRecord                 `json:"events,omitempty"`
-	Management           map[string]ManagementChoice   `json:"management,omitempty"`
-	WorkerControl        *WorkerControl                `json:"worker_control,omitempty"`
-	Worker               *WorkerStatus                 `json:"worker,omitempty"`
-	Sandboxes            map[string]SandboxStatus      `json:"sandboxes"`
-	Preparation          map[string]time.Time          `json:"preparation"`
-	PreparationErrors    map[string]string             `json:"preparation_errors,omitempty"`
-	Warnings             map[string]string             `json:"warnings"`
-	Installations        map[string]PolicyAttempt      `json:"installations,omitempty"`
-	GuestPluginAttempts  map[string]GuestPluginAttempt `json:"guest_plugin_attempts,omitempty"`
+	Errors                    map[string]ErrorRecord        `json:"errors,omitempty"`
+	DismissedErrorGroups      map[string]bool               `json:"dismissed_error_groups,omitempty"`
+	Events                    []EventRecord                 `json:"events,omitempty"`
+	EnabledObservationPending map[string]bool               `json:"enabled_observation_pending,omitempty"`
+	EnabledRevisions          map[string]uint64             `json:"enabled_revisions,omitempty"`
+	EnabledChoices            map[string]EnabledChoice      `json:"enabled_choices,omitempty"`
+	WorkerControl             *WorkerControl                `json:"worker_control,omitempty"`
+	Worker                    *WorkerStatus                 `json:"worker,omitempty"`
+	Sandboxes                 map[string]SandboxStatus      `json:"sandboxes"`
+	Preparation               map[string]time.Time          `json:"preparation"`
+	PreparationErrors         map[string]string             `json:"preparation_errors,omitempty"`
+	Warnings                  map[string]string             `json:"warnings"`
+	Installations             map[string]PolicyAttempt      `json:"installations,omitempty"`
+	GuestPluginAttempts       map[string]GuestPluginAttempt `json:"guest_plugin_attempts,omitempty"`
 }
 
 // StatusSnapshot returns in-scope observations and pending temporary rules.
@@ -335,11 +339,17 @@ func newStatusStore() StatusStore {
 }
 
 func (s *StatusStore) ensureMaps() {
+	if s.EnabledObservationPending == nil {
+		s.EnabledObservationPending = map[string]bool{}
+	}
+	if s.EnabledRevisions == nil {
+		s.EnabledRevisions = map[string]uint64{}
+	}
+	if s.EnabledChoices == nil {
+		s.EnabledChoices = map[string]EnabledChoice{}
+	}
 	if s.Errors == nil {
 		s.Errors = map[string]ErrorRecord{}
-	}
-	if s.Management == nil {
-		s.Management = map[string]ManagementChoice{}
 	}
 	if s.PreparationErrors == nil {
 		s.PreparationErrors = map[string]string{}

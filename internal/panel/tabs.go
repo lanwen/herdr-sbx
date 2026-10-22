@@ -13,8 +13,7 @@ func (m *model) tabStrip() line {
 			active = i
 		}
 	}
-	l := textLine(ink(colorSeparator, "╭─ ") + ink(colorAccent, "← "))
-	l.hits = append(l.hits, hit{x: 3, w: 1, action: "tab-prev"})
+	l := textLine(ink(colorSeparator, "╭─ "))
 	count, padding := len(pages), "  "
 	if m.width < 45 {
 		padding = ""
@@ -37,9 +36,6 @@ func (m *model) tabStrip() line {
 		l.text += text
 		l.hits = append(l.hits, hit{x: x, w: ansi.StringWidth(text), action: "page", id: page})
 	}
-	x := ansi.StringWidth(l.text) + 1
-	l.text += ink(colorAccent, " →")
-	l.hits = append(l.hits, hit{x: x, w: 1, action: "tab-next"})
 	l.text += ink(colorSeparator, strings.Repeat("─", max(0, m.width-ansi.StringWidth(l.text)-1))+"╮")
 	return l
 }

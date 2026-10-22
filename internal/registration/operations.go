@@ -64,7 +64,7 @@ func (s *Service) RetrySelected(ctx context.Context, out io.Writer, scope, socke
 	if err := store.ClearPreparationFailure(store.StatusKey(scope, id)); err != nil {
 		return errors.New("clear preparation retry state: " + err.Error())
 	}
-	return s.ReconcileSandbox(context.WithValue(ctx, guestPluginRetryKey{}, true), out, id, name, func() bool {
+	return s.ReconcileSandbox(context.WithValue(WithExplicitAction(ctx), guestPluginRetryKey{}, true), out, id, name, func() bool {
 		items, err := s.inventory(ctx, socket)
 		if err != nil {
 			return false

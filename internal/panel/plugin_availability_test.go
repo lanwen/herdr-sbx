@@ -47,7 +47,7 @@ func TestPluginExplanationFollowsSelectedChoice(t *testing.T) {
 		return strings.Join(lines, " ")
 	}
 	m.pluginIndex = 0
-	if got := content(); !strings.Contains(got, "The matching herdr plugin version will be copied to watched sandboxes.") || strings.Contains(got, "Existing copies stay intact") {
+	if got := content(); !strings.Contains(got, "The matching herdr plugin version will be copied to enabled sandboxes while Management is ON.") || strings.Contains(got, "Existing copies stay intact") {
 		t.Fatalf("enabled choice explanation: %q", got)
 	}
 	m.pluginIndex = 1

@@ -26,27 +26,34 @@ func SandboxName(item store.Tracked) string {
 	return name
 }
 
-func ownedTrackedMachine(machines []herdr.Machine, item store.Tracked) *herdr.Machine {
-	if owned := ownedMachineByID(machines, item.ProfileID, item.Label, item.Target); owned != nil {
-		return owned
+func associatedTrackedMachine(machines []herdr.Machine, item store.Tracked) *herdr.Machine {
+	var found *herdr.Machine
+	for i := range machines {
+		if machines[i].Target == item.Target {
+			if found != nil {
+				return nil
+			}
+			found = &machines[i]
+		}
 	}
-	if item.PendingLabel != "" {
-		return ownedMachineByID(machines, item.ProfileID, item.PendingLabel, item.Target)
+	if found == nil || found.ID != item.ProfileID || !usesDefaultSession(found.Session) {
+		return nil
 	}
-	return nil
+	return found
 }
 
 func (s *Service) recoverMachineLabel(ctx context.Context, scope string, st *store.State, machines []herdr.Machine, sb sbx.Sandbox, item *store.Tracked, current func() bool) error {
-	wanted := item.Label
-	if item.PendingLabel != "" {
-		wanted = item.PendingLabel
-	}
-	owned := ownedTrackedMachine(machines, *item)
+	wanted := item.PendingLabel
+	owned := associatedTrackedMachine(machines, *item)
 	if owned == nil || SandboxName(*item) != sb.Name {
-		return errors.New("saved machine is no longer the owned profile")
+		return errors.New("saved machine identity no longer matches this sandbox")
 	}
-	if item.Label == wanted && item.PendingLabel == "" {
-		return nil
+	if wanted == "" {
+		item.Label = owned.Label
+		if err := replaceTracked(st, scope, *item); err != nil {
+			return err
+		}
+		return store.SaveState(*st)
 	}
 	for _, candidate := range machines {
 		if candidate.ID != item.ProfileID && candidate.Label == wanted {
@@ -81,13 +88,14 @@ func (s *Service) recoverMachineLabel(ctx context.Context, scope string, st *sto
 		}
 		output, err := s.herdr.RenameMachine(ctx, item.ProfileID, wanted)
 		if err != nil {
-			return fmt.Errorf("rename owned machine: %s", commandError(err, output))
+			return fmt.Errorf("rename associated entry: %s", commandError(err, output))
 		}
 		updated, output, err := s.herdr.ListMachines(ctx)
 		if err != nil {
 			return fmt.Errorf("verify machine label: %s", commandError(err, output))
 		}
-		if ownedMachineByID(updated, item.ProfileID, wanted, item.Target) == nil {
+		observed := associatedMachineByID(updated, item.ProfileID, wanted, item.Target)
+		if observed == nil || observed.Label != wanted {
 			return errors.New("machine label change could not be verified")
 		}
 	}

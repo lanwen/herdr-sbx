@@ -61,7 +61,7 @@ func TestDiagnosticSeverityAndRefresh(t *testing.T) {
 	}
 	for _, action := range m.statusActions() {
 		if action.id == "refresh" {
-			t.Fatal("a warning alone made Refresh observations visible")
+			t.Fatal("a warning alone made Refresh visible")
 		}
 	}
 	warning := m.errorLines()[1].text
@@ -92,18 +92,17 @@ func TestDiagnosticSeverityAndRefresh(t *testing.T) {
 	}
 }
 
-func TestOwnershipWarningRecoverySelectsAdoptWithoutApproval(t *testing.T) {
+func TestAssociationWarningOpensAffectedSandbox(t *testing.T) {
 	m := modelFixture(t)
+	m.rows[1].AssociationIssue = "Two herdr entries match this sandbox. Resolve the duplicate entry."
 	m.errors = []uiError{{code: store.CodeOwnershipConflict, scope: store.StatusKey("scope", "b")}}
-	m.selected, m.expanded = "a", "a"
 	m.key(keyMsg('e', "e"))
 	m.key(keyMsg(tea.KeyEnter, ""))
-	if m.selected != "b" || m.expanded != "b" || m.focus != "actions" || m.dialog != "" || m.pending["b"] || m.sandboxActions(m.rows[1])[m.button].id != "adopt" {
-		t.Fatalf("warning recovery did not focus Adopt safely: %+v", m)
+	if m.selected != "b" || m.expanded != "b" || m.focus != "table" || len(m.sandboxActions(m.rows[1])) != 0 {
+		t.Fatal("unsafe association recovery")
 	}
-	m.key(keyMsg(tea.KeyDown, ""))
-	if hint, _ := m.contextHint(); strings.Contains(hint, "Adopt lets") {
-		t.Fatal("Adopt hint remained after moving to another action")
+	if hint, _ := m.contextHint(); hint != m.rows[1].AssociationIssue {
+		t.Fatal(hint)
 	}
 }
 
@@ -112,7 +111,8 @@ func TestSandboxHintFollowsSelectionAndDiagnosticsFocus(t *testing.T) {
 	m.expanded = "a"
 	m.rows[0].Status.Detail = "already registered"
 	m.selected = "b"
-	if hint, color := m.contextHint(); !strings.Contains(hint, "added outside the plugin") || color != colorWarning {
+	m.rows[1].AssociationIssue = "Duplicate matching entries"
+	if hint, color := m.contextHint(); !strings.Contains(hint, "Duplicate matching entries") || color != colorWarning {
 		t.Fatalf("hint followed expanded row instead of selection: %q", hint)
 	}
 	m.selected = "a"

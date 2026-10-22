@@ -14,7 +14,7 @@ import (
 )
 
 func TestPendingLabelOwnershipAndRecovery(t *testing.T) {
-	for _, scenario := range []string{"manual rename", "target changed", "collision", "lost acknowledgement", "stale"} {
+	for _, scenario := range []string{"target changed", "collision", "lost acknowledgement", "no-op rename", "stale"} {
 		t.Run(scenario, func(t *testing.T) {
 			fixture := newRegistrationFixture(t, "[]")
 			item := store.Tracked{SandboxID: "sandbox-1", Label: "original", PendingLabel: "Release desk", Target: "demo.sbx", ProfileID: "machine-1"}
@@ -39,7 +39,9 @@ func TestPendingLabelOwnershipAndRecovery(t *testing.T) {
 				switch call {
 				case "herdr machine rename machine-1 --label Release desk":
 					renames++
-					machines[0].Label = "Release desk"
+					if scenario != "no-op rename" {
+						machines[0].Label = "Release desk"
+					}
 					if scenario == "lost acknowledgement" {
 						return "", errors.New("lost response")
 					}
@@ -71,6 +73,10 @@ func TestPendingLabelOwnershipAndRecovery(t *testing.T) {
 				}
 				if item.Label != "Release desk" || item.PendingLabel != "" || renames != 1 {
 					t.Fatalf("unsafe recovery: %#v renames=%d", item, renames)
+				}
+			} else if scenario == "no-op rename" {
+				if item.Label != "original" || item.PendingLabel != "Release desk" || renames != 1 {
+					t.Fatalf("unconfirmed rename saved: %+v renames=%d", item, renames)
 				}
 			} else if renames != 0 {
 				t.Fatal("changed unowned or stale machine")
