@@ -29,23 +29,18 @@ From a terminal inside local Herdr, open the sandbox manager:
 herdr plugin action invoke open-status --plugin lanwen.herdr-sbx
 ```
 
-To open the popup with prefix + s, add this [keybinding](https://herdr.dev/docs/configuration/#custom-command-keybindings) to `~/.config/herdr/config.toml`.
-This example moves the default Settings shortcut to prefix + Shift + s.
-If `[keys]` already exists, add `settings` to that section instead of creating another one.
+To open the popup with prefix, then Ctrl+s, add this [keybinding](https://herdr.dev/docs/configuration/#custom-command-keybindings) to `~/.config/herdr/config.toml`.
 
 ```toml
-[keys]
-settings = "prefix+shift+s"
-
 [[keys.command]]
-key = "prefix+s"
+key = "prefix+ctrl+s"
 type = "plugin_action"
 command = "lanwen.herdr-sbx.open-status"
 description = "Docker Sandboxes"
 ```
 
 Run `herdr server reload-config` from a terminal inside Herdr to apply the change.
-Press your configured prefix, then `s`, to open the popup.
+Press your configured prefix, then Ctrl+s, to open the popup.
 
 On first use, the manager starts one daemon automatically.
 Closing the manager leaves the daemon running.
