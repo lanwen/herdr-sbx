@@ -51,3 +51,23 @@ HERDR_WORKER_TEST_ROOT="$test_root/fixture" sh scripts/test-worker-lifetime.sh
 [tasks.test-real]
 description = "Opt-in: requires a dedicated authenticated disposable sandbox fixture"
 run = "sh scripts/test-real.sh"
+
+[tasks.fmt-check]
+description = "Check Go formatting without changing files"
+run = "sh scripts/check-format.sh"
+
+[tasks.verify-panel]
+description = "Run isolated panel tests, then rebuild the linked executable"
+run = ["python3 scripts/test-go.py test ./internal/panel -count=1", "mise run build"]
+
+[tasks.verify-change]
+description = "Check formatting, run isolated race tests and vet, then build"
+run = ["mise run fmt-check", "mise run check", "mise run build"]
+
+[tasks.capture-screenshots]
+description = "Capture simulated terminal frames (macOS; optional output directory/background)"
+run = "sh scripts/capture-screenshots.sh"
+
+[tasks.publish-pr-images]
+description = "Publish an explicit PR body and image files, then verify uploaded links"
+run = "python3 scripts/publish-pr-images.py"

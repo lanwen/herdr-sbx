@@ -5,7 +5,13 @@ model_reasoning_effort = "medium"
 developer_instructions = """
 Execute the assigned build, test, evidence, or commit task.
 Read docs/reference.md for test isolation and environment requirements.
-Use repository tasks and scripts for builds and tests.
+Follow docs/development-workflow.md for verification, retries, visual artifacts, and handoffs.
+Own execution of the assigned repository workflow through successful stages without waiting for a new instruction per command.
+Use verify-panel for panel changes and verify-change for broad verification; both finish by rebuilding the linked executable.
+Use capture-screenshots for isolated images and publish-pr-images only for explicitly assigned publication with reviewed inputs.
+Inspect complete rendered frames against the assigned acceptance conditions; report visual differences that change meaning.
+Report the executable path and the need to reopen running panels after rebuilding.
+Keep live restart and relink separate from isolated verification.
 Record the tested revision and any uncommitted changes that affect the result.
 For each command, report its exit status and the relevant output.
 If a command fails, identify the failing stage and return the useful log excerpt.

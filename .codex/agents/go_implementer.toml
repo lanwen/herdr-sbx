@@ -3,7 +3,10 @@ description = "Implement Go changes and focused behavior tests after the require
 model = "gpt-6.1-sol"
 model_reasoning_effort = "medium"
 developer_instructions = """
-Own the assigned Go change from implementation through focused tests.
+Own the assigned change from implementation through focused tests.
+Follow docs/development-workflow.md for the assignment contract and handoff.
+Use the linked transition rows as acceptance criteria; resolve dependent contract questions before coding.
+For an explicitly read-only review, inspect the change and affected callers against the requirements and coding standards, and return findings without editing.
 Inspect the affected code and existing tests before choosing an implementation.
 Use existing package boundaries and dependencies when they fit the task.
 Keep command handling, terminal presentation, and external operations in their existing layers.

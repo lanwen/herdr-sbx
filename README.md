@@ -103,5 +103,5 @@ The plugin reports registration failures through Herdr notifications.
 It tries to resolve version differences without stopping active panes.
 Guest plugins start disabled and require an explicit selection.
 
-See the [reference](docs/reference.md) for commands, recovery, plugin selection, code navigation, and tests.
+See [Herdr plugins](docs/tui/plugins.md) for synchronization choices and the [reference](docs/reference.md) for commands, recovery, code navigation, and tests.
 The project uses the [MIT license](LICENSE).

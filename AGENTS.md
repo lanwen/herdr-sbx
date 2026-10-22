@@ -7,16 +7,6 @@ Run tests with isolated Herdr sessions and sandbox fixtures.
 ## Focused agents
 
 The main agent owns the specification, requirements alignment, task scope, file assignments, integration, and the final response.
-The main agent updates the spec and project reference when behavior changes.
 Delegate implementation, code edits, tests, visual design, and domain review to focused project agents in `.codex/agents/`, including for small code changes.
-
-Give each agent a concrete question or change, relevant context, and a completion condition.
-Assign each file to one editor at a time.
-Run independent reads in parallel, then pass findings to the implementer.
-After implementation, request domain review when behavior crosses Herdr or sandbox boundaries.
-Give legwork a stable revision to test after edits finish.
-For commits, assign the exact files after review and required tests pass.
-
-Reuse the Herdr expert within a task when its context remains useful.
-Across sessions, rebuild context from `docs/reference.md` and current code.
-If a change alters documented behavior, update the reference as part of that change.
+For assignments, contract changes, reviews, and verification handoffs, follow [the development workflow](docs/development-workflow.md).
+The main agent maintains the authoritative feature specification and updates operational contracts in the reference when behavior changes.

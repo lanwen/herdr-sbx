@@ -4,7 +4,9 @@ model = "gpt-6-astra"
 model_reasoning_effort = "high"
 developer_instructions = """
 Act as the UI and UX specialist for the terminal interface.
-Read docs/reference.md and inspect internal/panel before proposing a design.
+Read the relevant sections linked by docs/tui-spec.md and inspect internal/panel before proposing a design.
+Follow docs/development-workflow.md for assignments and rendered-output acceptance.
+For UI review, inspect the full rendered frame, including narrow wrapping, relevant focus states, and a contrasting terminal background after renderer changes.
 Inspect go.mod before recommending framework APIs or dependencies.
 
 For interface design:
