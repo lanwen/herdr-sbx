@@ -19,7 +19,7 @@ Sandbox table:
 
 - A macOS or Linux host.
 - Herdr 0.9.1 or later, `sbx` 0.45.1 or later, and OpenSSH.
-- For GitHub installation, Go 1.27.3 or later and Git, with `go` and `git` available on the host's `PATH`.
+- [mise](https://mise.jdx.dev/) and Git, with `mise` and `git` available on the host's `PATH`.
 
 Start the sandbox daemon and sign in through Docker Sandboxes before using the plugin.
 Configure sandbox SSH with `sbx setup ssh`.
@@ -27,8 +27,8 @@ Configure sandbox SSH with `sbx setup ssh`.
 ### 1. Install
 
 If you already use a local checkout, follow the [switching instructions](docs/reference.md#local-checkout) first.
-The [local checkout route](docs/reference.md#local-checkout) uses mise to provide the pinned Go version for development.
-Herdr downloads the plugin from GitHub and runs `go build` directly:
+For development, use the [local checkout route](docs/reference.md#local-checkout).
+Herdr downloads the plugin and uses mise to trust its configuration, install pinned Go, and build:
 
 ```sh
 herdr plugin install lanwen/herdr-sbx

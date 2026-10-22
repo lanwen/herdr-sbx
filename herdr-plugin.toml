@@ -6,7 +6,13 @@ description = "Inspect local sandbox readiness, prepare missing guest Herdr, and
 platforms = ["linux", "macos"]
 
 [[build]]
-command = ["go", "build", "-o", "bin/herdr-sbx", "./cmd/herdr-sbx"]
+command = ["mise", "trust", "--yes", "mise.toml"]
+
+[[build]]
+command = ["mise", "install", "--yes"]
+
+[[build]]
+command = ["mise", "run", "--yes", "build"]
 
 [[startup]]
 command = ["./bin/herdr-sbx", "daemon", "start", "--automatic"]

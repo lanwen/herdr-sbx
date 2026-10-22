@@ -10,6 +10,21 @@ Run commands inside local Herdr when they need a server.
 For automatic-work permission and baseline rules, see [Status and Management](tui/status.md).
 For connection choices, entry presence, and identity transitions, see [Sandboxes](tui/sandboxes.md).
 Installed guest plugins and temporary policy rules have separate ownership protections described below.
+
+## GitHub installation
+
+Install mise and Git on the host, with `mise` and `git` available on `PATH`.
+Herdr runs these manifest build commands in the downloaded plugin directory, in order:
+
+```sh
+mise trust --yes mise.toml
+mise install --yes
+mise run --yes build
+```
+
+The first command trusts only the plugin's `mise.toml` configuration.
+mise installs the pinned Go version and runs the existing build task before Herdr enables the plugin.
+
 ## Local checkout
 
 Use a checkout to develop the plugin or change its source.
