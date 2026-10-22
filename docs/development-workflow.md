@@ -5,6 +5,11 @@ The [TUI specification](tui-spec.md) owns interface behavior; the reference owns
 
 ## Assign an outcome
 
+Select a role from the [shared role definitions](../.agents/roles/README.md).
+Role instructions live in Markdown; `.codex/agents/` retains Codex-specific model settings and points to those files.
+For Claude or another runner, give the delegated agent the role file and the concrete assignment below.
+Resolve repository paths from the repository root.
+
 Give each focused agent a compact assignment with these fields:
 
 | Field | Required content |
