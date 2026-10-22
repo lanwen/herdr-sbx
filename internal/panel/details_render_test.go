@@ -176,3 +176,61 @@ func TestCompactDetailsPreserveWrappedLabelAndIdentityStyles(t *testing.T) {
 		}
 	}
 }
+
+func TestWrappedDetailTitleKeepsPanelBackgroundBeforeVersionBadge(t *testing.T) {
+	unsetNoColor(t)
+	m := modelFixture(t)
+	m.width, m.height = 64, 32
+	m.rows[0].Sandbox.Name = "claude-testcontainers-integration-platform"
+	m.rows[0].Label = "CM"
+	m.rows[0].Status.Connection = "ready"
+	m.rows[0].Status.GuestServer = &store.GuestServerObservation{Version: "0.9.3"}
+	for _, focus := range []string{"table", "actions"} {
+		m.focus = focus
+		frame := m.View().Content
+		found := false
+		for _, row := range strings.Split(frame, "\n") {
+			badge := strings.Index(row, "herdr 0.9.3")
+			if badge < 0 {
+				continue
+			}
+			fill := strings.LastIndex(row[:badge], "─")
+			if fill < 0 {
+				t.Fatal("fixture has no title-border filler")
+			}
+			pen := lipgloss.NewWrapWriter(io.Discard)
+			_, _ = pen.Write([]byte(row[:fill]))
+			got := pen.Style().Bg
+			_ = pen.Close()
+			expected := lipgloss.NewWrapWriter(io.Discard)
+			_, _ = expected.Write([]byte(background))
+			want := expected.Style().Bg
+			_ = expected.Close()
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("focus %s filler background=%v want=%v row=%q", focus, got, want, row)
+			}
+			found = true
+		}
+		if !found {
+			t.Fatal("fixture header/version missing")
+		}
+	}
+}
+
+func TestFilledRestoresSurfaceAfterFullResetAndClearsTextAttributes(t *testing.T) {
+	unsetNoColor(t)
+	for _, reset := range []string{"\x1b[m", "\x1b[0m"} {
+		text := filled(colorText, background, "\x1b[1mBefore"+reset+"After")
+		pen := lipgloss.NewWrapWriter(io.Discard)
+		_, _ = pen.Write([]byte(text[:strings.Index(text, "After")]))
+		got := pen.Style()
+		_ = pen.Close()
+		expected := lipgloss.NewWrapWriter(io.Discard)
+		_, _ = expected.Write([]byte(colorText + background))
+		want := expected.Style()
+		_ = expected.Close()
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("reset %q: got=%v want=%v", reset, got, want)
+		}
+	}
+}

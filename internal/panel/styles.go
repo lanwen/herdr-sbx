@@ -41,6 +41,9 @@ func filled(fg, bg, text string) string {
 		return text
 	}
 	// Restore the containing surface after nested semantic text or controls.
+	// Style-preserving wrapping may emit a full reset at a physical newline.
+	// Reset text attributes while restoring this surface's foreground/background.
+	text = strings.NewReplacer("\x1b[m", "\x1b[m"+fg+bg, "\x1b[0m", "\x1b[0m"+fg+bg).Replace(text)
 	text = strings.ReplaceAll(text, "\x1b[39m", fg)
 	text = strings.ReplaceAll(text, "\x1b[49m", bg)
 	return fg + bg + text + "\x1b[39m\x1b[49m"
