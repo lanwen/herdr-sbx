@@ -3,20 +3,6 @@ description = "Run builds and isolated tests, read logs, gather evidence, and cr
 model = "gpt-6-luna"
 model_reasoning_effort = "medium"
 developer_instructions = """
-Execute the assigned build, test, evidence, or commit task.
-Read docs/reference.md for test isolation and environment requirements.
-Use repository tasks and scripts for builds and tests.
-Record the tested revision and any uncommitted changes that affect the result.
-For each command, report its exit status and the relevant output.
-If a command fails, identify the failing stage and return the useful log excerpt.
-Separate environment failures from product failures using observed evidence.
-Return failures to the parent before changing implementation or test expectations.
-Mark omitted tests as not run and explain the missing prerequisite.
-Use real sandbox tests only when the task explicitly provides a disposable environment and authorizes its effects.
-Create a commit only when the parent assigns that commit and its exact files.
-Before committing, inspect the diff and make sure that the required tests and review passed.
-Stage only the assigned files and inspect the staged diff.
-If the staged diff contains other work, return the conflict to the parent.
-Use public contracts and observed changes in the commit message.
-Finish a commit task by reporting the commit hash and remaining working tree changes.
+Before work, read and follow .agents/roles/legwork.md.
+Resolve this path relative to the repository root.
 """

@@ -1,8 +1,14 @@
 // Rasterize an ANSI frame from the real panel renderer with macOS system fonts.
 import AppKit
 
-guard CommandLine.arguments.count == 3 else {
-    fatalError("Usage: swift scripts/render-terminal.swift frame.ansi frame.png")
+let arguments = CommandLine.arguments
+guard arguments.count == 3 || (arguments.count == 5 && arguments[3] == "--terminal-background") else {
+    fatalError("Usage: swift scripts/render-terminal.swift frame.ansi frame.png [--terminal-background '#RRGGBB']")
+}
+let terminalHex = arguments.count == 5 ? arguments[4] : "#1C1C22"
+guard terminalHex.range(of: "^#[0-9a-fA-F]{6}$", options: .regularExpression) != nil,
+      let terminalRGB = UInt32(terminalHex.dropFirst(), radix: 16) else {
+    fatalError("Terminal background must be #RRGGBB")
 }
 let source = try String(contentsOfFile: CommandLine.arguments[1], encoding: .utf8)
 let rows = source.components(separatedBy: "\n")
@@ -24,7 +30,7 @@ let context = NSGraphicsContext.current!.cgContext
 context.translateBy(x: 0, y: CGFloat(height))
 context.scaleBy(x: 1, y: -1)
 NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
-let base = NSColor(srgbRed: 28/255, green: 28/255, blue: 34/255, alpha: 1)
+let base = NSColor(srgbRed: CGFloat((terminalRGB >> 16) & 255)/255, green: CGFloat((terminalRGB >> 8) & 255)/255, blue: CGFloat(terminalRGB & 255)/255, alpha: 1)
 base.setFill()
 context.fill(CGRect(x: 0, y: 0, width: width, height: height))
 var foreground = NSColor(srgbRed: 192/255, green: 192/255, blue: 192/255, alpha: 1)
@@ -47,7 +53,8 @@ for (row, text) in rows.enumerated() {
     }
     for match in escape.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
         draw(NSRange(location: cursor, length: match.range.location - cursor))
-        let codes = ns.substring(with: match.range(at: 1)).split(separator: ";").compactMap { Int($0) }
+        let parameters = ns.substring(with: match.range(at: 1))
+        let codes = parameters.isEmpty ? [0] : parameters.split(separator: ";").compactMap { Int($0) }
         var i = 0
         while i < codes.count {
             let code = codes[i]
@@ -58,7 +65,7 @@ for (row, text) in rows.enumerated() {
                 continue
             }
             if code == 1 { bold = true }
-            if code == 22 { bold = false }
+            if code == 22 || code == 0 { bold = false }
             if code == 39 || code == 0 { foreground = NSColor(srgbRed: 192/255, green: 192/255, blue: 192/255, alpha: 1) }
             if code == 49 || code == 0 { background = base }
             i += 1

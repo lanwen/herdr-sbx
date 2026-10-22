@@ -5,29 +5,11 @@ The plugin ID is `lanwen.herdr-sbx`.
 The commands below are subcommands of the plugin binary, `herdr-sbx`.
 For a local checkout, use `bin/herdr-sbx <command>`.
 Run commands inside local Herdr when they need a server.
-
 ## Management model
 
-The [interactive sandbox manager specification](tui-spec.md) defines the interface behavior.
-Management ON/OFF is the global permission for automatic work; OFF also suspends cleanup and cancels safe active work.
-Read-only host observation and explicit eligible actions remain available while OFF.
-Eligible discovered sandboxes start with a separate Enabled choice; an explicit Disabled choice persists after its herdr entry is removed.
-A stopped sandbox without an entry stays Disabled until it is running and the user enables it.
-All verified Docker Sandbox entries are in scope regardless of who created them.
-The plugin associates entries by stable sandbox and herdr identities, SSH target, and session rather than editable labels.
-A verified external label or native-enabled change becomes the baseline when Management resumes.
-Explicit Enable enables an existing herdr entry even when its sandbox is stopped, with Management ON or OFF.
-Automatic reconciliation does not disable that entry merely because the sandbox is still stopped.
-Guest setup waits until the sandbox is running.
-Guest-plugin installation and temporary-policy ownership protections are separate and remain in force.
-
-The plugin creates herdr entries only for running sandboxes.
-Enable on a stopped sandbox without an entry leaves it Disabled without a pending choice or warning.
-Its status is Stopped, and the user can enable it after starting it independently.
-A manually added entry can be enabled immediately through the plugin.
-Herdr may connect and start the sandbox after explicit Enable; keep the entry Disabled to prevent future herdr connections.
-Disabling an entry prevents future connections but does not cancel a connection already in progress.
-
+For automatic-work permission and baseline rules, see [Status and Management](tui/status.md).
+For connection choices, entry presence, and identity transitions, see [Sandboxes](tui/sandboxes.md).
+Installed guest plugins and temporary policy rules have separate ownership protections described below.
 ## Local checkout
 
 Use a checkout to develop the plugin or change its source.
@@ -68,96 +50,28 @@ Distinguish features available in those versions from later releases and unrelea
 Run `herdr-sbx` to open the interactive sandbox manager.
 The `open-status` plugin action opens the manager in a popup that requests 110 columns and 32 rows within terminal limits.
 The `open-status-tab` and `open-status-split` actions open the same manager in a tab or split.
-`herdr-sbx status` reads saved daemon and sandbox observations without contacting Docker or starting work.
-`herdr-sbx status --json` returns schema version 4 with observation times, Management, daemon health, sandbox identity and enabled choices, native herdr state, stable entry associations, herdr plugin choices, and separate coded errors and warnings.
-An unavailable observation stays unknown; a retained label is marked last known rather than presented as a fresh catalog result.
-`herdr-sbx daemon start` selects Management ON and starts the daemon after any earlier cancellation settles.
-`herdr-sbx daemon stop` selects Management OFF and waits for cancellation and daemon exit; an unconfirmed stop returns `D0001`.
-`herdr-sbx daemon status --json` contains the same management and daemon fields as root JSON status, plus daemon-scoped diagnostics, and no sandbox or plugin data.
+`herdr-sbx status` reads saved daemon and sandbox observations without contacting Docker, starting work, or changing choices.
+Its compact human summary includes Management, daemon health, sandbox choices, runtime, labels, status, and outstanding errors.
+Use text and symbols alongside color, honor `NO_COLOR`, and disable terminal styling when redirected.
+`herdr-sbx status --json` returns schema version 4 without terminal styling.
+It includes observation times, Management, daemon health, sandbox identity and enabled choices, native herdr state, stable entry associations, herdr plugin selections, and separate coded errors and warnings.
+Missing observations remain explicitly unknown; retained labels are last known rather than fresh catalog facts.
+Expose observation freshness instead of running slow active diagnostics.
+
+`herdr-sbx daemon start` is idempotent, selects Management ON, clears a saved Stop choice, and starts the daemon after earlier cancellation settles.
+`herdr-sbx daemon stop` selects Management OFF and waits for cancellation and exit.
+If exit cannot be confirmed within one minute, it returns `D0001` and keeps Stop selected.
 Herdr startup hooks call `herdr-sbx daemon start --automatic`, which respects a saved OFF choice.
-Human status uses color when supported, honors `NO_COLOR`, and has no terminal styling when redirected.
-JSON never contains terminal styling.
+`herdr-sbx daemon status` reports only daemon health and the saved On/Off choice.
+Its `--json` form contains the same management, daemon fields, and daemon-scoped diagnostics as root JSON status, without sandbox or plugin data.
 
-The TUI has Sandboxes, Status, and Plugins tabs in an outlined section, with the active tab leftmost.
-The bottom-right indicators show Management ON or OFF immediately before the observed sbx state.
-An unsettled stop shows exactly gray `Cancelling`.
-The Status tab keeps the saved Management choice separate from daemon health.
-Management has its own outlined subsection, focused by default; Space or Enter toggles the choice.
-Its observed worker status appears in a top-right border badge, with additional details such as update age or activity muted at the bottom right.
-Its outline brightens while focused, and Up/Down moves to the other available Status actions.
-The Status Hint follows current Management activity and worker observations rather than retaining completed request notices or sandbox-specific guidance.
-Prerequisite results use colored foreground text, with capitalized status words in the Status column.
-The sbx row combines CLI version and command support, and Sandbox service combines daemon health and inventory access while retaining specific failure details.
-Docker sign-in, OpenSSH, Sandbox SSH, and herdr remain separate; global Status omits per-sandbox setup.
-Status polls report observations and never change the selected choice.
-Management OFF prevents all automatic work, including setup, native state changes, herdr plugin synchronization, probes, retries, and cleanup.
-Read-only host observations and explicit eligible actions remain available.
-Turning ON first reads a fresh sandbox inventory and herdr catalog, accepts verified external label and native enabled changes as its baseline, then resumes work.
-If the baseline cannot be read, mutation waits and the uncertainty remains visible.
+### CLI acceptance scenarios
 
-The sandbox table has Enabled, Sandbox, Herdr label, and Status columns.
-Sandbox rows have no disclosure triangle.
-Enabled is a blue checkmark; Disabled and an idle missing entry use the same muted dot, with entry presence conveyed by the herdr label.
-Eligible Enable and Disable update that choice immediately, with Enabling… or Disabling… in Status until the operation settles.
-Older observations do not overwrite a pending choice; labels remain observed facts throughout the transition.
-After the transition, the saved choice and symbol follow the verified native herdr state.
-A rejected Enable returns to Disabled, and a rejected Disable returns to Enabled; report the operation error separately.
-If the command returns an error but the catalog confirms the change, keep the confirmed result.
-If the catalog cannot be verified, retain the last confirmed state as stale and pause automatic connection changes and guest work until a fresh observation resolves it.
-Do not automatically replay a failed requested choice.
-Below 72 columns, Status moves to Details and Hint; the label shortens before the sandbox name.
-At 30 columns by 10 rows, tabs, filter, footer, and scrollable Hint remain reachable.
-An eligible missing-entry dot requests Enable, even when an Enabled intention is already saved.
-For a stopped sandbox without an entry, it leaves the sandbox Disabled quietly.
-Up/Down selects a sandbox and immediately replaces its table row with an expanded preview.
-Enter or Right moves focus into that preview and highlights the primary action; its outline becomes brighter.
-Left/Right selects action buttons, and Up/Down moves between actions and plugin controls without leaving the preview.
-Escape returns to list navigation while keeping the selected preview visible.
-Left also returns to the list from the leftmost action or from plugin controls; from other action buttons it selects the previous button.
-Tab and Shift+Tab cycle tabs; arrows never switch tabs.
-Space changes the selected sandbox choice in list or action focus; its help text says Enable or Disable as appropriate.
-The primary action shows `Enable (space)` or `Disable (space)`.
-Render the action label bold and its `(space)` hotkey hint in regular weight.
-Mute the primary CTA when a different action or plugin control has focus.
-Enter activates the focused action, while Space on a plugin control cycles that plugin choice.
-The expanded preview exposes eligible Enable, Disable, Remove from herdr, Rename, Re-sync, and Fix herdr actions.
-Its colored title shows the sandbox name with runtime, then the herdr label with status.
-The known herdr version occupies the top-right border.
-Actions appear directly below the title with a blank line before and after.
-The next line shows muted `sandbox ID → herdr ID`, followed by plugin controls.
-At narrow widths, wrapped labels and IDs retain their styling on every continuation line.
-Disable preserves the label and entry while disabling its native connection.
-Remove from herdr becomes available only after native disable is confirmed and preserves the durable Disabled choice.
-Rename edits the label inline for any uniquely associated entry, regardless of who created it.
-Saving an unchanged label closes the editor without running a rename command or showing a transition.
-During rename, show a block cursor and highlight the Rename button in sand with an Enter symbol for saving.
-Left and Right continue moving the text cursor while rename is active.
-Re-sync and Fix herdr are explicit actions and do not start a stopped sandbox.
-Stopped sandboxes without entries stay Disabled quietly as described above.
-Fresh unambiguous observations clear resolved association statuses and diagnostics.
-True ambiguous matches retain a concrete explanation of the conflicting identity or target.
+- **S12** — Status output does not start the daemon or mutate setup; redirected and JSON output contain no terminal styling.
+- **S19** — Daemon start and stop preserve the saved choice, and daemon status JSON matches the daemon subset of root status JSON without starting work.
 
-The Plugins tab sets defaults for herdr plugins; Details can override each sandbox with Inherit, On, or Off.
-Defaults are live for inheriting enabled sandboxes while Management is ON.
-Turning a herdr plugin choice Off prevents future synchronization and keeps existing guest files.
-The filter opens with `/`, matches the current table fuzzily, and shows Clear only for an accepted nonempty query.
-Keyboard and mouse can select rows, actions, tabs, events, and diagnostics.
-Dragging selects visible plain text and requests clipboard delivery through OSC52; terminal support determines whether the copy arrives.
-The standard Bubbles help component shows bold hotkeys with regular muted descriptions and faint separators, with plain output when color is disabled.
-Compact and expanded help include only actions available for the current focus and selected target.
-The refresh shortcut appears only when Refresh is available and no refresh is running; dismiss appears only for a selected, saved, undismissed diagnostic.
-Press `?` to expand help in place without losing the tab, focus, selection, or underlying scroll position.
-Press `?` or Escape to close it; scroll keys scroll help, and other advertised action shortcuts close help and execute in the preserved context.
-
-Events appear in a collapsible outlined section above active diagnostics.
-Events retain the most recent 50 records from the past hour.
-Active diagnostics group causes by sandbox and code, keeping each herdr plugin cause and six-character reference separate.
-The New view hides dismissed active groups; All includes them and counts occurrences.
-Press `e` to reach diagnostics, Left or Right on its header to choose New or All, and `d` to dismiss the selected group.
-Dismissal acknowledges a group without resolving it or hiding a later failure after full recovery.
-One click selects a diagnostic; a second click on the same group opens its recovery action.
-The code catalog below defines diagnostic meanings.
-The [TUI specification](tui-spec.md#errors-and-concurrent-operations) defines their presentation and recovery controls.
+The [shared interface specification](tui-spec.md) links to each feature.
+Diagnostic presentation and recovery controls are defined in [Diagnostics](tui/diagnostics.md).
 
 ### Diagnostic codes
 
@@ -201,53 +115,31 @@ A stopped sandbox without an entry is neutral and does not produce `R0008`.
 
 Herdr starts the daemon when its server starts, completes a handoff, or creates a workspace.
 Linking or enabling the plugin in an existing server does not trigger startup.
-Opening the TUI starts the daemon on first use.
-If it is stopped on a later opening, the TUI asks whether to start it.
-Use the Management controls to start or stop automatic work explicitly.
-An explicit OFF choice persists and prevents automatic Herdr hooks from restarting it.
-OFF cancels safe in-flight work and reports gray `Cancelling` until it settles.
-ON requested during cancellation waits for the old worker, then captures a fresh inventory and catalog baseline.
-Completed effects remain visible after cancellation; partial failures remain in diagnostics.
+The [Management specification](tui/status.md) defines startup prompts, cancellation, and baseline capture.
 The daemon exits when the plugin is disabled or the final local server stays stopped.
 Closing the panel does not stop it.
 After a daemon crash, reopen the TUI and accept the Start prompt.
 
 `RUNNING` means that the event stream is active, not that every sandbox is ready.
 The status includes the last successful sync and any reconnect error.
-Registration failures produce notifications, with identical warnings suppressed until the result changes or the sandbox recovers.
-When a background refresh fails, status and warnings say `Could not refresh sandbox state: <actual reason>`.
-
 Host downloads select the local Herdr CLI version and compare the release checksum before SSH transfer.
 Recovery can replace a confirmed guest executable with that version and request a live handoff, which replaces the server while preserving panes.
 If the handoff fails, the plugin reports the error without forcing a restart.
 Broken or ambiguous installations require user action.
 An uncertain registration retries only after a successful catalog read finds no matching machine.
-Verified registrations are checked against the local herdr catalog without opening a new SSH connection on every catch-up.
-The plugin connects only for due setup or herdr plugin work, an explicit eligible Re-sync, or an audit at most every 15 minutes, and only while the sandbox is running.
-A failed fresh connection does not undo the entry or completed workspace setup.
-Its diagnostic names the pending action and connection cause instead of asking for duplicate registration.
-Successful herdr plugin synchronization records the effective source snapshot and shortcut choices so unchanged catch-ups do not inspect the guest again.
-The plugin saves the guest server version only after a successful read-only server-status probe. It reuses that observation during guest work and bounded audits rather than probing on every TUI poll or routine catch-up. A failed version probe does not itself block registration or erase the last known version.
-Hint calls an older retained observation the last known version and explains the guest version relative to the host version.
-Workspace errors from herdr retain their upstream error message and code when supplied.
-Herdr's machine-API forwarding discovery failure is shown as H0003, which can also mean the guest executable is missing or cannot run; it is not proof that two running server versions differ.
-Other workspace failures remain R0006.
-Error wording alone never triggers an automatic guest update, restart, or handoff.
-If sbx refuses SSH before guest inspection because a saved host workspace path is missing, the diagnostic names the attempted herdr plugin work and the sbx path problem without suggesting sandbox removal.
-The existing herdr entry stays in place, and Re-sync can be used after the path is available.
-
-All verified Docker Sandbox machine entries are in scope regardless of creator.
-Associations use the sandbox identity, herdr profile ID, SSH target, and session rather than editable labels.
-An ambiguous or unrelated entry is never mutated or removed.
-After a sandbox is confirmed deleted, Management can clear its retained local metadata when its herdr entry was already removed, allowing a new sandbox to reuse the name.
-A verified replacement identity permits only that local cleanup; it never authorizes removal of the replacement's herdr entry.
-Unconfirmed creation and uncertain absence retain their safeguards, and Management OFF suspends this cleanup too.
-Native herdr state determines how an explicit toggle settles, independently of command errors or later guest setup failures.
-Automatic work leaves the native connection state of an Enabled stopped sandbox unchanged and never enables it until it is running.
+Guest observations, connection failures, and recovery outcomes follow the [sandbox specification](tui/sandboxes.md#guest-observations-and-recovery).
+Successful plugin synchronization and bounded audits follow the [plugin specification](tui/plugins.md).
 
 New guest servers start in the resolved project directory.
 Existing servers reuse a matching workspace or receive one project workspace.
-For installed sbx v0.45.1 on macOS/Linux, the daemon's nonempty `workspace` is already the guest's primary working directory in both direct and clone modes. Validate and use that inventory path for project setup instead of running `sbx exec … pwd -P`. Clone mode can be identified separately from the daemon's `source_repo_dir` or clone label; `sbx ls --json` omits those fields. Keep the guest directory probe for worktree overrides or conflicting or invalid workspace metadata. Reject a non-string inventory workspace as an invalid daemon response. Do not invent a project path for a mountless sandbox. On hosts requiring path conversion, use the guest probe unless the conversion is verified.
+For installed sbx v0.45.1 on macOS/Linux, the daemon's nonempty `workspace` is already the guest's primary working directory in both direct and clone modes.
+Validate and use that inventory path for project setup instead of running `sbx exec … pwd -P`.
+Clone mode can be identified separately from the daemon's `source_repo_dir` or clone label; `sbx ls --json` omits those fields.
+Keep the guest directory probe for worktree overrides or conflicting or invalid workspace metadata.
+Reject a non-string inventory workspace as an invalid daemon response.
+Do not invent a project path for a mountless sandbox.
+On hosts requiring path conversion, use the guest probe unless the conversion is verified.
+Keep a saved pending guest path on retry.
 The plugin records completion, so a workspace that you close stays closed.
 Without project metadata, workspace setup stays unchanged.
 
@@ -255,23 +147,15 @@ State uses `HERDR_PLUGIN_STATE_DIR`, or `${XDG_STATE_HOME:-$HOME/.local/state}/h
 The directory holds stable association and enabled-choice records, daemon status, `state.json.worker.log`, and `guest-plugins.json`.
 When the daemon log exceeds 1 MiB, the daemon retains its most recent 512 KiB in the same file.
 For a custom Herdr state location, provide its plugin state directory explicitly.
-After a binary update, reopen the panel and restart the daemon to load it. An already-running daemon keeps its earlier executable and `daemon start` alone does not replace it; use `daemon stop` followed by `daemon start`. A mixed-version daemon can rewrite the shared status journal without fields introduced by the new binary, including diagnostic references and dismissals.
+After a binary update, reopen the panel and restart the daemon to load it.
+An already-running daemon keeps its earlier executable and `daemon start` alone does not replace it; use `daemon stop` followed by `daemon start`.
+A mixed-version daemon can rewrite the shared status journal without fields introduced by the new binary, including diagnostic references and dismissals.
 Run `mise run link` to build and relink the checkout after manifest changes.
 
 ## Guest plugins
 
-Open Plugin defaults with `p` to toggle synchronization for each herdr plugin.
-All plugins start disabled, including newly discovered plugins.
-Each expanded sandbox row cycles Inherit → On → Off for each plugin with Enter, Space, or a click.
-The Plugins tab toggles defaults directly with the same controls.
-Inherited choices follow live defaults, while explicit overrides remain unchanged.
-Changes apply automatically to running enabled sandboxes while Management is ON; stopped enabled sandboxes receive them when they next run with Management ON.
-Disabling synchronization stops future installation and updates, but preserves guest files and shortcuts.
+Defaults, overrides, and visible recovery behavior are defined in [Herdr plugins](tui/plugins.md).
 The daemon notices selection changes about once per second when idle.
-The Plugins tab shows one explanation for the selected default.
-On: the matching herdr plugin version will be copied to enabled sandboxes while Management is ON.
-Off: the plugin will not be synchronized, and existing copies stay intact.
-Unsupported plugins show a reason below their row and cannot be turned On.
 
 The main herdr instance supplies each plugin's ID, version, installed root, exact manifest path, and source metadata when available.
 Guest synchronization copies a source snapshot from that installed root, excluding `.git`, paths covered by its `.gitignore` rules, private state, and unsafe files.
@@ -285,14 +169,8 @@ It validates the plugin manifest and copies its original bytes to the guest, bec
 Herdr `plugin link` does not run the build commands by itself.
 An attempt is recorded before the guest build starts, so a failure or interrupted connection does not cause an automatic repeat on later reconciliation or daemon restart.
 The failed source directory remains available for manual repair, and Re-sync inspects guest herdr for a matching, enabled revision before retrying the build.
-Each failed herdr plugin has its own coded diagnostic, occurrence count, recovery history, and repair guidance for that sandbox.
-Show a verified manual install command in a padded callout with a blue left border only when the guest plugin was absent and the failed build is known to precede linking.
-If linking may have happened, show retained-source repair guidance instead of a command that guest herdr would reject.
-Place the callout before build output so long logs cannot hide the next step, and keep the full command available for direct drag selection.
-Version alone does not prove a revision match; verified GitHub commit or the managed snapshot identity is also needed.
-A matching externally installed plugin stays externally owned and unchanged.
-For a clean GitHub source with a verified commit, the UI can show `herdr plugin install <owner>/<repo>[/subdir] --ref <commit> --yes` for manual installation inside the sandbox.
-Local or modified source cannot be reproduced by that command; the UI reports its source identity and manual repair path instead.
+For manual repair commands and failure presentation, see [Herdr plugins](tui/plugins.md).
+Local or modified source cannot be reproduced by a clean GitHub install command; report its source identity and manual repair path.
 Removing `.git` can prevent plugins that need Git metadata from building, in which case manual intervention is required.
 Sandbox builds may need network access; a confirmed blocked policy-log entry during the attempt uses `P0005`, while ordinary timeouts or HTTP failures retain the original build error.
 The plugin does not change sandbox network policy automatically.
@@ -304,6 +182,8 @@ Noncanonical roots and paths that resolve outside that directory are external an
 Guest inspection checks only the tools needed by the synchronization protocol.
 Guests need `jq`, `tar`, `sha256sum`, and `base64` for synchronization.
 Individual herdr plugins can have their own runtime dependencies.
+Use manifest declarations, not plugin-ID-specific dependency lists.
+Exclude herdr-sbx itself from guest synchronization.
 Only shortcuts for the selected plugin and an absent guest prefix are copied from local Herdr configuration.
 Conflicting shortcuts, different explicit prefixes, and externally managed installations require user action.
 Configuration backups retain the original comments and formatting in `config.toml.herdr-sbx-<plugin-id>.bak`.
@@ -344,6 +224,7 @@ The internal packages divide the work as follows:
 
 Run `mise run deps` before tests.
 Use `mise run fmt` to format Go files and `mise run build` to rebuild the linked binary.
+Follow the [development workflow](development-workflow.md) for assignments, contract tables, review, and artifact acceptance.
 The test tasks use isolated home directories and Herdr state:
 
 ```sh
@@ -352,6 +233,35 @@ mise run check       # Race tests and go vet
 mise run test-panel  # Panel process with simulated commands
 mise run test-worker # Two temporary Herdr servers and a simulated sandbox daemon
 ```
+
+Repeatable verification and artifact tasks:
+
+```sh
+mise run verify-panel  # Isolated panel tests, then build bin/herdr-sbx
+mise run verify-change # Action pins, formatting, isolated race tests, vet, then build
+mise run action-pins-check # Read-only GitHub Action SHA validation
+mise run capture-screenshots # macOS: simulated frames into docs/screenshots
+mise run capture-screenshots -- /tmp/herdr-sbx-contrast --terminal-background '#E8D8C8'
+python3 -m unittest discover -s scripts -p 'test_*.py'
+```
+
+GitHub CI runs `verify-change` and the workflow helpers' network-free tests.
+The action-pin check uses Ruby's standard YAML parser (Psych); Ruby must be available locally and on CI.
+It checks workflow and tracked action metadata, rejects mutable remote references, and permits local `./` actions.
+Use literal YAML mappings and sequences for this check; aliases, anchors, explicit tags, and duplicate keys are rejected.
+Screenshot rendering requires macOS and Swift; worker tests require an installed Herdr binary and run separately.
+Neither verification task restarts, relinks, or reloads the live plugin.
+Reopen the panel after rebuilding to load the executable; daemon updates follow the recovery instructions above.
+
+For an assigned PR publication, prepare a body containing `![alt](path)` references to every supplied image, relative to the command's working directory:
+
+```sh
+mise run publish-pr-images -- --pr 7 --repo lanwen/herdr-sbx --body-file /tmp/body.md docs/screenshots/status.png
+```
+
+The helper preserves supplied prose, uploads through `gh --attach`, and verifies the published attachment URLs and body.
+It does not generate a description or select images.
+An interrupted upload may have changed the PR; inspect the actual body before retrying.
 
 Tests live beside their implementation.
 For one package, run `mise exec -- python3 scripts/test-go.py test ./internal/registration -count=1`.
@@ -369,3 +279,12 @@ Use `HERDR_SANDBOX_TEST_LIFECYCLE=1` only with disposable data because it stops 
 `HERDR_SANDBOX_TEST_TEMPORARY_ACCESS=1` also requires that flag and a fixture that blocks guest installer downloads with HTTP 403.
 It explicitly authorizes temporary access for that fixture.
 Real sandbox, Linux host, and interactive overlay validation require their own environments and remain separate from isolated tests.
+
+## Implementation boundaries
+
+Reuse the current Bubble Tea root model, custom expanded-row renderer, and shared layout for rendering and mouse targets.
+The current dependency pins are Bubble Tea v2.1.0 and Bubbles v2.2.1.
+Keep external work in commands and typed result messages, with identity and generation checks for stale responses.
+Update handles input and state transitions, while View only renders stored observations and choices.
+Keep persistent intent, cancellation, identity checks, and operation serialization in services shared by the daemon and explicit actions.
+The panel must not reconstruct these rules from display labels.
