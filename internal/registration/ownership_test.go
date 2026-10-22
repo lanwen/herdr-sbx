@@ -15,6 +15,7 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRegistrationIdentityChangesKeepSafeJournalState(t *testing.T) {
@@ -39,9 +40,10 @@ func TestRegistrationIdentityChangesKeepSafeJournalState(t *testing.T) {
 			checks++
 			return checks == 1
 		})
-		if result.Status != "stale" || saved != nil || adds != 0 || len(state.Scopes["scope"]) != 0 {
-			t.Fatalf("result=%#v saved=%#v adds=%d state=%#v", result, saved, adds, state.Scopes)
-		}
+		require.EqualValues(t, "stale", result.Status)
+		require.Nil(t, saved)
+		require.EqualValues(t, 0, adds)
+		require.Len(t, state.Scopes["scope"], 0)
 	})
 
 	t.Run("changed after trusted add", func(t *testing.T) {
@@ -67,9 +69,11 @@ func TestRegistrationIdentityChangesKeepSafeJournalState(t *testing.T) {
 			return checks < 4
 		})
 		items := state.Scopes["scope"]
-		if result.Status != "stale" || saved == nil || len(items) != 1 || items[0].ProfileID != "machine-1" || items[0].Pending {
-			t.Fatalf("result=%#v saved=%#v state=%#v", result, saved, items)
-		}
+		require.EqualValues(t, "stale", result.Status)
+		require.NotNil(t, saved)
+		require.Len(t, items, 1)
+		require.EqualValues(t, "machine-1", items[0].ProfileID)
+		require.False(t, items[0].Pending)
 	})
 
 	t.Run("changed during setup", func(t *testing.T) {
@@ -96,9 +100,8 @@ func TestRegistrationIdentityChangesKeepSafeJournalState(t *testing.T) {
 			checks++
 			return checks < 5
 		})
-		if result.Status != "stale" || !strings.Contains(result.Detail, "sandbox changed") {
-			t.Fatalf("result=%#v", result)
-		}
+		require.EqualValues(t, "stale", result.Status)
+		require.Contains(t, result.Detail, "sandbox changed")
 	})
 }
 
@@ -122,16 +125,11 @@ func TestCatalogCapacityFailureClearsIntentForRetry(t *testing.T) {
 	for range 2 {
 		state := store.State{Version: 1, Scopes: map[string][]store.Tracked{}}
 		result, _ := fixture.service.registerPreparedContext(context.Background(), "scope", &state, nil, sandbox, func() bool { return true })
-		if result.Status != "catalog full" || !strings.Contains(result.Detail, "Remove an unused machine") {
-			t.Fatalf("result=%#v", result)
-		}
-		if len(state.Scopes["scope"]) != 0 {
-			t.Fatalf("capacity failure left intent: %#v", state.Scopes["scope"])
-		}
+		require.EqualValues(t, "catalog full", result.Status)
+		require.Contains(t, result.Detail, "Remove an unused machine")
+		require.Len(t, state.Scopes["scope"], 0, "capacity failure left intent: %#v", state.Scopes["scope"])
 	}
-	if adds != 2 {
-		t.Fatalf("machine add calls=%d, want a retry", adds)
-	}
+	require.Equal(t, 2, adds, "machine add calls=%d, want a retry", adds)
 }
 
 func TestUncertainAddRecoversUniqueCatalogEntryWithoutDuplicate(t *testing.T) {
@@ -174,27 +172,20 @@ func TestUncertainAddRecoversUniqueCatalogEntryWithoutDuplicate(t *testing.T) {
 	}
 	fixture.rebuildClients()
 	var first strings.Builder
-	if err := fixture.service.ReconcileContext(context.Background(), &first); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(first.String(), "outcome is uncertain") {
-		t.Fatalf("first reconcile=%s", first.String())
-	}
+	require.NoError(t, fixture.service.ReconcileContext(context.Background(), &first))
+	require.Contains(t, first.String(), "outcome is uncertain", "first reconcile=%s", first.String())
 	var second strings.Builder
-	if err := fixture.service.ReconcileContext(context.Background(), &second); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(second.String(), "READY") || adds != 1 || readinessChecks != 0 || lists != 2 {
-		t.Fatalf("second reconcile=%s adds=%d lists=%d readiness=%d", second.String(), adds, lists, readinessChecks)
-	}
+	require.NoError(t, fixture.service.ReconcileContext(context.Background(), &second))
+	require.Contains(t, second.String(), "READY")
+	require.EqualValues(t, 1, adds)
+	require.EqualValues(t, 0, readinessChecks)
+	require.EqualValues(t, 2, lists)
 	state, err := store.LoadState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	item := state.Scopes[store.ScopeID("/tmp/registration-retry.sock")][0]
-	if item.Pending || item.ProfileID != "manual-1" || item.Label != "demo" {
-		t.Fatalf("verified association was not retained: %#v", item)
-	}
+	require.False(t, item.Pending)
+	require.EqualValues(t, "manual-1", item.ProfileID)
+	require.EqualValues(t, "demo", item.Label)
 }
 
 func TestProfilePersistenceFailureDoesNotClaimReadiness(t *testing.T) {
@@ -227,12 +218,8 @@ func TestProfilePersistenceFailureDoesNotClaimReadiness(t *testing.T) {
 			return `[{"id":"machine-1","label":"sbx · demo","target":"demo.sbx","session":"default"}]`, nil
 		case "herdr machine add --label sbx · demo demo.sbx":
 			adds++
-			if err := os.Rename(stateDir, stateDir+"-moved"); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(stateDir, []byte("not a directory"), 0600); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.Rename(stateDir, stateDir+"-moved"))
+			require.NoError(t, os.WriteFile(stateDir, []byte("not a directory"), 0600))
 			return "Saved SSH machine machine-1. Remote server is ready.", nil
 		case "herdr --machine machine-1 status server":
 			readinessChecks++
@@ -243,15 +230,12 @@ func TestProfilePersistenceFailureDoesNotClaimReadiness(t *testing.T) {
 	}
 	fixture.rebuildClients()
 	var output strings.Builder
-	if err := fixture.service.ReconcileContext(context.Background(), &output); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(output.String(), "ASSOCIATION WARNING") || readinessChecks != 0 {
-		t.Fatalf("output=%s readiness=%d", output.String(), readinessChecks)
-	}
-	if _, err := os.Stat(filepath.Join(stateDir+"-moved", "state.json")); err != nil {
-		t.Fatalf("registration intent was not retained: %v", err)
-	}
+	require.NoError(t, fixture.service.ReconcileContext(context.Background(), &output))
+	require.Contains(t, output.String(), "ASSOCIATION WARNING")
+	require.EqualValues(t, 0, readinessChecks)
+
+	_, err := os.Stat(filepath.Join(stateDir+"-moved", "state.json"))
+	require.NoError(t, err, "registration intent was not retained: %v", err)
 }
 
 func TestRemoteHerdrVersionAndBrokenPathAreLeftUnchanged(t *testing.T) {
@@ -259,9 +243,9 @@ func TestRemoteHerdrVersionAndBrokenPathAreLeftUnchanged(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			fixture := newRegistrationFixture(t, "[]")
 			fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
-				if command.Name != "ssh" || len(command.Args) == 0 || command.Args[len(command.Args)-1] != remoteHerdrStatusShell() {
-					t.Fatalf("remote setup unexpectedly ran a command: %s %v", command.Name, command.Args)
-				}
+				require.EqualValues(t, "ssh", command.Name)
+				require.NotEqualValues(t, 0, len(command.Args))
+				require.False(t, command.Args[len(command.Args)-1] != remoteHerdrStatusShell())
 				if scenario == "too old" {
 					return remoteHerdrOnPath + "\nherdr 0.8.0\n", nil
 				}
@@ -270,12 +254,10 @@ func TestRemoteHerdrVersionAndBrokenPathAreLeftUnchanged(t *testing.T) {
 			fixture.rebuildClients()
 			state := store.State{Version: 1, Scopes: map[string][]store.Tracked{}}
 			result, saved := fixture.service.registerPreparedContext(context.Background(), "scope", &state, nil, sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"}, func() bool { return true })
-			if result.Status != "setup required" || saved != nil || len(state.Scopes["scope"]) != 0 {
-				t.Fatalf("result=%#v saved=%#v", result, saved)
-			}
-			if scenario == "broken path" && !strings.Contains(result.Detail, "left unchanged") {
-				t.Fatalf("broken path detail=%s", result.Detail)
-			}
+			require.EqualValues(t, "setup required", result.Status)
+			require.Nil(t, saved)
+			require.Len(t, state.Scopes["scope"], 0)
+			require.False(t, scenario == "broken path" && !strings.Contains(result.Detail, "left unchanged"), "broken path detail=%s", result.Detail)
 		})
 	}
 }
@@ -306,16 +288,14 @@ func TestCooldownRetainsInstallationFailure(t *testing.T) {
 	sandbox := sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"}
 	state := store.State{Version: 1, Scopes: map[string][]store.Tracked{}}
 	first, _ := fixture.service.registerPreparedContext(context.Background(), "scope", &state, nil, sandbox, func() bool { return true })
-	if first.Status != "setup required" || !strings.Contains(first.Detail, "HTTP 403") {
-		t.Fatalf("first failure=%#v", first)
-	}
+	require.EqualValues(t, "setup required", first.Status)
+	require.Contains(t, first.Detail, "HTTP 403")
 	second, _ := fixture.service.registerPreparedContext(context.Background(), "scope", &state, nil, sandbox, func() bool { return true })
-	if second.Status != "setup required" || !strings.Contains(second.Detail, "on cooldown") || !strings.Contains(second.Detail, "HTTP 403") {
-		t.Fatalf("retry detail=%#v", second)
-	}
-	if statusChecks != 2 || architectureChecks != 1 {
-		t.Fatalf("status checks=%d host downloads=%d", statusChecks, architectureChecks)
-	}
+	require.EqualValues(t, "setup required", second.Status)
+	require.Contains(t, second.Detail, "on cooldown")
+	require.Contains(t, second.Detail, "HTTP 403")
+	require.EqualValues(t, 2, statusChecks)
+	require.EqualValues(t, 1, architectureChecks)
 }
 
 func TestFailedRecreationRetainsCompletedGuestState(t *testing.T) {
@@ -325,9 +305,7 @@ func TestFailedRecreationRetainsCompletedGuestState(t *testing.T) {
 			checked := time.Now()
 			previous := store.Tracked{SandboxID: "one", Target: "demo.sbx", Label: "Previous", ProjectWorkspaceDone: true, GuestSync: &store.GuestSyncObservation{Fingerprint: "completed", CheckedAt: checked, Status: "ready"}}
 			state := store.State{Version: 1, Scopes: map[string][]store.Tracked{"scope": {previous}}}
-			if err := store.SaveState(state); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, store.SaveState(state))
 			adds := 0
 			f.runner.Execute = func(_ context.Context, c process.Command) (string, error) {
 				call := c.Name + " " + strings.Join(c.Args, " ")
@@ -347,29 +325,22 @@ func TestFailedRecreationRetainsCompletedGuestState(t *testing.T) {
 					return true
 				}
 				saved, err := store.LoadState()
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				return !saved.Scopes["scope"][0].Pending
 			}
 			outcome, _ := f.service.registerPreparedContext(context.Background(), "scope", &state, nil, sbx.Sandbox{ID: "one", Name: "demo", Status: "running", Workspace: "/workspace/demo"}, current)
-			if scenario == "cancel before add" && (outcome.Status != "stale" || adds != 0) {
-				t.Fatalf("cancel=%+v adds=%d", outcome, adds)
-			}
-			if scenario == "deterministic add failure" && (outcome.Status != "catalog full" || adds != 1) {
-				t.Fatalf("failure=%+v adds=%d", outcome, adds)
-			}
+			require.False(t, scenario == "cancel before add" && (outcome.Status != "stale" || adds != 0), "cancel=%+v adds=%d", outcome, adds)
+			require.False(t, scenario == "deterministic add failure" && (outcome.Status != "catalog full" || adds != 1), "failure=%+v adds=%d", outcome, adds)
 			saved, err := store.LoadState()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(saved.Scopes["scope"]) != 1 {
-				t.Fatalf("guest history removed: %+v", saved)
-			}
+			require.NoError(t, err)
+			require.Len(t, saved.Scopes["scope"], 1, "guest history removed: %+v", saved)
 			item := saved.Scopes["scope"][0]
-			if item.Pending || item.ProfileID != "" || !item.ProjectWorkspaceDone || item.GuestSync == nil || item.GuestSync.Fingerprint != "completed" || !item.GuestSync.CheckedAt.Equal(checked) {
-				t.Fatalf("completed state lost: %+v", item)
-			}
+			require.False(t, item.Pending)
+			require.EqualValues(t, "", item.ProfileID)
+			require.True(t, item.ProjectWorkspaceDone)
+			require.NotNil(t, item.GuestSync)
+			require.EqualValues(t, "completed", item.GuestSync.Fingerprint)
+			require.True(t, item.GuestSync.CheckedAt.Equal(checked))
 		})
 	}
 }

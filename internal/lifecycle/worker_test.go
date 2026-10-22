@@ -18,14 +18,13 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWorkerLogCompactionKeepsInheritedOutput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json.worker.log")
 	log, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer log.Close()
 	// Keep using the same inherited descriptor across multiple compactions,
 	// just like a long-lived detached daemon's stdout and stderr.
@@ -33,52 +32,37 @@ func TestWorkerLogCompactionKeepsInheritedOutput(t *testing.T) {
 		command := exec.Command("sh", "-c", "cat; printf stderr-tail >&2")
 		command.Stdin = strings.NewReader(strings.Repeat(marker, workerLogLimit/len(marker)+1))
 		command.Stdout, command.Stderr = log, log
-		if err := command.Run(); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, command.Run())
 		before, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := compactWorkerLog(path); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+		require.NoError(t, compactWorkerLog(path))
 		after, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(after) != workerLogRetained || !bytes.Equal(after, before[len(before)-workerLogRetained:]) {
-			t.Fatalf("compaction did not preserve the latest %d bytes: got %d", workerLogRetained, len(after))
-		}
-		if !bytes.HasSuffix(after, []byte("stderr-tail")) {
-			t.Fatal("inherited stderr output was lost")
-		}
+		require.NoError(t, err)
+		require.Len(t, after, workerLogRetained)
+		require.Equal(t, before[len(before)-workerLogRetained:], after)
+		require.True(t, bytes.HasSuffix(after, []byte("stderr-tail")), "inherited stderr output was lost")
 	}
 }
 
 func TestWorkerLogCompactionHandlesMissingSmallAndUnreadableFiles(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json.worker.log")
-	if err := compactWorkerLog(path); err != nil {
-		t.Fatal(err)
+	require.NoError(t, compactWorkerLog(path))
+	{
+		_, err := os.Stat(path)
+		require.ErrorIs(t, err, os.ErrNotExist, "missing log was created: %v", err)
 	}
-	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("missing log was created: %v", err)
-	}
-	if err := os.WriteFile(path, []byte("recent output"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := compactWorkerLog(path); err != nil {
-		t.Fatal(err)
-	}
-	if data, err := os.ReadFile(path); err != nil || string(data) != "recent output" {
-		t.Fatalf("small log changed: %q, %v", data, err)
+	require.NoError(t, os.WriteFile(path, []byte("recent output"), 0600))
+	require.NoError(t, compactWorkerLog(path))
+	{
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.EqualValues(t, "recent output", string(data))
 	}
 	badPath := path + ".bad"
-	if err := os.Symlink(badPath, badPath); err != nil {
-		t.Fatal(err)
-	}
-	if err := compactWorkerLog(badPath); !errors.Is(err, syscall.ELOOP) {
-		t.Fatalf("unreadable log error = %v", err)
+	require.NoError(t, os.Symlink(badPath, badPath))
+	{
+		err := compactWorkerLog(badPath)
+		require.ErrorIs(t, err, syscall.ELOOP, "unreadable log error = %v", err)
 	}
 }
 
@@ -86,140 +70,112 @@ func TestWorkerStartIsNoopWhileActive(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", dir)
 	unlock, err := store.LockWorker()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer unlock()
 	service := &Service{}
 	var out bytes.Buffer
-	if err := service.StartWorker(); err != nil {
-		t.Fatal(err)
+	require.NoError(t, service.StartWorker())
+	require.NoError(t, service.Worker(&out))
+	require.Equal(t, 0, out.Len(), "duplicate worker wrote %q", out.String())
+	{
+		_, err := os.Stat(filepath.Join(dir, "state.json.worker.log"))
+		require.ErrorIs(t, err, os.ErrNotExist, "duplicate start created log: %v", err)
 	}
-	if err := service.Worker(&out); err != nil {
-		t.Fatal(err)
-	}
-	if out.Len() != 0 {
-		t.Fatalf("duplicate worker wrote %q", out.String())
-	}
-	if _, err := os.Stat(filepath.Join(dir, "state.json.worker.log")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("duplicate start created log: %v", err)
-	}
-	if _, err := store.LockWorker(); !errors.Is(err, store.ErrWorkerActive) {
-		t.Fatalf("original lock lost: %v", err)
+	{
+		_, err := store.LockWorker()
+		require.ErrorIs(t, err, store.ErrWorkerActive, "original lock lost: %v", err)
 	}
 }
 
 func TestWorkerStartReportsStorageErrors(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "file")
-	if err := os.WriteFile(path, nil, 0600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, nil, 0600))
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", path)
 	service := &Service{}
-	if err := service.StartWorker(); err == nil {
-		t.Fatal("start hid storage error")
+	{
+		err := service.StartWorker()
+		require.Error(t, err, "start hid storage error")
 	}
-	if err := service.StopWorker(context.Background()); err == nil || errors.Is(err, ErrDaemonStopUnconfirmed) {
-		t.Fatalf("Stop write failure was misclassified: %v", err)
+	{
+		err := service.StopWorker(context.Background())
+		require.Error(t, err)
+		require.NotErrorIs(t, err, ErrDaemonStopUnconfirmed)
 	}
 	var out bytes.Buffer
-	if err := service.Worker(&out); err == nil {
-		t.Fatal("worker hid storage error")
+	{
+		err := service.Worker(&out)
+		require.Error(t, err, "worker hid storage error")
 	}
 }
 
 func TestSavedStopBlocksAutomaticAndQueuedWorkerStarts(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	service := &Service{}
-	if err := service.StopWorker(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := service.StartWorker(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, service.StopWorker(context.Background()))
+	require.NoError(t, service.StartWorker())
 	var out bytes.Buffer
-	if err := service.Worker(&out); err != nil {
-		t.Fatal(err)
-	}
-	if out.Len() != 0 {
-		t.Fatalf("stopped worker started: %q", out.String())
-	}
+	require.NoError(t, service.Worker(&out))
+	require.Equal(t, 0, out.Len(), "stopped worker started: %q", out.String())
 	status, err := store.ReadStatusStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status.WorkerControl == nil || !status.WorkerControl.Stopped {
-		t.Fatal("automatic startup cleared Stop")
-	}
+	require.NoError(t, err)
+	require.NotNil(t, status.WorkerControl)
+	require.True(t, status.WorkerControl.Stopped)
 }
 
 func TestStopRequestKeepsAuthoritativeWorkerState(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	unlock, err := store.LockWorker()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	service := &Service{}
-	if err := service.StopWorker(ctx); !errors.Is(err, ErrDaemonStopUnconfirmed) || !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), store.CodeDaemonUnreachable) || !strings.Contains(err.Error(), "Cannot confirm") {
-		t.Fatalf("unresponsive daemon stop = %v, want coded confirmation timeout", err)
+	{
+		err := service.StopWorker(ctx)
+		require.ErrorIs(t, err, ErrDaemonStopUnconfirmed)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.Contains(t, err.Error(), store.CodeDaemonUnreachable)
+		require.Contains(t, err.Error(), "Cannot confirm")
 	}
 	status, err := store.ReadWorkerStatus()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status.State == "stopped" {
-		t.Fatal("reported stopped while lock still held")
-	}
+	require.NoError(t, err)
+	require.NotEqual(t, "stopped", status.State, "reported stopped while lock still held")
 	control, err := store.ReadStatusStore()
-	if err != nil || control.WorkerControl == nil || !control.WorkerControl.Stopped {
-		t.Fatalf("Stop intent lost: %+v %v", control, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, control.WorkerControl)
+	require.True(t, control.WorkerControl.Stopped)
 }
 
 func TestExplicitStartWaitsForStoppingWorkerExit(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	unlock, err := store.LockWorker()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer unlock()
-	if err := store.SetWorkerControl(true); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SetWorkerControl(true))
 	// The active daemon has already cancelled its context after seeing OFF.
 	// Clearing OFF cannot revive that process; ON must wait for its lock to end.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	if err := prepareWorkerStart(ctx); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("ON did not wait for stopping daemon: %v", err)
+	{
+		err := prepareWorkerStart(ctx)
+		require.ErrorIs(t, err, context.DeadlineExceeded, "ON did not wait for stopping daemon: %v", err)
 	}
 	status, err := store.ReadStatusStore()
-	if err != nil || !status.WorkerControl.Stopped {
-		t.Fatalf("ON cleared OFF before daemon exit: %+v %v", status, err)
-	}
+	require.NoError(t, err)
+	require.True(t, status.WorkerControl.Stopped)
 	unlock()
-	if err := prepareWorkerStart(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, prepareWorkerStart(context.Background()))
 	status, err = store.ReadStatusStore()
-	if err != nil || status.WorkerControl.Stopped {
-		t.Fatalf("ON did not clear OFF after daemon exit: %+v %v", status, err)
-	}
+	require.NoError(t, err)
+	require.False(t, status.WorkerControl.Stopped)
 }
 
 func TestStopWorkerWaitsForAuthoritativeExit(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	unlock, err := store.LockWorker()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer unlock()
-	if err := store.RecordWorkerStatus("running", "", false); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.RecordWorkerStatus("running", "", false))
 	service := &Service{}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -229,9 +185,7 @@ func TestStopWorkerWaitsForAuthoritativeExit(t *testing.T) {
 	defer ticker.Stop()
 	for {
 		saved, err := store.ReadStatusStore()
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		if saved.WorkerControl != nil && saved.WorkerControl.Stopped {
 			break
 		}
@@ -248,16 +202,14 @@ func TestStopWorkerWaitsForAuthoritativeExit(t *testing.T) {
 	}
 	// Exiting releases the OS lock even if the final telemetry write was lost.
 	unlock()
-	if err := <-stopped; err != nil {
-		t.Fatal(err)
-	}
-	if err := service.StopWorker(ctx); err != nil {
-		t.Fatalf("repeated stop failed: %v", err)
+	require.NoError(t, <-stopped)
+	{
+		err := service.StopWorker(ctx)
+		require.NoError(t, err, "repeated stop failed: %v", err)
 	}
 	status, err := store.ReadWorkerStatus()
-	if err != nil || status.State != "stopped" {
-		t.Fatalf("status=%+v error=%v", status, err)
-	}
+	require.NoError(t, err)
+	require.EqualValues(t, "stopped", status.State)
 }
 
 func TestStopWorkerStopsCooperativeWorker(t *testing.T) {
@@ -280,13 +232,9 @@ func TestStopWorkerStopsCooperativeWorker(t *testing.T) {
 	}
 	f.service.workerReconnect = time.Millisecond
 	statePath, err := store.StatePath()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	logPath := statePath + ".worker.log"
-	if err := os.WriteFile(logPath, bytes.Repeat([]byte("x"), workerLogLimit+1), 0600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(logPath, bytes.Repeat([]byte("x"), workerLogLimit+1), 0600))
 	finished := make(chan error, 1)
 	go func() { finished <- f.service.Worker(io.Discard) }()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -301,9 +249,7 @@ func TestStopWorkerStopsCooperativeWorker(t *testing.T) {
 	defer logPoll.Stop()
 	for {
 		info, err := os.Stat(logPath)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		if info.Size() == workerLogRetained {
 			break
 		}
@@ -313,14 +259,10 @@ func TestStopWorkerStopsCooperativeWorker(t *testing.T) {
 		case <-logPoll.C:
 		}
 	}
-	if err := f.service.StopWorker(ctx); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, f.service.StopWorker(ctx))
 	select {
 	case err := <-finished:
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 	case <-ctx.Done():
 		t.Fatal("daemon still running after successful Stop")
 	}
@@ -329,30 +271,25 @@ func TestStopWorkerStopsCooperativeWorker(t *testing.T) {
 func TestStopWorkerReportsUnreadableConfirmation(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	path, err := store.StatePath()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	// A loop affects only the daemon lock read; saving Stop must still succeed.
-	if err := os.Symlink(path+".worker", path+".worker"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Symlink(path+".worker", path+".worker"))
 	service := &Service{}
 	err = service.StopWorker(context.Background())
-	if !errors.Is(err, ErrDaemonStopUnconfirmed) || !errors.Is(err, syscall.ELOOP) || !strings.Contains(err.Error(), store.CodeDaemonUnreachable) || !strings.Contains(err.Error(), "Cannot confirm") {
-		t.Fatalf("unreadable confirmation = %v", err)
-	}
+	require.ErrorIs(t, err, ErrDaemonStopUnconfirmed)
+	require.ErrorIs(t, err, syscall.ELOOP)
+	require.Contains(t, err.Error(), store.CodeDaemonUnreachable)
+	require.Contains(t, err.Error(), "Cannot confirm")
 	saved, err := store.ReadStatusStore()
-	if err != nil || saved.WorkerControl == nil || !saved.WorkerControl.Stopped {
-		t.Fatalf("Stop was lost: %+v %v", saved.WorkerControl, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, saved.WorkerControl)
+	require.True(t, saved.WorkerControl.Stopped)
 }
 
 func TestOffBlocksEverySchedulerPath(t *testing.T) {
 	f := newLifecycleFixture(t)
 	f.save(ownedRegistration())
-	if err := store.SetWorkerControl(true); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SetWorkerControl(true))
 	f.run = func(_ context.Context, cmd process.Command) (string, error) {
 		t.Errorf("automatic command while OFF: %s %v", cmd.Name, cmd.Args)
 		return "", errors.New("automatic command forbidden")
@@ -369,39 +306,31 @@ func TestOffBlocksEverySchedulerPath(t *testing.T) {
 	scheduler.processPluginDefaults()
 	scheduler.processCatchup(true)
 	scheduler.recoverMissedDeletes()
-	if scheduler.removeDeleted(sbx.LifecycleEvent{SandboxID: "old"}) {
-		t.Fatal("OFF reported deletion complete")
-	}
-	if err := f.service.watchContext(context.Background(), io.Discard); err != nil {
-		t.Fatal(err)
-	}
+	require.False(t, scheduler.removeDeleted(sbx.LifecycleEvent{SandboxID: "old"}), "OFF reported deletion complete")
+	require.NoError(t, f.service.watchContext(context.Background(), io.Discard))
 	f.assertCount(1)
 }
 
 func TestStopReportsCancellingUntilWorkerSettles(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	unlock, err := store.LockWorker()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer unlock()
-	if err := store.RecordWorkerStatus("running", "following events", false); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.RecordWorkerStatus("running", "following events", false))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	if err := (&Service{}).StopWorker(ctx); !errors.Is(err, ErrDaemonStopUnconfirmed) {
-		t.Fatalf("unsettled worker reported stopped: %v", err)
+	{
+		err := (&Service{}).StopWorker(ctx)
+		require.ErrorIs(t, err, ErrDaemonStopUnconfirmed, "unsettled worker reported stopped: %v", err)
 	}
 	status, err := store.ReadWorkerStatus()
-	if err != nil || status.State != "cancelling" || status.Detail != "Cancelling" {
-		t.Fatalf("cancellation status=%+v err=%v", status, err)
-	}
+	require.NoError(t, err)
+	require.EqualValues(t, "cancelling", status.State)
+	require.EqualValues(t, "Cancelling", status.Detail)
 	unlock()
 	status, err = store.ReadWorkerStatus()
-	if err != nil || status.State != "stopped" {
-		t.Fatalf("settled status=%+v err=%v", status, err)
-	}
+	require.NoError(t, err)
+	require.EqualValues(t, "stopped", status.State)
 }
 
 func TestUnreadableBaselineDefersAutomaticWork(t *testing.T) {
@@ -421,67 +350,52 @@ func TestUnreadableBaselineDefersAutomaticWork(t *testing.T) {
 		return nil, errors.New("forbidden")
 	}
 	err := f.service.watchContext(context.Background(), io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "baseline") {
-		t.Fatalf("baseline failure not reported: %v", err)
-	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "baseline")
 	f.assertCount(1)
-	if len(f.removed) != 0 {
-		t.Fatalf("removed registration without baseline: %v", f.removed)
-	}
+	require.Len(t, f.removed, 0, "removed registration without baseline: %v", f.removed)
 }
 
 func TestNewOffSupersedesPendingStart(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
-	if err := store.SetWorkerControl(true); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SetWorkerControl(true))
 	saved, err := store.ReadStatusStore()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	generation := saved.WorkerControl.Generation
 	unlock, err := store.LockWorker()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer unlock()
 	started := make(chan error, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	go func() { started <- prepareWorkerStartAtGeneration(ctx, generation) }()
-	if err := store.SetWorkerControl(true); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SetWorkerControl(true))
 	unlock()
-	if err := <-started; !errors.Is(err, context.Canceled) {
-		t.Fatalf("superseded ON was accepted: %v", err)
+	{
+		err := <-started
+		require.ErrorIs(t, err, context.Canceled, "superseded ON was accepted: %v", err)
 	}
 	saved, err = store.ReadStatusStore()
-	if err != nil || !saved.WorkerControl.Stopped || saved.WorkerControl.Generation != generation+1 {
-		t.Fatalf("newer OFF was overwritten: %+v %v", saved.WorkerControl, err)
-	}
+	require.NoError(t, err)
+	require.True(t, saved.WorkerControl.Stopped)
+	require.False(t, saved.WorkerControl.Generation != generation+1)
 }
 
 func TestStopConfirmationDoesNotInvalidateQueuedOn(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
-	if err := store.SetWorkerControl(true); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SetWorkerControl(true))
 	saved, err := store.ReadStatusStore()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	generation := saved.WorkerControl.Generation
-	if err := (&Service{}).WaitWorkerStopped(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := prepareWorkerStartAtGeneration(context.Background(), generation); err != nil {
-		t.Fatalf("queued ON rejected after stop confirmation: %v", err)
+	require.NoError(t, (&Service{}).WaitWorkerStopped(context.Background()))
+	{
+		err := prepareWorkerStartAtGeneration(context.Background(), generation)
+		require.NoError(t, err, "queued ON rejected after stop confirmation: %v", err)
 	}
 	saved, err = store.ReadStatusStore()
-	if err != nil || saved.WorkerControl.Stopped || saved.WorkerControl.Generation != generation+1 {
-		t.Fatalf("queued ON not accepted: %+v %v", saved.WorkerControl, err)
-	}
+	require.NoError(t, err)
+	require.False(t, saved.WorkerControl.Stopped)
+	require.False(t, saved.WorkerControl.Generation != generation+1)
 }
 
 func TestNewScopeRequiresFreshBaseline(t *testing.T) {
@@ -504,12 +418,11 @@ func TestNewScopeRequiresFreshBaseline(t *testing.T) {
 	}
 	baseline := managementBaseline{scope: "previous-scope", socket: "/tmp/previous-daemon.sock"}
 	err := f.service.watchManaged(context.Background(), io.Discard, nil, &baseline)
-	if err == nil || !strings.Contains(err.Error(), "baseline") || catalogReads != 1 {
-		t.Fatalf("new scope reused old baseline: reads=%d err=%v", catalogReads, err)
-	}
-	if baseline.scope != "previous-scope" || len(f.removed) != 0 {
-		t.Fatalf("unverified new scope was accepted: baseline=%+v removed=%v", baseline, f.removed)
-	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "baseline")
+	require.EqualValues(t, 1, catalogReads)
+	require.EqualValues(t, "previous-scope", baseline.scope)
+	require.Len(t, f.removed, 0)
 }
 
 func TestScopeChangeStopsWatchBeforeFurtherAutomaticWork(t *testing.T) {
@@ -542,10 +455,9 @@ func TestScopeChangeStopsWatchBeforeFurtherAutomaticWork(t *testing.T) {
 	defer cancel()
 	baseline := managementBaseline{}
 	err := f.service.watchManaged(ctx, io.Discard, nil, &baseline)
-	if err == nil || !strings.Contains(err.Error(), "scope changed") {
-		t.Fatalf("watch continued across scope change: %v", err)
-	}
-	if catalogReads != 1 || baseline.scope != f.scope || len(f.removed) != 0 {
-		t.Fatalf("new scope mutated before old watch settled: reads=%d baseline=%+v removed=%v", catalogReads, baseline, f.removed)
-	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "scope changed")
+	require.EqualValues(t, 1, catalogReads)
+	require.False(t, baseline.scope != f.scope)
+	require.Len(t, f.removed, 0)
 }

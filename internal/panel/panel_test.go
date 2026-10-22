@@ -19,6 +19,8 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/registration"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type panelTransport func(*http.Request) (*http.Response, error)
@@ -32,9 +34,7 @@ func testPanel(t *testing.T, interactive func(context.Context, string, ...string
 	t.Setenv("HERDR_SANDBOXES_SBX_APP_NAME", "isolated")
 	bin := t.TempDir()
 	for _, name := range []string{"herdr", "sbx", "ssh"} {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 99\n"), 0700); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 99\n"), 0700))
 	}
 	t.Setenv("PATH", bin)
 	runner := process.Runner{Interactive: interactive, Execute: func(_ context.Context, cmd process.Command) (string, error) {
@@ -64,9 +64,7 @@ func testPanel(t *testing.T, interactive func(context.Context, string, ...string
 		return "", errors.New("unexpected command")
 	}}
 	sandboxes := sbx.NewWithTransport(runner, panelTransport(func(r *http.Request) (*http.Response, error) {
-		if r.Method != "GET" || r.URL.Path != "/sandbox" {
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
-		}
+		assert.False(t, r.Method != "GET" || r.URL.Path != "/sandbox", "unexpected request: %s %s", r.Method, r.URL)
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`[{"id":"second","name":"zeta","status":"running"},{"id":"stopped","name":"aaa","status":"stopped"},{"id":"first","name":"alpha","status":"running"}]`))}, nil
 	}))
 	herdrClient := herdr.New(runner)
@@ -79,15 +77,17 @@ func TestSSHSetupRefreshesStatus(t *testing.T) {
 	calls := 0
 	ui := testPanel(t, func(_ context.Context, name string, args ...string) error {
 		calls++
-		if name != "sbx" || strings.Join(args, " ") != "--app-name isolated setup ssh" {
-			t.Fatalf("interactive command = %s %v", name, args)
-		}
+		require.EqualValues(t, "sbx", name)
+		require.EqualValues(t, "--app-name isolated setup ssh", strings.Join(args, " "))
 		return nil
 	})
 	var out bytes.Buffer
-	if err := ui.Repair("ssh", &out); err != nil || calls != 1 || !strings.Contains(out.String(), "Refreshing status.") || !strings.Contains(out.String(), "Sandbox daemon") {
-		t.Fatalf("repair calls=%d err=%v output=%s", calls, err, out.String())
-	}
+
+	err := ui.Repair("ssh", &out)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, calls)
+	require.Contains(t, out.String(), "Refreshing status.")
+	require.Contains(t, out.String(), "Sandbox daemon")
 }
 
 func TestRepairCancellationRefreshesWithoutRetry(t *testing.T) {
@@ -96,8 +96,9 @@ func TestRepairCancellationRefreshesWithoutRetry(t *testing.T) {
 		defer cancel()
 		child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRepairCancellationRefreshesWithoutRetry$")
 		child.Env = append(os.Environ(), "HERDR_SBX_REPAIR_CANCEL_CHILD=1")
-		if output, err := child.CombinedOutput(); err != nil {
-			t.Fatalf("repair cancellation subprocess: %v\n%s", err, output)
+		{
+			output, err := child.CombinedOutput()
+			require.NoError(t, err, "repair cancellation subprocess: %v\n%s", err, output)
 		}
 		return
 	}
@@ -115,7 +116,12 @@ func TestRepairCancellationRefreshesWithoutRetry(t *testing.T) {
 		return ctx.Err()
 	})
 	var out bytes.Buffer
-	if err := ui.Repair("ssh", &out); err != nil || calls != 1 || !strings.Contains(out.String(), "canceled.") || !strings.Contains(out.String(), "Refreshing status.") || !strings.Contains(out.String(), "Sandbox daemon") {
-		t.Fatalf("cancellation calls=%d err=%v output=%s", calls, err, out.String())
+	{
+		err := ui.Repair("ssh", &out)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, calls)
+		require.Contains(t, out.String(), "canceled.")
+		require.Contains(t, out.String(), "Refreshing status.")
+		require.Contains(t, out.String(), "Sandbox daemon")
 	}
 }

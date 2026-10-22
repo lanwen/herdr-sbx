@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCommandHelpDoesNotRequireExternalTools(t *testing.T) {
@@ -33,12 +33,9 @@ func TestCommandHelpDoesNotRequireExternalTools(t *testing.T) {
 				args = append(args, strings.Fields(name)...)
 			}
 			args = append(args, "--help")
-			if err := command.Run(context.Background(), args); err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(output.String(), "USAGE:") || !strings.Contains(output.String(), "herdr-sbx") {
-				t.Fatalf("missing generated help: %s", output.String())
-			}
+			require.NoError(t, command.Run(context.Background(), args))
+			require.Contains(t, output.String(), "USAGE:")
+			require.Contains(t, output.String(), "herdr-sbx")
 		})
 	}
 }
@@ -57,9 +54,8 @@ func TestCommandRejectsInvalidArgumentsBeforeActions(t *testing.T) {
 			command := commands()
 			command.Writer, command.ErrWriter = io.Discard, io.Discard
 			err := command.Run(context.Background(), append([]string{"herdr-sbx"}, test.args...))
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("error = %v, want rejection containing %q", err, test.want)
-			}
+			require.Error(t, err)
+			require.Contains(t, err.Error(), test.want)
 		})
 	}
 }
@@ -71,9 +67,8 @@ func TestStatusCommandReadsWorkerWithoutExternalTools(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", stateRoot)
 	wantPath := filepath.Join(stateRoot, "herdr", "plugins", "lanwen.herdr-sbx", "state.json")
 	path, err := store.StatePath()
-	if err != nil || path != wantPath {
-		t.Fatalf("path=%s err=%v", path, err)
-	}
+	require.NoError(t, err)
+	require.False(t, path != wantPath)
 	run := func() (string, error) {
 		cmd := commands()
 		var output bytes.Buffer
@@ -82,31 +77,27 @@ func TestStatusCommandReadsWorkerWithoutExternalTools(t *testing.T) {
 		return output.String(), err
 	}
 	output, err := run()
-	if err != nil || !strings.Contains(output, "Daemon: STOPPED") {
-		t.Fatalf("output=%s err=%v", output, err)
-	}
-	if _, err := os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {
-		t.Fatalf("status created state: %v", err)
+	require.NoError(t, err)
+	require.Contains(t, output, "Daemon: STOPPED")
+	{
+		_, err := os.Stat(filepath.Dir(path))
+		require.True(t, os.IsNotExist(err), "status created state: %v", err)
 	}
 	unlock, err := store.LockWorker()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer unlock()
 	for _, state := range []string{"running", "reconnecting"} {
-		if err := store.RecordWorkerStatus(state, "connection detail", true); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, store.RecordWorkerStatus(state, "connection detail", true))
 		output, err := run()
-		if err != nil || !strings.Contains(output, "Daemon: "+strings.ToUpper(state)) || !strings.Contains(output, "connection detail") || strings.Contains(output, "not yet") {
-			t.Fatalf("output=%s err=%v", output, err)
-		}
+		require.NoError(t, err)
+		require.Contains(t, output, "Daemon: "+strings.ToUpper(state))
+		require.Contains(t, output, "connection detail")
+		require.NotContains(t, output, "not yet")
 	}
-	if err := os.WriteFile(path+".status", []byte("invalid JSON"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := run(); err == nil {
-		t.Fatal("unreadable status succeeded")
+	require.NoError(t, os.WriteFile(path+".status", []byte("invalid JSON"), 0600))
+	{
+		_, err := run()
+		require.Error(t, err, "unreadable status succeeded")
 	}
 }
 
@@ -117,38 +108,31 @@ func TestDaemonCommandsPersistStopAndHonorAutomaticStart(t *testing.T) {
 		t.Helper()
 		cmd := commands()
 		cmd.Writer, cmd.ErrWriter = io.Discard, io.Discard
-		if err := cmd.Run(context.Background(), append([]string{"herdr-sbx", "daemon"}, args...)); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, cmd.Run(context.Background(), append([]string{"herdr-sbx", "daemon"}, args...)))
 	}
 	run("stop")
 	run("start", "--automatic")
 	saved, err := store.ReadStatusStore()
-	if err != nil || saved.WorkerControl == nil || !saved.WorkerControl.Stopped {
-		t.Fatalf("automatic start changed saved Stop: %+v %v", saved.WorkerControl, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, saved.WorkerControl)
+	require.True(t, saved.WorkerControl.Stopped)
 	path, err := store.StatePath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(path + ".worker.log"); !os.IsNotExist(err) {
-		t.Fatalf("automatic start launched stopped daemon: %v", err)
+	require.NoError(t, err)
+	{
+		_, err := os.Stat(path + ".worker.log")
+		require.True(t, os.IsNotExist(err), "automatic start launched stopped daemon: %v", err)
 	}
 	// The running daemon lock makes repeated explicit starts successful no-ops.
-	if err := store.SetWorkerControl(false); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SetWorkerControl(false))
 	unlock, err := store.LockWorker()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer unlock()
 	run("start")
 	run("start")
 	saved, err = store.ReadStatusStore()
-	if err != nil || saved.WorkerControl == nil || saved.WorkerControl.Stopped {
-		t.Fatalf("explicit start not enabled: %+v %v", saved.WorkerControl, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, saved.WorkerControl)
+	require.False(t, saved.WorkerControl.Stopped)
 }
 
 func TestDaemonCommandsRejectInvalidArguments(t *testing.T) {
@@ -157,9 +141,9 @@ func TestDaemonCommandsRejectInvalidArguments(t *testing.T) {
 	for _, args := range [][]string{{}, {"unknown"}, {"start", "extra"}, {"stop", "extra"}, {"status", "extra"}} {
 		cmd := commands()
 		cmd.Writer, cmd.ErrWriter = io.Discard, io.Discard
-		if err := cmd.Run(context.Background(), append([]string{"herdr-sbx", "daemon"}, args...)); err == nil {
-			t.Fatalf("accepted daemon %v", args)
-		}
+
+		err := cmd.Run(context.Background(), append([]string{"herdr-sbx", "daemon"}, args...))
+		require.Error(t, err, "accepted daemon %v", args)
 	}
 }
 
@@ -167,27 +151,21 @@ func TestDaemonStopReportsUnconfirmedExit(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	t.Setenv("PATH", t.TempDir())
 	unlock, err := store.LockWorker()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer unlock()
-	if err := store.RecordWorkerStatus("running", "", false); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.RecordWorkerStatus("running", "", false))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	cmd := commands()
 	cmd.Writer, cmd.ErrWriter = io.Discard, io.Discard
 	err = cmd.Run(ctx, []string{"herdr-sbx", "daemon", "stop"})
-	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), store.CodeDaemonUnreachable) {
-		t.Fatalf("unconfirmed daemon stop = %v", err)
-	}
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Contains(t, err.Error(), store.CodeDaemonUnreachable)
 	saved, err := store.ReadStatusStore()
-	if err != nil || saved.WorkerControl == nil || !saved.WorkerControl.Stopped {
-		t.Fatalf("Stop was lost: %+v %v", saved.WorkerControl, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, saved.WorkerControl)
+	require.True(t, saved.WorkerControl.Stopped)
 	status, err := store.ReadWorkerStatus()
-	if err != nil || status.State != "cancelling" {
-		t.Fatalf("authoritative status=%+v error=%v", status, err)
-	}
+	require.NoError(t, err)
+	require.EqualValues(t, "cancelling", status.State)
 }

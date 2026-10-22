@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/lanwen/herdr-sbx/internal/guestplugins"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSandboxChoiceShowsRequestedValueWhileSavingAndRevertsOnFailure(t *testing.T) {
@@ -17,23 +18,21 @@ func TestSandboxChoiceShowsRequestedValueWhileSavingAndRevertsOnFailure(t *testi
 	m.plugins = []guestplugins.Choice{{ID: "test.plugin"}}
 	m.settings = store.GuestPluginDefaults{Plugins: map[string]store.GuestPluginDefault{"test.plugin": {Enabled: false}}}
 	command := m.changeOverride(false)
-	if command == nil {
-		t.Fatal("choice was not scheduled")
-	}
+	require.NotNil(t, command, "choice was not scheduled")
 	choice, loading := m.pluginChoiceDisplay("scope", "a", "test.plugin")
-	if choice != "On" || !loading {
-		t.Fatalf("choice=%q loading=%v", choice, loading)
-	}
-	if rendered := strings.Join(lineTexts(m.detailPluginLines(m.rows[0])), "\n"); !strings.Contains(rendered, "Loading") {
-		t.Fatal("effective column has no loader")
-	}
+	require.EqualValues(t, "On", choice)
+	require.True(t, loading)
+
+	rendered := strings.Join(lineTexts(m.detailPluginLines(m.rows[0])), "\n")
+	require.Contains(t, rendered, "Loading", "effective column has no loader")
+
 	change := m.pendingChoices["a"]
 	m.refreshing = true
 	m.Update(operationMsg{target: "a", code: store.CodePluginChoice, err: errors.New("write failed"), pluginChoice: &change})
 	choice, loading = m.pluginChoiceDisplay("scope", "a", "test.plugin")
-	if choice != "Inherit" || loading || len(m.errors) == 0 {
-		t.Fatalf("failed choice did not revert: %q loading=%v errors=%v", choice, loading, m.errors)
-	}
+	require.EqualValues(t, "Inherit", choice)
+	require.False(t, loading)
+	require.NotEqualValues(t, 0, len(m.errors))
 }
 
 func TestPluginDefaultShowsRequestedValueWhileSaving(t *testing.T) {
@@ -41,36 +40,28 @@ func TestPluginDefaultShowsRequestedValueWhileSaving(t *testing.T) {
 	m.page = "Plugins"
 	m.plugins = []guestplugins.Choice{{ID: "test.plugin"}}
 	command := m.toggleDefault()
-	if command == nil || !m.visiblePlugins()[0].Enabled {
-		t.Fatal("default did not update immediately")
-	}
-	if m.toggleDefault() != nil {
-		t.Fatal("pending default was not gated")
-	}
+	require.NotNil(t, command)
+	require.True(t, m.visiblePlugins()[0].Enabled)
+	require.Nil(t, m.toggleDefault(), "pending default was not gated")
 	message := command().(operationMsg)
-	if message.err != nil {
-		t.Fatal(message.err)
-	}
+	require.NoError(t, message.err)
 	m.refreshing = true
 	m.Update(message)
-	if !m.plugins[0].Enabled || !m.settings.Plugins["test.plugin"].Enabled {
-		t.Fatal("saved default did not remain visible")
-	}
+	require.True(t, m.plugins[0].Enabled)
+	require.True(t, m.settings.Plugins["test.plugin"].Enabled)
 }
 
 func TestPluginDefaultRevertsOnSaveFailure(t *testing.T) {
 	m := modelFixture(t)
 	m.page = "Plugins"
 	m.plugins = []guestplugins.Choice{{ID: "test.plugin"}}
-	if m.toggleDefault() == nil || !m.visiblePlugins()[0].Enabled {
-		t.Fatal("requested default was not visible")
-	}
+	require.NotNil(t, m.toggleDefault())
+	require.True(t, m.visiblePlugins()[0].Enabled)
 	change := m.pendingChoices["plugin:test.plugin"]
 	m.refreshing = true
 	m.Update(operationMsg{target: "plugin:test.plugin", code: store.CodePluginChoice, err: errors.New("write failed"), pluginChoice: &change})
-	if m.visiblePlugins()[0].Enabled || len(m.errors) == 0 {
-		t.Fatal("failed default did not revert and show an error")
-	}
+	require.False(t, m.visiblePlugins()[0].Enabled)
+	require.NotEqualValues(t, 0, len(m.errors))
 }
 
 func lineTexts(lines []line) []string {
@@ -92,9 +83,7 @@ func TestSandboxPluginChoiceCyclesIndependentOfDefault(t *testing.T) {
 			m.expanded = "a"
 			m.focus = "plugins"
 			m.plugins = []guestplugins.Choice{{ID: "test.plugin", Enabled: defaultOn}}
-			if err := store.SetGuestPluginDefault("test.plugin", defaultOn); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, store.SetGuestPluginDefault("test.plugin", defaultOn))
 			m.settings, _ = store.ReadGuestPluginDefaults()
 			for step := 0; step < 3; step++ {
 				var command tea.Cmd
@@ -106,26 +95,20 @@ func TestSandboxPluginChoiceCyclesIndependentOfDefault(t *testing.T) {
 				case 2:
 					command = m.hitAction(hit{action: "override", id: "test.plugin"})
 				}
-				if command == nil || m.dialog != "" {
-					t.Fatal("choice did not schedule directly")
-				}
-				if m.changeOverride(false) != nil {
-					t.Fatal("pending choice was not gated")
-				}
+				require.NotNil(t, command)
+				require.EqualValues(t, "", m.dialog)
+				require.Nil(t, m.changeOverride(false), "pending choice was not gated")
 				message := command().(operationMsg)
-				if message.err != nil {
-					t.Fatal(message.err)
-				}
+				require.NoError(t, message.err)
 				delete(m.pending, "a")
 				m.settings, _ = store.ReadGuestPluginDefaults()
 				value, exists := m.settings.Overrides[store.StatusKey("scope", "a")]["test.plugin"]
-				if exists != (step < 2) || (step < 2 && value != (step == 0)) {
-					t.Fatalf("step%d value=%v exists=%v", step, value, exists)
-				}
+				require.False(t, exists != (step < 2))
+				require.False(t, step < 2 && value != (step == 0))
 			}
-			if effective := m.settings.Effective("scope", "a").Plugins["test.plugin"].Enabled; effective != defaultOn {
-				t.Fatal("Inherit did not restore live default")
-			}
+
+			effective := m.settings.Effective("scope", "a").Plugins["test.plugin"].Enabled
+			require.Equal(t, defaultOn, effective, "Inherit did not restore live default")
 		})
 	}
 }
@@ -143,18 +126,16 @@ func TestPluginDefaultsToggleDirectly(t *testing.T) {
 		case 2:
 			command = m.hitAction(hit{action: "plugin", id: "test.plugin"})
 		}
-		if command == nil || m.dialog != "" {
-			t.Fatal("default toggle opened a dialog")
-		}
-		if message := command().(operationMsg); message.err != nil {
-			t.Fatal(message.err)
-		}
+		require.NotNil(t, command)
+		require.EqualValues(t, "", m.dialog)
+
+		message := command().(operationMsg)
+		require.NoError(t, message.err)
+
 		delete(m.pending, "plugin:test.plugin")
 		settings, _ := store.ReadGuestPluginDefaults()
 		m.plugins[0].Enabled = settings.Plugins["test.plugin"].Enabled
-		if m.plugins[0].Enabled != (step%2 == 0) {
-			t.Fatal("default toggle was not saved")
-		}
+		require.Equal(t, (step%2 == 0), m.plugins[0].Enabled, "default toggle was not saved")
 	}
 }
 
@@ -162,56 +143,48 @@ func TestUnsupportedPluginCannotBeEnabledButCanBeTurnedOff(t *testing.T) {
 	m := modelFixture(t)
 	m.page = "Plugins"
 	m.plugins = []guestplugins.Choice{{ID: "test.plugin", UnsupportedReason: "Linux binary is unavailable."}}
-	if m.toggleDefault() != nil || !strings.Contains(m.notice, "Linux binary is unavailable") {
-		t.Fatal("unsupported default was enabled or explanation missing")
-	}
+	require.Nil(t, m.toggleDefault())
+	require.Contains(t, m.notice, "Linux binary is unavailable")
 	m.plugins[0].Enabled = true
-	if m.toggleDefault() == nil {
-		t.Fatal("could not turn off unsupported default")
-	}
+	require.NotNil(t, m.toggleDefault(), "could not turn off unsupported default")
 
 	m = modelFixture(t)
 	m.expanded = "a"
 	m.focus = "plugins"
 	m.plugins = []guestplugins.Choice{{ID: "test.plugin", UnsupportedReason: "Linux binary is unavailable."}}
-	if m.changeOverride(false) != nil || !strings.Contains(m.notice, "Linux binary is unavailable") {
-		t.Fatal("unsupported sandbox override was enabled or explanation missing")
-	}
+	require.Nil(t, m.changeOverride(false))
+	require.Contains(t, m.notice, "Linux binary is unavailable")
 	m.settings.Overrides = map[string]map[string]bool{store.StatusKey("scope", "a"): {"test.plugin": true}}
-	if m.changeOverride(false) == nil {
-		t.Fatal("could not turn off unsupported sandbox override")
-	}
+	require.NotNil(t, m.changeOverride(false), "could not turn off unsupported sandbox override")
 }
 
 func TestPreviewControlsTargetSandboxAfterArrowSelection(t *testing.T) {
 	m := modelFixture(t)
 	m.plugins = []guestplugins.Choice{{ID: "test.plugin"}}
 	m.key(keyMsg(tea.KeyEnd, ""))
-	if m.selected != "b" || m.expanded != "b" || m.focus != "table" {
-		t.Fatal("preview did not follow selection")
-	}
+	require.EqualValues(t, "b", m.selected)
+	require.EqualValues(t, "b", m.expanded)
+	require.EqualValues(t, "table", m.focus)
 	command := m.hitAction(hit{action: "override", id: "test.plugin"})
-	if command == nil || m.selected != "b" || m.expanded != "b" || m.focus != "plugins" {
-		t.Fatal("plugin control targeted another preview")
-	}
+	require.NotNil(t, command)
+	require.EqualValues(t, "b", m.selected)
+	require.EqualValues(t, "b", m.expanded)
+	require.EqualValues(t, "plugins", m.focus)
 	result := command().(operationMsg)
-	if result.err != nil {
-		t.Fatal(result.err)
-	}
+	require.NoError(t, result.err)
 	m.refreshing = true
 	m.Update(result)
 	settings, _ := store.ReadGuestPluginDefaults()
-	if !settings.Overrides[store.StatusKey("scope", "b")]["test.plugin"] || len(settings.Overrides[store.StatusKey("scope", "a")]) != 0 {
-		t.Fatal("plugin choice saved against previous sandbox")
-	}
+	require.True(t, settings.Overrides[store.StatusKey("scope", "b")]["test.plugin"])
+	require.Len(t, settings.Overrides[store.StatusKey("scope", "a")], 0)
 	m.hitAction(hit{action: "action", id: "rename"})
-	if m.input == nil || m.input.target != "b" || m.expanded != "b" {
-		t.Fatal("rename control targeted wrong sandbox")
-	}
+	require.NotNil(t, m.input)
+	require.EqualValues(t, "b", m.input.target)
+	require.EqualValues(t, "b", m.expanded)
 	m.input = nil
 	m.mergeRows(m.rows[:1])
 	m.ensureSelection()
-	if m.selected != "a" || m.expanded != "a" || m.focus != "table" {
-		t.Fatal("deleted selected sandbox did not preview replacement")
-	}
+	require.EqualValues(t, "a", m.selected)
+	require.EqualValues(t, "a", m.expanded)
+	require.EqualValues(t, "table", m.focus)
 }

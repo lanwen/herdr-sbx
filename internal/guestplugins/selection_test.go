@@ -7,13 +7,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"testing"
 
 	"github.com/lanwen/herdr-sbx/internal/herdr"
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCatalogDiscoveryDoesNotOptIn(t *testing.T) {
@@ -21,30 +21,22 @@ func TestCatalogDiscoveryDoesNotOptIn(t *testing.T) {
 	client := herdr.New(process.Runner{Execute: func(_ context.Context, cmd process.Command) (string, error) {
 		return `{"result":{"plugins":[{"plugin_id":"old.plugin","enabled":false},{"plugin_id":"new.plugin","enabled":true},{"plugin_id":"lanwen.herdr-sbx","enabled":true}]}}`, nil
 	}})
-	if err := store.SetGuestPluginDefault("old.plugin", true); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SetGuestPluginDefault("old.plugin", true))
 	choices, err := Choices(context.Background(), client)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(choices) != 2 || choices[0].ID != "new.plugin" || choices[0].Enabled || !choices[1].Enabled {
-		t.Fatalf("choices: %+v", choices)
-	}
+	require.NoError(t, err)
+	require.Len(t, choices, 2)
+	require.EqualValues(t, "new.plugin", choices[0].ID)
+	require.False(t, choices[0].Enabled)
+	require.True(t, choices[1].Enabled)
 	settings, err := store.ReadGuestPluginDefaults()
-	if err != nil || len(settings.Plugins) != 1 {
-		t.Fatal("discovery wrote defaults", err)
-	}
-	if err := store.SetGuestPluginDefault("old.plugin", false); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.Len(t, settings.Plugins, 1)
+	require.NoError(t, store.SetGuestPluginDefault("old.plugin", false))
 	noCommands := herdr.New(process.Runner{Execute: func(context.Context, process.Command) (string, error) {
 		t.Fatal("opt-out contacted a guest or local Herdr")
 		return "", nil
 	}})
-	if err := ApplySandbox(context.Background(), noCommands, "unused", "fixture-scope", "fixture-sandbox", nil); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, ApplySandbox(context.Background(), noCommands, "unused", "fixture-scope", "fixture-sandbox", nil))
 }
 
 func TestUnsupportedReasonExplainsLocalPlugin(t *testing.T) {
@@ -62,32 +54,26 @@ func TestUnsupportedReasonExplainsLocalPlugin(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.content != "" {
-				if err := os.WriteFile(manifest, []byte(test.content), 0600); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, os.WriteFile(manifest, []byte(test.content), 0600))
 			}
-			if got := unsupportedReason(plugin); !strings.Contains(got, test.want) || (test.want == "" && got != "") {
-				t.Fatalf("reason %q, want %q", got, test.want)
-			}
+
+			got := unsupportedReason(plugin)
+			require.Contains(t, got, test.want)
+			require.False(t, test.want == "" && got != "")
 		})
 	}
 }
 
 func TestUnsupportedSelectionSkipsGuest(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
-	if err := store.SetGuestPluginDefault("example.plugin", true); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SetGuestPluginDefault("example.plugin", true))
 	client := herdr.New(process.Runner{Execute: func(_ context.Context, command process.Command) (string, error) {
-		if command.Name == "ssh" {
-			t.Fatal("unsupported plugin contacted guest")
-		}
+		require.NotEqual(t, "ssh", command.Name, "unsupported plugin contacted guest")
 		return `{"result":{"plugins":[{"plugin_id":"example.plugin","version":"1.0.0","plugin_root":"/missing/plugin"}]}}`, nil
 	}})
 	err := ApplySandbox(context.Background(), client, "unused", "fixture-scope", "fixture-sandbox", func() bool { return true })
-	if err == nil || !strings.Contains(err.Error(), "unsupported: Cannot read the local plugin manifest") {
-		t.Fatalf("missing support reason: %v", err)
-	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unsupported: Cannot read the local plugin manifest")
 }
 
 func TestChoicesExplainUnsupportedLocalPayload(t *testing.T) {
@@ -100,24 +86,16 @@ func TestChoicesExplainUnsupportedLocalPayload(t *testing.T) {
 		{"macOS binary", func(t *testing.T, path string) { writePayloadFixture(t, path, []byte{0xcf, 0xfa, 0xed, 0xfe}, 0700) }, "not a Linux binary"},
 		{"Windows binary", func(t *testing.T, path string) { writePayloadFixture(t, path, []byte("MZxx"), 0700) }, "not a Linux binary"},
 		{"symlink", func(t *testing.T, path string) {
-			if err := os.Symlink("missing", path); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.Symlink("missing", path))
 		}, ""},
 		{"special file", func(t *testing.T, path string) {
-			if err := syscall.Mkfifo(path, 0600); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, syscall.Mkfifo(path, 0600))
 		}, ""},
 		{"oversized", func(t *testing.T, path string) {
 			f, err := os.Create(path)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			defer f.Close()
-			if err := f.Truncate(129 << 20); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, f.Truncate(129<<20))
 		}, "exceeds 128 MiB"},
 		{"unreadable", func(t *testing.T, path string) { writePayloadFixture(t, path, []byte("private"), 0000) }, "permission denied"},
 		{"guest architecture unknown", func(t *testing.T, path string) {
@@ -136,25 +114,19 @@ func TestChoicesExplainUnsupportedLocalPayload(t *testing.T) {
 			writePayloadFixture(t, manifest, []byte("id='example.payload'\nversion='1.0.0'\n"), 0600)
 			test.file(t, filepath.Join(root, "tool"))
 			catalog, err := json.Marshal(map[string]any{"result": map[string]any{"plugins": []herdr.PluginInstall{{ID: "example.payload", Root: root, ManifestPath: manifest, Version: "1.0.0"}}}})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			client := herdr.New(process.Runner{Execute: func(context.Context, process.Command) (string, error) { return string(catalog), nil }})
 			choices, err := Choices(context.Background(), client)
-			if err != nil || len(choices) != 1 {
-				t.Fatalf("choices=%+v err=%v", choices, err)
-			}
+			require.NoError(t, err)
+			require.Len(t, choices, 1)
 			got := choices[0].UnsupportedReason
-			if test.want == "" && got != "" || !strings.Contains(got, test.want) {
-				t.Fatalf("reason %q, want %q", got, test.want)
-			}
+			require.False(t, test.want == "" && got != "")
+			require.Contains(t, got, test.want)
 		})
 	}
 }
 
 func writePayloadFixture(t *testing.T, path string, data []byte, mode os.FileMode) {
 	t.Helper()
-	if err := os.WriteFile(path, data, mode); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, data, mode))
 }

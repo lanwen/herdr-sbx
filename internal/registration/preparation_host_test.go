@@ -10,12 +10,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/lanwen/herdr-sbx/internal/process"
+	"github.com/stretchr/testify/require"
 )
 
 type releaseTestTransport func(*http.Request) (*http.Response, error)
@@ -36,23 +36,15 @@ func TestHostPreparation(t *testing.T) {
 					t.Skip("Linux shell fixture requires GNU ln on macOS")
 				}
 			}
-			if err := os.Symlink(ln, filepath.Join(tools, "ln")); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.Symlink(ln, filepath.Join(tools, "ln")))
 			fixture := newRegistrationFixture(t, "[]")
 			destination := filepath.Join(home, ".local/bin/herdr")
-			if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.MkdirAll(filepath.Dir(destination), 0700))
 			if scenario == "existing file" {
-				if err := os.WriteFile(destination, []byte("original"), 0700); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, os.WriteFile(destination, []byte("original"), 0700))
 			}
 			if scenario == "existing symlink" {
-				if err := os.Symlink("missing", destination); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, os.Symlink("missing", destination))
 			}
 			binary := []byte("#!/bin/sh\necho herdr 0.9.3\n")
 			if scenario == "broken executable" {
@@ -144,45 +136,29 @@ func TestHostPreparation(t *testing.T) {
 			fixture.service.releaseTransport = releaseTransport
 			_, err := fixture.service.prepareFromHost(ctx, "demo.sbx", func() bool { return current }, nil)
 			success := strings.HasPrefix(scenario, "success")
-			if (err == nil) != success {
-				t.Fatalf("error=%v", err)
-			}
-			if scenario == "host denied" && (!strings.Contains(err.Error(), "host Herdr download returned HTTP 403") || strings.Contains(err.Error(), "policy")) {
-				t.Fatalf("wrong guidance: %v", err)
-			}
+			require.Equal(t, success, (err == nil), "error=%v", err)
+			require.False(t, scenario == "host denied" && (!strings.Contains(err.Error(), "host Herdr download returned HTTP 403") || strings.Contains(err.Error(), "policy")), "wrong guidance: %v", err)
 			data, readErr := os.ReadFile(destination)
 			switch {
 			case success:
-				if readErr != nil || string(data) != string(binary) {
-					t.Fatalf("published %q: %v", data, readErr)
-				}
+				require.NoError(t, readErr)
+				require.False(t, string(data) != string(binary))
 			case scenario == "existing file":
-				if string(data) != "original" {
-					t.Fatal("existing binary changed")
-				}
+				require.Equal(t, "original", string(data), "existing binary changed")
 			case scenario == "existing symlink":
 				link, e := os.Readlink(destination)
-				if e != nil || link != "missing" {
-					t.Fatal("existing symlink changed")
-				}
+				require.NoError(t, e)
+				require.EqualValues(t, "missing", link)
 			default:
-				if !os.IsNotExist(readErr) {
-					t.Fatalf("failed install published %q", data)
-				}
+				require.True(t, os.IsNotExist(readErr), "failed install published %q", data)
 			}
 			stages, _ := filepath.Glob(filepath.Join(home, ".local/share/herdr-sbx-install.*"))
-			if len(stages) != 0 {
-				t.Fatalf("staging files leaked: %v", stages)
-			}
+			require.Len(t, stages, 0, "staging files leaked: %v", stages)
 			if scenario == "replacement" || scenario == "canceled" || scenario == "corrupt download" || scenario == "host denied" {
-				if transfers != 0 {
-					t.Fatal("transferred unverified/stale binary")
-				}
+				require.Equal(t, 0, transfers, "transferred unverified/stale binary")
 			}
 			if scenario == "bad asset" || scenario == "incompatible manifest" || scenario == "missing archived" {
-				if downloads != 0 {
-					t.Fatal("downloaded invalid release")
-				}
+				require.Equal(t, 0, downloads, "downloaded invalid release")
 			}
 		})
 	}
@@ -268,16 +244,11 @@ func TestMissingRemoteHerdrIsPreparedBeforeRegistration(t *testing.T) {
 	})
 
 	var output strings.Builder
-	if err := fixture.service.Reconcile(&output); err != nil {
-		t.Fatal(err)
-	}
-	if !installed || !added {
-		t.Fatalf("installed=%t added=%t output=%s", installed, added, output.String())
-	}
+	require.NoError(t, fixture.service.Reconcile(&output))
+	require.True(t, installed)
+	require.True(t, added)
 	wantOrder := []string{"probe-missing", "transfer", "verify", "add"}
-	if !reflect.DeepEqual(events, wantOrder) {
-		t.Fatalf("events=%v want %v", events, wantOrder)
-	}
+	require.Equal(t, wantOrder, events, "events=%v want %v", events, wantOrder)
 }
 
 func TestSSHTransferStreamsVerifiedBytes(t *testing.T) {
@@ -290,18 +261,14 @@ func TestSSHTransferStreamsVerifiedBytes(t *testing.T) {
 			t.Skip("Linux shell fixture requires GNU ln on macOS")
 		}
 	}
-	if err := os.Symlink(ln, filepath.Join(tools, "ln")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Symlink(ln, filepath.Join(tools, "ln")))
 	bin := t.TempDir()
 	fakeSSH := `#!/bin/sh
 set -eu
 [ "$1" = -o ] && [ "$2" = BatchMode=yes ] && [ "$3" = -o ] && [ "$4" = ConnectTimeout=8 ] && [ "$5" = fixture.sbx ]
 exec /bin/sh -c "$6"
 `
-	if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte(fakeSSH), 0700); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "ssh"), []byte(fakeSSH), 0700))
 	path := bin + ":" + tools + ":/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
 	t.Setenv("PATH", path)
 	t.Setenv("HOME", home)
@@ -309,16 +276,14 @@ exec /bin/sh -c "$6"
 	service := &Service{runner: process.Runner{}}
 	binary := "#!/bin/sh\necho herdr 0.9.3\n"
 	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(binary)))
-	if err := service.streamHerdr(context.Background(), "fixture.sbx", strings.NewReader("truncated"), digest, "0.9.3"); err == nil {
-		t.Fatal("accepted damaged stdin")
+	{
+		err := service.streamHerdr(context.Background(), "fixture.sbx", strings.NewReader("truncated"), digest, "0.9.3")
+		require.Error(t, err, "accepted damaged stdin")
 	}
-	if err := service.streamHerdr(context.Background(), "fixture.sbx", strings.NewReader(binary), digest, "0.9.3"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, service.streamHerdr(context.Background(), "fixture.sbx", strings.NewReader(binary), digest, "0.9.3"))
 	contents, err := os.ReadFile(destination)
-	if err != nil || string(contents) != binary {
-		t.Fatalf("transferred %q: %v", contents, err)
-	}
+	require.NoError(t, err)
+	require.False(t, string(contents) != binary)
 }
 
 func runInstallerCommand(ctx context.Context, shell string, input io.Reader, home, tools string) (string, error) {
@@ -332,13 +297,10 @@ func runInstallerCommand(ctx context.Context, shell string, input io.Reader, hom
 func TestRemoteInstallerShellPublishesOnlyAfterSuccess(t *testing.T) {
 	command := remoteInstallCommand()
 	for _, required := range []string{"set -eu", "curl --fail", "HERDR_INSTALL_DIR=\"$stage\"", "[ ! -e \"$HOME/.local/bin/herdr\" ]", "ln \"$stage/herdr\" \"$HOME/.local/bin/herdr\""} {
-		if !strings.Contains(command, required) {
-			t.Fatalf("remote installer missing %q", required)
-		}
+		require.Contains(t, command, required, "remote installer missing %q", required)
 	}
-	if strings.Contains(command, "ln -s") || strings.Contains(command, "curl --insecure") {
-		t.Fatalf("unsafe remote installer: %s", command)
-	}
+	require.NotContains(t, command, "ln -s")
+	require.NotContains(t, command, "curl --insecure")
 }
 
 // Execute replacement scripts against an isolated HOME, including a concurrent
@@ -348,30 +310,20 @@ func TestHostTransferReplacement(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			home := t.TempDir()
 			destination := filepath.Join(home, ".local/bin/herdr")
-			if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.MkdirAll(filepath.Dir(destination), 0700))
 			original := "#!/bin/sh\necho herdr 0.9.4\n"
 			if scenario == "changed" {
 				original = "#!/bin/sh\necho herdr 0.9.5\n"
 			}
-			if err := os.WriteFile(destination, []byte(original), 0700); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.WriteFile(destination, []byte(original), 0700))
 			if scenario == "symlink" {
-				if err := os.Rename(destination, destination+"-real"); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Symlink(destination+"-real", destination); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, os.Rename(destination, destination+"-real"))
+				require.NoError(t, os.Symlink(destination+"-real", destination))
 			}
 			tools := filepath.Dir(destination)
 			if scenario == "other path" {
 				tools = t.TempDir()
-				if err := os.WriteFile(filepath.Join(tools, "herdr"), []byte(original), 0700); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, os.WriteFile(filepath.Join(tools, "herdr"), []byte(original), 0700))
 			}
 			runner := process.Runner{Execute: func(ctx context.Context, command process.Command) (string, error) {
 				return runInstallerCommand(ctx, command.Args[len(command.Args)-1], command.Stdin, home, tools)
@@ -381,13 +333,10 @@ func TestHostTransferReplacement(t *testing.T) {
 			checksum := fmt.Sprintf("%x", sha256.Sum256([]byte(binary)))
 			err := service.streamHerdrReplacing(context.Background(), "fixture.sbx", strings.NewReader(binary), checksum, "0.9.3", "0.9.4")
 			contents, readErr := os.ReadFile(destination)
-			if readErr != nil {
-				t.Fatal(readErr)
-			}
+			require.NoError(t, readErr)
 			if scenario == "replace" {
-				if err != nil || string(contents) != binary {
-					t.Fatalf("replacement: %q %v", contents, err)
-				}
+				require.NoError(t, err)
+				require.False(t, string(contents) != binary)
 			} else if err == nil || string(contents) != original {
 				t.Fatalf("changed protected executable: %q %v", contents, err)
 			}

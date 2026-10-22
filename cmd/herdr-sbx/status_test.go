@@ -6,29 +6,24 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestStatusReportsUnderlyingFailureWithoutResyncOutcomeAsError(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
-	if err := store.NotePreparationFailure("sandbox", "guest build failed", time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.RecordError(store.CodePreparation, "sandbox", "Re-sync did not finish"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.RecordError(store.CodeRegistration, "sandbox", "guest build failed"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.NotePreparationFailure("sandbox", "guest build failed", time.Minute))
+	require.NoError(t, store.RecordError(store.CodePreparation, "sandbox", "Re-sync did not finish"))
+	require.NoError(t, store.RecordError(store.CodeRegistration, "sandbox", "guest build failed"))
 	report, err := readStatusReport()
-	if err != nil || len(report.Errors) != 1 || report.Errors[0].Code != store.CodeRegistration || len(report.Warnings) != 0 {
-		t.Fatalf("re-sync outcome replaced actual failure: %+v, %v", report, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, report.Errors, 1)
+	require.False(t, report.Errors[0].Code != store.CodeRegistration)
+	require.Len(t, report.Warnings, 0)
 }
 
 func TestJSONStatusIsReadOnlyWithNoToolsOrState(t *testing.T) {
@@ -38,86 +33,62 @@ func TestJSONStatusIsReadOnlyWithNoToolsOrState(t *testing.T) {
 	cmd := commands()
 	var out bytes.Buffer
 	cmd.Writer = &out
-	if err := cmd.Run(context.Background(), []string{"herdr-sbx", "status", "--json"}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, cmd.Run(context.Background(), []string{"herdr-sbx", "status", "--json"}))
 	var report statusReport
-	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
-		t.Fatal(err)
-	}
-	if report.SchemaVersion != 4 || report.Daemon.State != "stopped" || report.Sandboxes == nil || report.Errors == nil || report.Warnings == nil {
-		t.Fatalf("invalid report: %+v", report)
-	}
-	if _, err := os.Stat(root); !os.IsNotExist(err) {
-		t.Fatalf("status created state: %v", err)
-	}
-	if strings.Contains(out.String(), "\x1b") {
-		t.Fatal("JSON contains styling")
-	}
+	require.NoError(t, json.Unmarshal(out.Bytes(), &report))
+	require.EqualValues(t, 4, report.SchemaVersion)
+	require.EqualValues(t, "stopped", report.Daemon.State)
+	require.NotNil(t, report.Sandboxes)
+	require.NotNil(t, report.Errors)
+	require.NotNil(t, report.Warnings)
+
+	_, err := os.Stat(root)
+	require.True(t, os.IsNotExist(err), "status created state: %v", err)
+
+	require.NotContains(t, out.String(), "\x1b", "JSON contains styling")
 }
 
 func TestStatusReportsSavedChoicesLabelsAndErrors(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	t.Setenv("PATH", t.TempDir())
-	if err := store.ObserveSandbox("scope", sbx.Sandbox{ID: "id", Name: "demo", Status: "stopped"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SetEnabled("scope", "id", store.Disabled); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.UpdateStatusStore(func(saved *store.StatusStore) {
+	require.NoError(t, store.ObserveSandbox("scope", sbx.Sandbox{ID: "id", Name: "demo", Status: "stopped"}))
+	require.NoError(t, store.SetEnabled("scope", "id", store.Disabled))
+	require.NoError(t, store.UpdateStatusStore(func(saved *store.StatusStore) {
 		row := saved.Sandboxes[store.StatusKey("scope", "id")]
 		native := false
 		row.Label, row.ProfileID, row.EntryPresent, row.NativeEnabled = "My workspace", "machine", true, &native
 		saved.Sandboxes[store.StatusKey("scope", "id")] = row
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.RecordError(store.CodeRename, "scope/id", "Rename failed"); err != nil {
-		t.Fatal(err)
-	}
+	}))
+	require.NoError(t, store.RecordError(store.CodeRename, "scope/id", "Rename failed"))
 	report, err := readStatusReport()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(report.Sandboxes) != 1 || report.Sandboxes[0].Enabled != store.Disabled || report.Sandboxes[0].Label != "My workspace" {
-		t.Fatalf("rows: %+v", report.Sandboxes)
-	}
-	if len(report.Errors) != 1 || report.Errors[0].Code != store.CodeRename {
-		t.Fatalf("errors: %+v", report.Errors)
-	}
+	require.NoError(t, err)
+	require.Len(t, report.Sandboxes, 1)
+	require.False(t, report.Sandboxes[0].Enabled != store.Disabled)
+	require.EqualValues(t, "My workspace", report.Sandboxes[0].Label)
+	require.Len(t, report.Errors, 1)
+	require.False(t, report.Errors[0].Code != store.CodeRename)
 	var out bytes.Buffer
-	if err := printStatus(&out, false); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "My workspace") || !strings.Contains(out.String(), store.CodeRename) || strings.Contains(out.String(), "\x1b") {
-		t.Fatalf("output: %s", out.String())
-	}
+	require.NoError(t, printStatus(&out, false))
+	require.Contains(t, out.String(), "My workspace")
+	require.Contains(t, out.String(), store.CodeRename)
+	require.NotContains(t, out.String(), "\x1b")
 }
 
 func TestStatusPreservesMissingEntryIntentAndUnknownNativeState(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
-	if err := store.ObserveSandbox("scope", sbx.Sandbox{ID: "id", Name: "demo", Status: "stopped"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SetEnabled("scope", "id", store.Disabled); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.ObserveSandbox("scope", sbx.Sandbox{ID: "id", Name: "demo", Status: "stopped"}))
+	require.NoError(t, store.SetEnabled("scope", "id", store.Disabled))
 	report, err := readStatusReport()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	row := report.Sandboxes[0]
-	if row.EntryPresent || row.Label != "" || row.NativeEnabled != nil || row.Enabled != store.Disabled {
-		t.Fatalf("unconfirmed state: %+v", row)
-	}
+	require.False(t, row.EntryPresent)
+	require.EqualValues(t, "", row.Label)
+	require.Nil(t, row.NativeEnabled)
+	require.False(t, row.Enabled != store.Disabled)
 	var out bytes.Buffer
-	if err := printStatus(&out, false); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "unknown") || !strings.Contains(out.String(), "Disabled") {
-		t.Fatalf("output: %s", out.String())
-	}
+	require.NoError(t, printStatus(&out, false))
+	require.Contains(t, out.String(), "unknown")
+	require.Contains(t, out.String(), "Disabled")
 }
 
 func TestDaemonStatusIsReadOnlyAndExactRootSubset(t *testing.T) {
@@ -129,164 +100,116 @@ func TestDaemonStatusIsReadOnlyAndExactRootSubset(t *testing.T) {
 		cmd := commands()
 		var out bytes.Buffer
 		cmd.Writer = &out
-		if err := cmd.Run(context.Background(), append([]string{"herdr-sbx"}, args...)); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, cmd.Run(context.Background(), append([]string{"herdr-sbx"}, args...)))
 		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(out.Bytes(), &fields); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, json.Unmarshal(out.Bytes(), &fields))
 		return fields
 	}
 	daemon := run("daemon", "status", "--json")
-	if len(daemon) != 6 {
-		t.Fatalf("unexpected daemon fields: %v", daemon)
-	}
-	if _, err := os.Stat(root); !os.IsNotExist(err) {
-		t.Fatalf("daemon status created state: %v", err)
-	}
-	if err := store.SetWorkerControl(true); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.RecordError(store.CodeDaemonStop, "daemon", "Stop failed"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.RecordError(store.CodeRename, "scope/id", "Rename failed"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.RecordError(store.CodeOwnershipConflict, "scope/id", "Manual machine remains usable"); err != nil {
-		t.Fatal(err)
-	}
+	require.Len(t, daemon, 6, "unexpected daemon fields: %v", daemon)
+
+	_, err := os.Stat(root)
+	require.True(t, os.IsNotExist(err), "daemon status created state: %v", err)
+
+	require.NoError(t, store.SetWorkerControl(true))
+	require.NoError(t, store.RecordError(store.CodeDaemonStop, "daemon", "Stop failed"))
+	require.NoError(t, store.RecordError(store.CodeRename, "scope/id", "Rename failed"))
+	require.NoError(t, store.RecordError(store.CodeOwnershipConflict, "scope/id", "Manual machine remains usable"))
 	daemon = run("daemon", "status", "--json")
 	full := run("status", "--json")
 	for key, value := range daemon {
 		if key == "read_at" || key == "errors" || key == "warnings" {
 			continue
 		}
-		if !bytes.Equal(value, full[key]) {
-			t.Fatalf("%s differs: daemon=%s root=%s", key, value, full[key])
-		}
+		require.True(t, bytes.Equal(value, full[key]), "%s differs: daemon=%s root=%s", key, value, full[key])
 	}
 	var daemonErrors, fullErrors []store.ErrorRecord
-	if err := json.Unmarshal(daemon["errors"], &daemonErrors); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(full["errors"], &fullErrors); err != nil {
-		t.Fatal(err)
-	}
-	if len(daemonErrors) != 1 || daemonErrors[0].Code != store.CodeDaemonStop || len(fullErrors) != 2 {
-		t.Fatalf("daemon=%+v root=%+v", daemonErrors, fullErrors)
-	}
+	require.NoError(t, json.Unmarshal(daemon["errors"], &daemonErrors))
+	require.NoError(t, json.Unmarshal(full["errors"], &fullErrors))
+	require.Len(t, daemonErrors, 1)
+	require.False(t, daemonErrors[0].Code != store.CodeDaemonStop)
+	require.Len(t, fullErrors, 2)
 	var daemonWarnings, fullWarnings []store.ErrorRecord
-	if err := json.Unmarshal(daemon["warnings"], &daemonWarnings); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(full["warnings"], &fullWarnings); err != nil {
-		t.Fatal(err)
-	}
-	if daemonWarnings == nil || len(daemonWarnings) != 0 || len(fullWarnings) != 1 || fullWarnings[0].Code != store.CodeOwnershipConflict {
-		t.Fatalf("daemon warnings=%+v root warnings=%+v", daemonWarnings, fullWarnings)
-	}
+	require.NoError(t, json.Unmarshal(daemon["warnings"], &daemonWarnings))
+	require.NoError(t, json.Unmarshal(full["warnings"], &fullWarnings))
+	require.NotNil(t, daemonWarnings)
+	require.Len(t, daemonWarnings, 0)
+	require.Len(t, fullWarnings, 1)
+	require.False(t, fullWarnings[0].Code != store.CodeOwnershipConflict)
 	// Unrelated plugin metadata cannot prevent observing or diagnosing the daemon.
-	if err := os.WriteFile(filepath.Join(root, "guest-plugins.json"), []byte("invalid JSON"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "guest-plugins.json"), []byte("invalid JSON"), 0600))
 	run("daemon", "status", "--json")
 	var plain bytes.Buffer
-	if err := printDaemonStatus(&plain, false); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(plain.String(), "Daemon: STOPPED") || strings.Contains(plain.String(), "Cached sandbox") || strings.Contains(plain.String(), "\x1b") {
-		t.Fatalf("daemon output: %s", plain.String())
-	}
+	require.NoError(t, printDaemonStatus(&plain, false))
+	require.Contains(t, plain.String(), "Daemon: STOPPED")
+	require.NotContains(t, plain.String(), "Cached sandbox")
+	require.NotContains(t, plain.String(), "\x1b")
 }
 
 func TestStatusSeparatesWarningsWithoutChangingSavedIssues(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	for _, code := range []string{store.CodeOwnershipConflict, store.CodeGuestPluginSync, "X9999"} {
-		if err := store.RecordError(code, "scope/id", "Needs attention"); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, store.RecordError(code, "scope/id", "Needs attention"))
 	}
 	report, err := readStatusReport()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.SchemaVersion != 4 || len(report.Errors) != 2 || len(report.Warnings) != 1 || report.Warnings[0].Code != store.CodeOwnershipConflict {
-		t.Fatalf("incorrect severity split: %+v", report)
-	}
+	require.NoError(t, err)
+	require.EqualValues(t, 4, report.SchemaVersion)
+	require.Len(t, report.Errors, 2)
+	require.Len(t, report.Warnings, 1)
+	require.False(t, report.Warnings[0].Code != store.CodeOwnershipConflict)
 	var jsonOut bytes.Buffer
-	if err := printStatus(&jsonOut, true); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, printStatus(&jsonOut, true))
 	var decoded statusReport
-	if err := json.Unmarshal(jsonOut.Bytes(), &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if len(decoded.Warnings) != 1 || len(decoded.Errors) != 2 {
-		t.Fatalf("JSON severity split: %s", jsonOut.String())
-	}
+	require.NoError(t, json.Unmarshal(jsonOut.Bytes(), &decoded))
+	require.Len(t, decoded.Warnings, 1)
+	require.Len(t, decoded.Errors, 2)
 	var out bytes.Buffer
 	printStatusIssues(&out, report.daemonStatusReport, func(value, tone string) string { return tone + ":" + value })
 	for _, want := range []string{"Errors: 2 · Warnings: 1", "33:R0005", "31:P0002", "31:X9999"} {
-		if !strings.Contains(out.String(), want) {
-			t.Fatalf("missing %q in output: %s", want, out.String())
-		}
+		require.Contains(t, out.String(), want, "missing %q in output: %s", want, out.String())
 	}
 	saved, err := store.ReadStatusStore()
-	if err != nil || len(saved.Errors) != 3 {
-		t.Fatalf("saved issue identity changed: %+v, %v", saved.Errors, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, saved.Errors, 3)
 }
 
 func TestStatusKeepsEnabledIntentSeparateFromNativeHoldAndDoesNotWrite(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", root)
 	t.Setenv("PATH", t.TempDir())
-	if err := store.SetEnabled("scope", "id", store.Enabled); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SetWorkerControl(true); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SetEnabled("scope", "id", store.Enabled))
+	require.NoError(t, store.SetWorkerControl(true))
 	observed := time.Now().Add(-time.Hour).UTC()
-	if err := store.UpdateStatusStore(func(saved *store.StatusStore) {
+	require.NoError(t, store.UpdateStatusStore(func(saved *store.StatusStore) {
 		native := false
 		saved.Sandboxes[store.StatusKey("scope", "id")] = store.SandboxStatus{
 			Scope: "scope", SandboxID: "id", Name: "claude", Label: "saved label", ProfileID: "stable-machine",
 			EntryPresent: true, NativeEnabled: &native, Observed: "stopped", ObservedAt: observed,
 			Connection: "Waiting for start", Stale: true,
 		}
-	}); err != nil {
-		t.Fatal(err)
-	}
+	}))
 	path, err := store.StatePath()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	before, err := os.ReadFile(path + ".status")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	report, err := readStatusReport()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	row := report.Sandboxes[0]
-	if report.Management.Enabled || row.Enabled != store.Enabled || !row.EntryPresent || row.NativeEnabled == nil || *row.NativeEnabled || row.ProfileID != "stable-machine" || !row.ObservedAt.Equal(observed) {
-		t.Fatalf("lost distinct saved and observed state: %+v %+v", report.Management, row)
-	}
+	require.False(t, report.Management.Enabled)
+	require.False(t, row.Enabled != store.Enabled)
+	require.True(t, row.EntryPresent)
+	require.NotNil(t, row.NativeEnabled)
+	require.False(t, *row.NativeEnabled)
+	require.EqualValues(t, "stable-machine", row.ProfileID)
+	require.True(t, row.ObservedAt.Equal(observed))
 	var out bytes.Buffer
-	if err := printStatus(&out, false); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "Management: OFF") || !strings.Contains(out.String(), "saved label (last known)") || !strings.Contains(out.String(), "(stale)") {
-		t.Fatalf("output: %s", out.String())
-	}
+	require.NoError(t, printStatus(&out, false))
+	require.Contains(t, out.String(), "Management: OFF")
+	require.Contains(t, out.String(), "saved label (last known)")
+	require.Contains(t, out.String(), "(stale)")
 	after, err := os.ReadFile(path + ".status")
-	if err != nil || !bytes.Equal(before, after) {
-		t.Fatalf("status mutated journal: %v", err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, after, before)
 }
 
 func TestDaemonSummaryShowsSavedChoiceDuringCancellation(t *testing.T) {
@@ -294,8 +217,6 @@ func TestDaemonSummaryShowsSavedChoiceDuringCancellation(t *testing.T) {
 	var out bytes.Buffer
 	printDaemonSummary(&out, report, func(value, tone string) string { return tone + ":" + value })
 	for _, want := range []string{"Management: 2:OFF", "Daemon: 2:Cancelling"} {
-		if !strings.Contains(out.String(), want) {
-			t.Fatalf("missing %q: %s", want, out.String())
-		}
+		require.Contains(t, out.String(), want, "missing %q: %s", want, out.String())
 	}
 }

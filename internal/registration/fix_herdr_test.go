@@ -11,6 +11,7 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFixGuestHerdrValidatesOwnershipAndIdentityBeforeSSH(t *testing.T) {
@@ -19,9 +20,7 @@ func TestFixGuestHerdrValidatesOwnershipAndIdentityBeforeSSH(t *testing.T) {
 			f, scope, sshCalls, _ := newFixHerdrFixture(t, false)
 			socket := "/tmp/fix-herdr.sock"
 			state, err := store.LoadState()
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			switch scenario {
 			case "scope changed":
 				socket = "/tmp/other.sock"
@@ -30,9 +29,7 @@ func TestFixGuestHerdrValidatesOwnershipAndIdentityBeforeSSH(t *testing.T) {
 			case "stopped":
 				f.inventory = `[{"uuid":"sandbox-1","name":"demo","status":"stopped"}]`
 			case "unwatched":
-				if err := store.SetEnabled(scope, "sandbox-1", store.Disabled); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, store.SetEnabled(scope, "sandbox-1", store.Disabled))
 			case "pending":
 				state.Scopes[scope][0].Pending = true
 			case "target changed":
@@ -40,19 +37,16 @@ func TestFixGuestHerdrValidatesOwnershipAndIdentityBeforeSSH(t *testing.T) {
 			case "catalog changed":
 				state.Scopes[scope][0].ProfileID = "other"
 			}
-			if err := store.SaveState(state); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, store.SaveState(state))
 			expected := "0.9.3"
 			if scenario == "host changed" {
 				expected = "0.9.2"
 			}
-			if err := f.service.FixGuestHerdr(context.Background(), io.Discard, scope, socket, "sandbox-1", "demo", expected); err == nil {
-				t.Fatal("unsafe fix accepted")
+			{
+				err := f.service.FixGuestHerdr(context.Background(), io.Discard, scope, socket, "sandbox-1", "demo", expected)
+				require.Error(t, err, "unsafe fix accepted")
 			}
-			if *sshCalls != 0 {
-				t.Fatalf("SSH before guard: %d", *sshCalls)
-			}
+			require.Equal(t, 0, *sshCalls, "SSH before guard: %d", *sshCalls)
 		})
 	}
 }
@@ -62,32 +56,23 @@ func TestFixGuestHerdrHandoffAndReconcile(t *testing.T) {
 		t.Run(fmt.Sprint("handoff failure=", fails), func(t *testing.T) {
 			f, scope, _, handoffs := newFixHerdrFixture(t, fails)
 			key := store.StatusKey(scope, "sandbox-1")
-			if err := store.SetRegistrationError(store.CodeHerdrCompatibility, key, "existing incompatibility"); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, store.SetRegistrationError(store.CodeHerdrCompatibility, key, "existing incompatibility"))
 			err := f.service.FixGuestHerdr(context.Background(), io.Discard, scope, "/tmp/fix-herdr.sock", "sandbox-1", "demo", "herdr 0.9.3")
-			if (err != nil) != fails {
-				t.Fatalf("error=%v", err)
-			}
-			if *handoffs != 1 {
-				t.Fatalf("handoffs=%d", *handoffs)
-			}
+			require.Equal(t, fails, (err != nil), "error=%v", err)
+			require.Equal(t, 1, *handoffs, "handoffs=%d", *handoffs)
 			status, readErr := store.ReadStatusStore()
-			if readErr != nil {
-				t.Fatal(readErr)
-			}
+			require.NoError(t, readErr)
 			seen := status.Sandboxes[key].GuestServer
 			if fails {
-				if len(status.Errors) != 1 || seen != nil && seen.Current {
-					t.Fatalf("failure claimed recovery: %+v", status)
-				}
+				require.Len(t, status.Errors, 1)
+				require.False(t, seen != nil && seen.Current)
 			} else if len(status.Errors) != 0 || seen == nil || seen.Version != "0.9.3" || !seen.Current || status.Sandboxes[key].Connection != "ready" {
 				t.Fatalf("recovery was not observed: %+v", status)
 			}
 			state, err := store.LoadState()
-			if err != nil || state.Scopes[scope][0].ProfileID != "machine-1" || !state.Scopes[scope][0].ProjectWorkspaceDone {
-				t.Fatalf("ownership/workspace altered: %+v %v", state, err)
-			}
+			require.NoError(t, err)
+			require.EqualValues(t, "machine-1", state.Scopes[scope][0].ProfileID)
+			require.True(t, state.Scopes[scope][0].ProjectWorkspaceDone)
 		})
 	}
 }
@@ -107,9 +92,8 @@ func TestFixGuestHerdrRejectsReplacementBeforeHandoff(t *testing.T) {
 			}
 			f.rebuildClients()
 			err := f.service.FixGuestHerdr(context.Background(), io.Discard, scope, "/tmp/fix-herdr.sock", "sandbox-1", "demo", "0.9.3")
-			if !errors.Is(err, context.Canceled) || *handoffs != 0 {
-				t.Fatalf("replacement received handoff: handoffs=%d error=%v", *handoffs, err)
-			}
+			require.ErrorIs(t, err, context.Canceled)
+			require.EqualValues(t, 0, *handoffs)
 		})
 	}
 }
@@ -126,24 +110,17 @@ func TestFixGuestHerdrRejectsReplacementDuringHandoffVerification(t *testing.T) 
 	}
 	f.rebuildClients()
 	err := f.service.FixGuestHerdr(context.Background(), io.Discard, scope, "/tmp/fix-herdr.sock", "sandbox-1", "demo", "0.9.3")
-	if !errors.Is(err, context.Canceled) || *handoffs != 1 {
-		t.Fatalf("replacement reported recovery: handoffs=%d error=%v", *handoffs, err)
-	}
+	require.ErrorIs(t, err, context.Canceled)
+	require.EqualValues(t, 1, *handoffs)
 }
 
 func newFixHerdrFixture(t *testing.T, failHandoff bool) (*registrationFixture, string, *int, *int) {
 	t.Helper()
 	f := newRegistrationFixture(t, `[{"uuid":"sandbox-1","name":"demo","status":"running"}]`)
 	scope := store.ScopeID("/tmp/fix-herdr.sock")
-	if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {{SandboxID: "sandbox-1", Label: "custom label", Target: "demo.sbx", ProfileID: "machine-1", ProjectWorkspaceDone: true}}}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SetEnabled(scope, "sandbox-1", store.Enabled); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.ObserveSandbox(scope, sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {{SandboxID: "sandbox-1", Label: "custom label", Target: "demo.sbx", ProfileID: "machine-1", ProjectWorkspaceDone: true}}}}))
+	require.NoError(t, store.SetEnabled(scope, "sandbox-1", store.Enabled))
+	require.NoError(t, store.ObserveSandbox(scope, sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"}))
 	sshCalls, handoffs := 0, 0
 	f.runner.Execute = func(_ context.Context, c process.Command) (string, error) {
 		args := strings.Join(c.Args, " ")

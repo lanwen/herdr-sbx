@@ -10,59 +10,51 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/herdr"
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSameNameReplacementNeverAuthorizesEntryDeletion(t *testing.T) {
 	f, scope, machines, calls := newManagementFixture(t, "running")
 	*machines = []herdr.Machine{{ID: "machine", Label: "Desk", Target: "demo.sbx", Session: "default", Enabled: boolPointer(false)}}
 	item := store.Tracked{SandboxID: "old", ProfileID: "machine", Target: "demo.sbx", Label: "Desk"}
-	if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {item}}}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {item}}}))
 	f.transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"uuid":"replacement","name":"demo","status":"running"}`))}, nil
 	})
 	f.rebuildClients()
 	result, err := f.service.RemoveDeletedSandbox(context.Background(), scope, "/tmp/test-sandboxd.sock", "old")
-	if err == nil || !result.Retry || !strings.Contains(err.Error(), "another identity") {
-		t.Fatalf("deletion=%+v err=%v", result, err)
-	}
+	require.Error(t, err)
+	require.True(t, result.Retry)
+	require.Contains(t, err.Error(), "another identity")
 	for _, call := range *calls {
-		if strings.Contains(call, "machine remove") {
-			t.Fatalf("removed reused target: %s", call)
-		}
+		require.NotContains(t, call, "machine remove", "removed reused target: %s", call)
 	}
 	state, _ := store.LoadState()
-	if len(state.Scopes[scope]) != 1 || state.Scopes[scope][0].ProfileID != "machine" {
-		t.Fatal("association lost")
-	}
+	require.Len(t, state.Scopes[scope], 1)
+	require.EqualValues(t, "machine", state.Scopes[scope][0].ProfileID)
 }
 
 func TestConfirmedDeletionCleansDisabledEntryOnlyWhileManagementOn(t *testing.T) {
 	f, scope, machines, calls := newManagementFixture(t, "running")
 	*machines = []herdr.Machine{{ID: "machine", Label: "Desk", Target: "demo.sbx", Session: "default", Enabled: boolPointer(false)}}
-	if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {{SandboxID: "one", ProfileID: "machine", Target: "demo.sbx", Label: "Desk"}}}}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {{SandboxID: "one", ProfileID: "machine", Target: "demo.sbx", Label: "Desk"}}}}))
 	_ = store.SetEnabled(scope, "one", store.Disabled)
 	f.transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 404, Body: io.NopCloser(strings.NewReader(`{"code":"sandbox_not_found"}`))}, nil
 	})
 	f.rebuildClients()
 	_ = store.SetWorkerControl(true)
-	if _, err := f.service.RemoveDeletedSandbox(context.Background(), scope, "/tmp/test-sandboxd.sock", "one"); err == nil {
-		t.Fatal("OFF allowed cleanup")
+	{
+		_, err := f.service.RemoveDeletedSandbox(context.Background(), scope, "/tmp/test-sandboxd.sock", "one")
+		require.Error(t, err, "OFF allowed cleanup")
 	}
-	if len(*calls) != 0 {
-		t.Fatalf("OFF issued cleanup commands: %v", *calls)
-	}
+	require.Len(t, *calls, 0, "OFF issued cleanup commands: %v", *calls)
 	_ = store.SetWorkerControl(false)
-	if _, err := f.service.RemoveDeletedSandbox(context.Background(), scope, "/tmp/test-sandboxd.sock", "one"); err != nil {
-		t.Fatal(err)
+	{
+		_, err := f.service.RemoveDeletedSandbox(context.Background(), scope, "/tmp/test-sandboxd.sock", "one")
+		require.NoError(t, err)
 	}
-	if len(*machines) != 0 {
-		t.Fatal("confirmed deleted Disabled entry retained")
-	}
+	require.Len(t, *machines, 0, "confirmed deleted Disabled entry retained")
 }
 
 func TestResumeRecreatesExternallyRemovedEnabledEntry(t *testing.T) {
@@ -70,9 +62,7 @@ func TestResumeRecreatesExternallyRemovedEnabledEntry(t *testing.T) {
 		t.Run(runtime, func(t *testing.T) {
 			f, scope, machines, calls := newManagementFixture(t, runtime)
 			item := store.Tracked{SandboxID: "one", ProfileID: "removed-machine", Target: "demo.sbx", Label: "Old", ProjectWorkspaceDone: true}
-			if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {item}}}); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {item}}}))
 			_ = store.SetEnabled(scope, "one", store.Enabled)
 			execute := f.runner.Execute
 			f.runner.Execute = func(ctx context.Context, c process.Command) (string, error) {
@@ -88,27 +78,19 @@ func TestResumeRecreatesExternallyRemovedEnabledEntry(t *testing.T) {
 				return execute(ctx, c)
 			}
 			f.rebuildClients()
-			if err := f.service.CaptureBaseline(context.Background(), "/tmp/test-sandboxd.sock"); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, f.service.CaptureBaseline(context.Background(), "/tmp/test-sandboxd.sock"))
 			var output strings.Builder
-			if err := f.service.ReconcileContext(context.Background(), &output); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, f.service.ReconcileContext(context.Background(), &output))
 			state, _ := store.LoadState()
 			saved := state.Scopes[scope][0]
 			if runtime == "running" {
-				if saved.ProfileID != "replacement-machine" {
-					t.Fatalf("not recreated: %+v\n%s", saved, output.String())
-				}
+				require.Equal(t, "replacement-machine", saved.ProfileID, "not recreated: %+v\n%s", saved, output.String())
 			} else {
-				if saved.ProfileID != "" || strings.Contains(output.String(), "cannot add a stopped sandbox") {
-					t.Fatalf("stale association: %+v\n%s", saved, output.String())
-				}
+				require.EqualValues(t, "", saved.ProfileID)
+				require.NotContains(t, output.String(), "cannot add a stopped sandbox")
 				for _, call := range *calls {
-					if strings.Contains(call, "machine add") || strings.HasPrefix(call, "ssh -o") {
-						t.Fatalf("stopped action connected: %s", call)
-					}
+					require.NotContains(t, call, "machine add")
+					require.False(t, strings.HasPrefix(call, "ssh -o"))
 				}
 			}
 		})
@@ -126,21 +108,16 @@ func TestConfirmedDeletionRetainsCrossScopeAssociation(t *testing.T) {
 				other.ProfileID = "other-machine"
 			}
 			state := store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {item}, "other-scope": {other}}}
-			if err := store.SaveState(state); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, store.SaveState(state))
 			f.transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 				return &http.Response{StatusCode: 404, Body: io.NopCloser(strings.NewReader(`{"code":"sandbox_not_found"}`))}, nil
 			})
 			f.rebuildClients()
 			result, err := f.service.RemoveDeletedSandbox(context.Background(), scope, "/tmp/test-sandboxd.sock", "one")
-			if err != nil || !strings.Contains(result.Detail, "retained state") {
-				t.Fatalf("deletion=%+v err=%v", result, err)
-			}
+			require.NoError(t, err)
+			require.Contains(t, result.Detail, "retained state")
 			for _, call := range *calls {
-				if strings.Contains(call, "machine remove") {
-					t.Fatalf("ambiguous cross-scope removal: %s", call)
-				}
+				require.NotContains(t, call, "machine remove", "ambiguous cross-scope removal: %s", call)
 			}
 			status, _ := store.ReadStatusStore()
 			found := false
@@ -149,13 +126,11 @@ func TestConfirmedDeletionRetainsCrossScopeAssociation(t *testing.T) {
 					found = true
 				}
 			}
-			if !found {
-				t.Fatal("association warning was not retained for inspection")
-			}
+			require.True(t, found, "association warning was not retained for inspection")
 			saved, _ := store.LoadState()
-			if len(saved.Scopes[scope]) != 1 || len(saved.Scopes["other-scope"]) != 1 || len(*machines) != 1 {
-				t.Fatal("ambiguous association was changed")
-			}
+			require.Len(t, saved.Scopes[scope], 1)
+			require.Len(t, saved.Scopes["other-scope"], 1)
+			require.Len(t, *machines, 1)
 		})
 	}
 }
@@ -165,12 +140,8 @@ func TestRemovedEntryDeletionReleasesIdentityForSameNameReplacement(t *testing.T
 		t.Run(mode, func(t *testing.T) {
 			f, scope, machines, calls := newManagementFixture(t, "stopped")
 			*machines = []herdr.Machine{{ID: "machine", Label: "Desk", Target: "demo.sbx", Session: "default", Enabled: boolPointer(false)}}
-			if err := f.service.SetEnabled(context.Background(), scope, "one", store.Disabled); err != nil {
-				t.Fatal(err)
-			}
-			if err := f.service.RemoveEntry(context.Background(), scope, "one"); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, f.service.SetEnabled(context.Background(), scope, "one", store.Disabled))
+			require.NoError(t, f.service.RemoveEntry(context.Background(), scope, "one"))
 			// The old sandbox is gone before cleanup runs; its name is already reused.
 			f.inventory = `[{"uuid":"replacement","name":"demo","status":"stopped"}]`
 			f.transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -185,34 +156,24 @@ func TestRemovedEntryDeletionReleasesIdentityForSameNameReplacement(t *testing.T
 			*calls = nil
 			if mode == "delete event" {
 				result, err := f.service.RemoveDeletedSandbox(context.Background(), scope, "/tmp/test-sandboxd.sock", "one")
-				if err != nil || result.Retry {
-					t.Fatalf("cleanup=%+v err=%v", result, err)
-				}
+				require.NoError(t, err)
+				require.False(t, result.Retry)
 			} else {
-				if err := f.service.ReconcileContext(context.Background(), io.Discard); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, f.service.ReconcileContext(context.Background(), io.Discard))
 			}
 			state, err := store.LoadState()
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			for _, item := range state.Scopes[scope] {
-				if item.SandboxID == "one" {
-					t.Fatalf("dead identity retained: %+v", item)
-				}
+				require.NotEqual(t, "one", item.SandboxID, "dead identity retained: %+v", item)
 			}
 			rows, err := f.service.SandboxRows(context.Background(), "/tmp/test-sandboxd.sock")
-			if err != nil || len(rows) != 1 || rows[0].AssociationIssue != "" {
-				t.Fatalf("replacement rows=%+v err=%v", rows, err)
-			}
-			if len(*machines) != 1 || (*machines)[0].ID != "replacement-entry" {
-				t.Fatal("replacement native entry changed")
-			}
+			require.NoError(t, err)
+			require.Len(t, rows, 1)
+			require.EqualValues(t, "", rows[0].AssociationIssue)
+			require.Len(t, *machines, 1)
+			require.EqualValues(t, "replacement-entry", (*machines)[0].ID)
 			for _, call := range *calls {
-				if strings.Contains(call, "machine remove") {
-					t.Fatalf("cleanup removed a replacement entry: %s", call)
-				}
+				require.NotContains(t, call, "machine remove", "cleanup removed a replacement entry: %s", call)
 			}
 		})
 	}
@@ -223,9 +184,7 @@ func TestLocalOnlyDeletionStillRequiresConfirmedIdentityAndManagement(t *testing
 		t.Run(mode, func(t *testing.T) {
 			f, scope, _, calls := newManagementFixture(t, "stopped")
 			item := store.Tracked{SandboxID: "one", Target: "demo.sbx", Pending: mode == "pending", ProjectWorkspaceDone: true}
-			if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {item}}}); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {item}}}))
 			f.transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 				status, body := 404, `{"code":"sandbox_not_found"}`
 				if mode == "unknown" {
@@ -238,21 +197,13 @@ func TestLocalOnlyDeletionStillRequiresConfirmedIdentityAndManagement(t *testing
 			})
 			f.rebuildClients()
 			if mode == "OFF" {
-				if err := store.SetWorkerControl(true); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, store.SetWorkerControl(true))
 			}
 			_, _ = f.service.RemoveDeletedSandbox(context.Background(), scope, "/tmp/test-sandboxd.sock", "one")
 			state, err := store.LoadState()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if (len(state.Scopes[scope]) == 0) != (mode == "absent") {
-				t.Fatalf("mode %s lost/retained unexpected identity: %+v", mode, state)
-			}
-			if len(*calls) != 0 {
-				t.Fatalf("local cleanup issued external command: %v", *calls)
-			}
+			require.NoError(t, err)
+			require.Equal(t, (mode == "absent"), (len(state.Scopes[scope]) == 0), "mode %s lost/retained unexpected identity: %+v", mode, state)
+			require.Len(t, *calls, 0, "local cleanup issued external command: %v", *calls)
 		})
 	}
 }

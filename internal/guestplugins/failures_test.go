@@ -2,13 +2,13 @@ package guestplugins
 
 import (
 	"context"
-	"errors"
 	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/lanwen/herdr-sbx/internal/herdr"
 	"github.com/lanwen/herdr-sbx/internal/process"
+	"github.com/stretchr/testify/require"
 )
 
 func TestConnectionFailureExplainsPendingPluginInspection(t *testing.T) {
@@ -32,19 +32,15 @@ func TestConnectionFailureExplainsPendingPluginInspection(t *testing.T) {
 				return tc.output, cause
 			}})
 			_, err := client.InspectGuestPlugin(context.Background(), "demo.sbx", "example.plugin")
-			if !errors.Is(err, cause) {
-				t.Fatalf("lost inspection cause: %v", err)
-			}
+			require.ErrorIs(t, err, cause, "lost inspection cause: %v", err)
 			failure := FailureFor(herdr.PluginInstall{ID: "example.plugin"}, "revision", err)
-			if failure.Detail != tc.want {
-				t.Fatalf("detail:\n%s\nwant:\n%s", failure.Detail, tc.want)
-			}
-			if strings.Contains(failure.Detail+failure.Recovery+failure.Output, "sbx rm") || strings.Contains(failure.Detail, "private") || failure.Command != "" || !strings.Contains(failure.Recovery, "Re-sync") || !strings.Contains(failure.Recovery, "kept") {
-				t.Fatalf("unsafe or misleading connection recovery: %#v", failure)
-			}
-			if tc.name == "missing host workspace" && (strings.Count(failure.Detail, "/Users/test/project/sbxenv.yaml") != 1 || !strings.Contains(failure.Recovery, "restore")) {
-				t.Fatalf("missing workspace recovery: %#v", failure)
-			}
+			require.Equal(t, tc.want, failure.Detail, "detail:\n%s\nwant:\n%s", failure.Detail, tc.want)
+			require.NotContains(t, failure.Detail+failure.Recovery+failure.Output, "sbx rm")
+			require.NotContains(t, failure.Detail, "private")
+			require.EqualValues(t, "", failure.Command)
+			require.Contains(t, failure.Recovery, "Re-sync")
+			require.Contains(t, failure.Recovery, "kept")
+			require.False(t, tc.name == "missing host workspace" && (strings.Count(failure.Detail, "/Users/test/project/sbxenv.yaml") != 1 || !strings.Contains(failure.Recovery, "restore")), "missing workspace recovery: %#v", failure)
 		})
 	}
 }

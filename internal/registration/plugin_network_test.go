@@ -1,11 +1,11 @@
 package registration
 
 import (
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/lanwen/herdr-sbx/internal/sbx"
+	"github.com/stretchr/testify/require"
 )
 
 func TestConfirmedNetworkBlockRequiresCorrelatedChange(t *testing.T) {
@@ -14,8 +14,9 @@ func TestConfirmedNetworkBlockRequiresCorrelatedChange(t *testing.T) {
 	newer := old
 	newer.Count = 3
 	newer.LastSeen = started.Add(time.Second)
-	if cause := confirmedNetworkBlock([]sbx.NetworkPolicyLog{old}, []sbx.NetworkPolicyLog{newer}, "id", started, "curl: downloads.example.org: connection denied"); !strings.Contains(cause, "Sandbox network access: policy blocked downloads.example.org") {
-		t.Fatalf("correlated block not found: %q", cause)
+	{
+		cause := confirmedNetworkBlock([]sbx.NetworkPolicyLog{old}, []sbx.NetworkPolicyLog{newer}, "id", started, "curl: downloads.example.org: connection denied")
+		require.Contains(t, cause, "Sandbox network access: policy blocked downloads.example.org", "correlated block not found: %q", cause)
 	}
 	for _, test := range []struct {
 		name    string
@@ -28,15 +29,17 @@ func TestConfirmedNetworkBlockRequiresCorrelatedChange(t *testing.T) {
 		{"old timestamp", sbx.NetworkPolicyLog{SandboxID: "id", Host: newer.Host, Count: 3, LastSeen: started.Add(-2 * time.Second)}, "curl: downloads.example.org: connection denied"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if cause := confirmedNetworkBlock([]sbx.NetworkPolicyLog{old}, []sbx.NetworkPolicyLog{test.entry}, "id", started, test.failure); cause != "" {
-				t.Fatalf("uncertain block classified: %q", cause)
+			{
+				cause := confirmedNetworkBlock([]sbx.NetworkPolicyLog{old}, []sbx.NetworkPolicyLog{test.entry}, "id", started, test.failure)
+				require.Equal(t, "", cause, "uncertain block classified: %q", cause)
 			}
 		})
 	}
 	otherProxy := old
 	otherProxy.Count = 1
 	otherProxy.LastSeen = started.Add(time.Second)
-	if cause := confirmedNetworkBlock([]sbx.NetworkPolicyLog{old, otherProxy}, []sbx.NetworkPolicyLog{otherProxy, old}, "id", started, "curl: downloads.example.org: connection denied"); cause != "" {
-		t.Fatalf("unchanged duplicate aggregates classified: %q", cause)
+	{
+		cause := confirmedNetworkBlock([]sbx.NetworkPolicyLog{old, otherProxy}, []sbx.NetworkPolicyLog{otherProxy, old}, "id", started, "curl: downloads.example.org: connection denied")
+		require.Equal(t, "", cause, "unchanged duplicate aggregates classified: %q", cause)
 	}
 }

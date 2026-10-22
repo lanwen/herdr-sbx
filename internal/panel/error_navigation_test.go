@@ -1,13 +1,13 @@
 package panel
 
 import (
-	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lanwen/herdr-sbx/internal/guestplugins"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func navigationErrors() []uiError {
@@ -23,29 +23,24 @@ func TestSandboxArrowsTraverseTableAndErrors(t *testing.T) {
 		m.errors = navigationErrors()
 		m.selected, m.expanded = "b", "b" // Diagnostics retain the selected preview.
 		m.key(keys.down)
-		if m.focus != "diagnostics" {
-			t.Fatal("Down skipped diagnostics header")
-		}
+		require.Equal(t, "diagnostics", m.focus, "Down skipped diagnostics header")
 		m.key(keys.down)
-		if m.focus != "errors" || m.errorIndex != 0 || !m.reveal || m.expanded != "b" {
-			t.Fatal("Down from the last row did not reveal the first error")
-		}
+		require.EqualValues(t, "errors", m.focus)
+		require.EqualValues(t, 0, m.errorIndex)
+		require.True(t, m.reveal)
+		require.EqualValues(t, "b", m.expanded)
 		m.key(keys.down)
-		if m.errorIndex != 1 {
-			t.Fatal("Down did not select the next error")
-		}
+		require.Equal(t, 1, m.errorIndex, "Down did not select the next error")
 		m.key(keys.up)
-		if m.focus != "errors" || m.errorIndex != 0 {
-			t.Fatal("Up did not select the previous error")
-		}
+		require.EqualValues(t, "errors", m.focus)
+		require.EqualValues(t, 0, m.errorIndex)
 		m.key(keys.up)
-		if m.focus != "diagnostics" {
-			t.Fatal("Up skipped diagnostics header")
-		}
+		require.Equal(t, "diagnostics", m.focus, "Up skipped diagnostics header")
 		m.key(keys.up)
-		if m.focus != "table" || m.selected != "b" || m.expanded != "b" || !m.reveal {
-			t.Fatal("Up from the first error did not return to the last sandbox")
-		}
+		require.EqualValues(t, "table", m.focus)
+		require.EqualValues(t, "b", m.selected)
+		require.EqualValues(t, "b", m.expanded)
+		require.True(t, m.reveal)
 	}
 }
 
@@ -58,38 +53,34 @@ func TestFocusedDetailsStayInsideUntilEscapeThenDiagnosticsReturnToPreview(t *te
 	m.rows[1].Enabled, m.rows[1].EntryPresent = store.Enabled, true
 	m.rows[1].Status.Connection = "ready"
 	m.key(keyMsg(tea.KeyEnter, ""))
-	if m.focus != "actions" || m.button != 0 {
-		t.Fatal("Enter missed primary action")
-	}
+	require.EqualValues(t, "actions", m.focus)
+	require.EqualValues(t, 0, m.button)
 	m.key(keyMsg(tea.KeyDown, ""))
-	if m.focus != "plugins" || m.detailIndex != 0 {
-		t.Fatal("Down missed first plugin")
-	}
+	require.EqualValues(t, "plugins", m.focus)
+	require.EqualValues(t, 0, m.detailIndex)
 	m.key(keyMsg(tea.KeyDown, ""))
 	m.key(keyMsg(tea.KeyDown, ""))
-	if m.focus != "plugins" || m.detailIndex != 1 || m.selected != "b" {
-		t.Fatal("Down escaped details into diagnostics")
-	}
+	require.EqualValues(t, "plugins", m.focus)
+	require.EqualValues(t, 1, m.detailIndex)
+	require.EqualValues(t, "b", m.selected)
 	m.key(keyMsg(tea.KeyEscape, ""))
-	if m.focus != "table" || m.expanded != "b" {
-		t.Fatal("Escape did not retain preview")
-	}
+	require.EqualValues(t, "table", m.focus)
+	require.EqualValues(t, "b", m.expanded)
 	m.key(keyMsg(tea.KeyDown, ""))
-	if m.focus != "diagnostics" {
-		t.Fatal("list Down skipped diagnostic header")
-	}
+	require.Equal(t, "diagnostics", m.focus, "list Down skipped diagnostic header")
 	m.key(keyMsg(tea.KeyDown, ""))
-	if m.focus != "errors" || m.errorIndex != 0 || m.expanded != "b" {
-		t.Fatal("diagnostic entry not selected")
-	}
-	if content := ansi.Strip(m.View().Content); !strings.Contains(content, "> H0002 · alpha") {
-		t.Fatalf("first error not revealed below details: %s", content)
-	}
+	require.EqualValues(t, "errors", m.focus)
+	require.EqualValues(t, 0, m.errorIndex)
+	require.EqualValues(t, "b", m.expanded)
+
+	content := ansi.Strip(m.View().Content)
+	require.Contains(t, content, "> H0002 · alpha", "first error not revealed below details: %s", content)
+
 	m.key(keyMsg(tea.KeyUp, ""))
 	m.key(keyMsg(tea.KeyUp, ""))
-	if m.focus != "table" || m.selected != "b" || m.expanded != "b" {
-		t.Fatal("diagnostics did not return to last sandbox preview")
-	}
+	require.EqualValues(t, "table", m.focus)
+	require.EqualValues(t, "b", m.selected)
+	require.EqualValues(t, "b", m.expanded)
 	m.View()
 	for _, h := range m.hits {
 		if h.action == "select" && h.id == "b" {
@@ -105,18 +96,16 @@ func TestEmptyFilteredTableCanReachErrorsWithoutClearingFilter(t *testing.T) {
 	m.errors = navigationErrors()
 	m.ensureSelection()
 	m.key(keyMsg(tea.KeyDown, ""))
-	if m.focus != "diagnostics" {
-		t.Fatal("Down skipped diagnostics header")
-	}
+	require.Equal(t, "diagnostics", m.focus, "Down skipped diagnostics header")
 	m.key(keyMsg(tea.KeyDown, ""))
-	if m.focus != "errors" || m.errorIndex != 0 {
-		t.Fatal("empty table could not reach Errors")
-	}
+	require.EqualValues(t, "errors", m.focus)
+	require.EqualValues(t, 0, m.errorIndex)
 	m.key(keyMsg(tea.KeyUp, ""))
 	m.key(keyMsg(tea.KeyUp, ""))
-	if m.focus != "table" || m.queries["Sandboxes"] != "no match" || len(m.visibleRows()) != 0 || m.scroll != 0 {
-		t.Fatal("returning to empty table changed its filter or visibility")
-	}
+	require.EqualValues(t, "table", m.focus)
+	require.EqualValues(t, "no match", m.queries["Sandboxes"])
+	require.Len(t, m.visibleRows(), 0)
+	require.EqualValues(t, 0, m.scroll)
 }
 
 func TestBoundaryNavigationDoesNotCaptureInputsOrDialogs(t *testing.T) {
@@ -133,15 +122,10 @@ func TestBoundaryNavigationDoesNotCaptureInputsOrDialogs(t *testing.T) {
 				m.dialog = "startup"
 			}
 			m.key(keyMsg(tea.KeyDown, ""))
-			if m.focus != "table" || context != "filter" && m.selected != "b" {
-				t.Fatal("boundary navigation captured a local control or entered absent Errors")
-			}
-			if context == "filter" && (m.input == nil || m.input.text != "draft" || m.input.cursor != 2) {
-				t.Fatal("Down changed the active filter")
-			}
-			if context == "dialog" && (m.dialog != "startup" || m.button != 0) {
-				t.Fatal("Down did not retain dialog-local navigation")
-			}
+			require.EqualValues(t, "table", m.focus)
+			require.False(t, context != "filter" && m.selected != "b")
+			require.False(t, context == "filter" && (m.input == nil || m.input.text != "draft" || m.input.cursor != 2), "Down changed the active filter")
+			require.False(t, context == "dialog" && (m.dialog != "startup" || m.button != 0), "Down did not retain dialog-local navigation")
 		})
 	}
 }
@@ -156,14 +140,13 @@ func TestOtherTabsTraverseTheirFinalControlAndErrors(t *testing.T) {
 		lastButton := m.button
 		m.key(keyMsg(tea.KeyDown, ""))
 		m.key(keyMsg(tea.KeyDown, ""))
-		if m.focus != "errors" || m.errorIndex != 0 {
-			t.Fatalf("%s did not lead into Errors", page)
-		}
+		require.EqualValues(t, "errors", m.focus)
+		require.EqualValues(t, 0, m.errorIndex)
 		m.key(keyMsg(tea.KeyUp, ""))
 		m.key(keyMsg(tea.KeyUp, ""))
-		if m.focus != "table" || page == "Status" && m.button != lastButton || page == "Plugins" && m.pluginSelected != "two" {
-			t.Fatalf("%s did not return to its final control", page)
-		}
+		require.EqualValues(t, "table", m.focus)
+		require.False(t, page == "Status" && m.button != lastButton)
+		require.False(t, page == "Plugins" && m.pluginSelected != "two")
 	}
 }
 
@@ -171,22 +154,17 @@ func TestErrorShortcutAndPagingRetainTheirBehavior(t *testing.T) {
 	m := modelFixture(t)
 	m.errors = navigationErrors()
 	m.key(keyMsg('e', "e"))
-	if m.focus != "errors" {
-		t.Fatal("e no longer focuses Errors")
-	}
+	require.Equal(t, "errors", m.focus, "e no longer focuses Errors")
 	m.key(keyMsg(tea.KeyHome, ""))
-	if m.focus != "errors" || m.errorIndex != 0 {
-		t.Fatal("Home left Errors")
-	}
+	require.EqualValues(t, "errors", m.focus)
+	require.EqualValues(t, 0, m.errorIndex)
 	m.key(keyMsg(tea.KeyPgUp, ""))
-	if m.focus != "errors" {
-		t.Fatal("Page Up left Errors")
-	}
+	require.Equal(t, "errors", m.focus, "Page Up left Errors")
 	m.errorIndex, m.scroll = len(m.errors)-1, 3
 	m.key(keyMsg(tea.KeyDown, ""))
-	if m.focus != "errors" || m.errorIndex != len(m.errors)-1 || m.scroll != 4 {
-		t.Fatal("Down after the last error changed existing scroll behavior")
-	}
+	require.EqualValues(t, "errors", m.focus)
+	require.False(t, m.errorIndex != len(m.errors)-1)
+	require.EqualValues(t, 4, m.scroll)
 }
 
 func TestResolvedLastErrorReturnsFocusToTable(t *testing.T) {
@@ -195,7 +173,8 @@ func TestResolvedLastErrorReturnsFocusToTable(t *testing.T) {
 	m.errors = navigationErrors()
 	m.focusErrors()
 	m.Update(workerMsg{status: store.WorkerStatus{State: "running"}})
-	if len(m.errors) != 0 || m.focus != "table" || !m.reveal || m.scroll != 0 {
-		t.Fatal("clearing the last active error left focus in the vanished Errors section")
-	}
+	require.Len(t, m.errors, 0)
+	require.EqualValues(t, "table", m.focus)
+	require.True(t, m.reveal)
+	require.EqualValues(t, 0, m.scroll)
 }

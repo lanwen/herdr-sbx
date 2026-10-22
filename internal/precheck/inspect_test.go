@@ -14,6 +14,8 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type checkTransport func(*http.Request) (*http.Response, error)
@@ -34,9 +36,7 @@ func newCheckFixture(t *testing.T) *checkFixture {
 	t.Setenv("HERDR_SANDBOXES_SBX_APP_NAME", "herdr-sbx-test-checks")
 	bin := t.TempDir()
 	for _, name := range []string{"herdr", "sbx", "ssh"} {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 99\n"), 0700); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 99\n"), 0700))
 	}
 	t.Setenv("PATH", bin)
 	f := &checkFixture{
@@ -62,14 +62,10 @@ func newCheckFixture(t *testing.T) *checkFixture {
 		case "sbx daemon status --help", "sbx ls --help":
 			return "--json", nil
 		case "sbx daemon status --json":
-			if !scoped {
-				t.Fatal("daemon check lost test app scope")
-			}
+			require.True(t, scoped, "daemon check lost test app scope")
 			return f.daemon, nil
 		case "sbx diagnose --json":
-			if !scoped {
-				t.Fatal("authentication check lost test app scope")
-			}
+			require.True(t, scoped, "authentication check lost test app scope")
 			f.authCalls++
 			return f.diagnostic, errors.New("unrelated diagnostic failed")
 		case "ssh -G herdr-sandbox-probe.sbx":
@@ -80,9 +76,7 @@ func newCheckFixture(t *testing.T) *checkFixture {
 	}}
 	sandboxes := sbx.NewWithTransport(runner, checkTransport(func(r *http.Request) (*http.Response, error) {
 		f.inventoryCalls++
-		if r.Method != http.MethodGet || r.URL.Path != "/sandbox" {
-			t.Errorf("unexpected passive request: %s %s", r.Method, r.URL)
-		}
+		assert.False(t, r.Method != http.MethodGet || r.URL.Path != "/sandbox", "unexpected passive request: %s %s", r.Method, r.URL)
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(f.inventory))}, nil
 	}))
 	f.inspector = New(sandboxes, herdr.New(runner), runner)
@@ -93,9 +87,7 @@ func assertCheck(t *testing.T, report Result, name string, want Level) {
 	t.Helper()
 	for _, check := range report.Checks {
 		if check.Name == name {
-			if check.Level != want {
-				t.Fatalf("%s = %#v, want %s", name, check, want)
-			}
+			require.Equal(t, want, check.Level, "%s = %#v, want %s", name, check, want)
 			return
 		}
 	}
@@ -109,23 +101,23 @@ func TestInspectDoesNotListWhenDaemonStopped(t *testing.T) {
 	assertCheck(t, report, "Sandbox daemon", Blocked)
 	assertCheck(t, report, "Docker authorization", Unknown)
 	assertCheck(t, report, "Sandbox setup", Unknown)
-	if f.inventoryCalls != 0 || f.authCalls != 0 {
-		t.Fatal("stopped daemon caused an inventory or authorization query")
-	}
+	require.EqualValues(t, 0, f.inventoryCalls)
+	require.EqualValues(t, 0, f.authCalls)
 }
 
 func TestPrerequisiteClassification(t *testing.T) {
 	checks := ClassifyInventoryError(errors.New("failed"), "docker login service unavailable")
-	if len(checks) != 1 || checks[0].Name != "Docker authorization" || checks[0].Level != Blocked {
-		t.Fatalf("authorization checks = %#v", checks)
-	}
+	require.Len(t, checks, 1)
+	require.EqualValues(t, "Docker authorization", checks[0].Name)
+	require.False(t, checks[0].Level != Blocked)
 	checks = ClassifyInventoryError(errors.New("failed"), "sandboxd socket connection refused")
-	if len(checks) != 2 || checks[0].Name != "Sandbox inventory" || checks[1].Name != "Docker authorization" {
-		t.Fatalf("backend checks = %#v", checks)
-	}
-	if proxy := sshSetting("proxycommand ssh jump.example\n", "proxycommand"); proxy == "" || sandboxSSHProxy.MatchString(proxy) {
-		t.Fatal("arbitrary SSH proxy accepted as managed")
-	}
+	require.Len(t, checks, 2)
+	require.EqualValues(t, "Sandbox inventory", checks[0].Name)
+	require.EqualValues(t, "Docker authorization", checks[1].Name)
+
+	proxy := sshSetting("proxycommand ssh jump.example\n", "proxycommand")
+	require.NotEqualValues(t, "", proxy)
+	require.False(t, sandboxSSHProxy.MatchString(proxy))
 }
 
 func TestSBXMinimumVersionIsEnforced(t *testing.T) {
@@ -138,11 +130,9 @@ func TestSBXMinimumVersionIsEnforced(t *testing.T) {
 
 func TestInspectShowsUnresolvedDeletedRegistration(t *testing.T) {
 	f := newCheckFixture(t)
-	if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{
+	require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{
 		store.ScopeID("/tmp/checks.sock"): {{SandboxID: "old", Label: "demo", Target: "demo.sbx", Pending: true}},
-	}}); err != nil {
-		t.Fatal(err)
-	}
+	}}))
 	assertCheck(t, f.inspector.Inspect(), "Registration association", Unknown)
 }
 
@@ -168,9 +158,7 @@ func TestInspectDockerSignIn(t *testing.T) {
 				f.inventory = `[]`
 			}
 			assertCheck(t, f.inspector.Inspect(), "Docker authorization", test.want)
-			if f.authCalls != 1 {
-				t.Fatalf("diagnostic called %d times", f.authCalls)
-			}
+			require.Equal(t, 1, f.authCalls, "diagnostic called %d times", f.authCalls)
 		})
 	}
 }

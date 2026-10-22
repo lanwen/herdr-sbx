@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lanwen/herdr-sbx/internal/precheck"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func selectionHit(t *testing.T, m *model, action, id string) hit {
@@ -24,33 +25,38 @@ func selectionHit(t *testing.T, m *model, action, id string) hit {
 
 func assertClipboard(t *testing.T, command tea.Cmd, want string) {
 	t.Helper()
-	if command == nil {
-		t.Fatal("clipboard command missing")
-	}
-	if got, expected := command(), tea.SetClipboard(want)(); got != expected {
-		t.Fatalf("clipboard command = %#v, want %#v", got, expected)
-	}
+	require.NotNil(t, command, "clipboard command missing")
+
+	got, expected := command(), tea.SetClipboard(want)()
+	require.False(t, got != expected, "clipboard command = %#v, want %#v", got, expected)
 }
 
 func TestMouseClickActivatesOriginalTargetOnceOnRelease(t *testing.T) {
-	m := modelFixture(t)
+	unsetNoColor(t)
+	m := styledFixture(t)
+	m.focus = "actions"
 	h := selectionHit(t, m, "select", "b")
+	require.Greater(t, h.x, 4, "row target must include the outline inset")
+	rows := strings.Split(ansi.Strip(m.View().Content), "\n")
+	require.Contains(t, ansi.Cut(rows[h.y], h.x, h.x+h.w), "beta", "row selection hit misses sandbox name")
 	m.Update(tea.MouseClickMsg{X: h.x, Y: h.y, Button: tea.MouseLeft})
-	if m.selected != "a" || m.expanded != "a" {
-		t.Fatal("mouse press activated the row before release")
-	}
+	require.EqualValues(t, "a", m.selected)
+	require.EqualValues(t, "a", m.expanded)
 	// Even if a later observation provides different hit targets, release must
 	// activate the one captured from the displayed frame at press time.
 	m.hits = []hit{{x: h.x, y: h.y, w: h.w, action: "select", id: "a"}}
 	release := tea.MouseReleaseMsg{X: h.x, Y: h.y, Button: tea.MouseLeft}
 	m.Update(release)
-	if m.selected != "b" || m.expanded != "b" {
-		t.Fatal("release activated a different target")
-	}
+	require.EqualValues(t, "b", m.selected)
+	require.EqualValues(t, "b", m.expanded)
+	require.Equal(t, "table", m.focus)
 	m.Update(release)
-	if m.expanded != "b" {
-		t.Fatal("duplicate release activated the row twice")
-	}
+	require.Equal(t, "b", m.expanded, "duplicate release activated the row twice")
+	h = selectionHit(t, m, "select", "b")
+	clickAt(m, h.x, h.y)
+	require.Equal(t, "b", m.selected)
+	require.Equal(t, "b", m.expanded, "same-card click removed preview")
+	require.Equal(t, "table", m.focus)
 }
 
 func TestDragCopiesWithoutActivatingAndLatchesAfterOneCell(t *testing.T) {
@@ -67,15 +73,17 @@ func TestDragCopiesWithoutActivatingAndLatchesAfterOneCell(t *testing.T) {
 		}
 		_, command := m.Update(tea.MouseReleaseMsg{X: end, Y: 0, Button: tea.MouseLeft})
 		assertClipboard(t, command, want)
-		if m.selected != "a" || m.expanded != "a" || m.textSelection == nil || m.textSelection.pressed {
-			t.Fatal("drag activated a row or lost its completed highlight")
-		}
+		require.EqualValues(t, "a", m.selected)
+		require.EqualValues(t, "a", m.expanded)
+		require.NotNil(t, m.textSelection)
+		require.False(t, m.textSelection.pressed)
 		view := m.View()
-		if view.MouseMode != tea.MouseModeCellMotion || !strings.Contains(view.Content, "\x1b[7m") || ansi.Strip(view.Content) != "alpha" {
-			t.Fatal("drag changed content, lacked reverse-video selection, or released mouse capture")
-		}
-		if _, command := m.Update(tea.MouseReleaseMsg{X: end, Y: 0, Button: tea.MouseLeft}); command != nil {
-			t.Fatal("duplicate release copied again")
+		require.False(t, view.MouseMode != tea.MouseModeCellMotion)
+		require.Contains(t, view.Content, "\x1b[7m")
+		require.EqualValues(t, "alpha", ansi.Strip(view.Content))
+		{
+			_, command := m.Update(tea.MouseReleaseMsg{X: end, Y: 0, Button: tea.MouseLeft})
+			require.Nil(t, command, "duplicate release copied again")
 		}
 	}
 }
@@ -96,17 +104,15 @@ func TestTextSelectionCopiesPlainGraphemesAcrossLines(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			s := &textSelection{frame: frame, anchor: test.anchor, end: test.end, dragged: true}
-			if got := s.text(); got != test.want {
-				t.Fatalf("copied %q, want %q", got, test.want)
-			}
-			if ansi.Strip(s.view()) != ansi.Strip(frame) || !strings.Contains(s.view(), "\x1b[7m") {
-				t.Fatal("selection highlight changed displayed characters")
-			}
+
+			got := s.text()
+			require.Equal(t, test.want, got, "copied %q, want %q", got, test.want)
+
+			require.False(t, ansi.Strip(s.view()) != ansi.Strip(frame))
+			require.Contains(t, s.view(), "\x1b[7m")
 			original, highlighted := strings.Split(frame, "\n"), strings.Split(s.view(), "\n")
 			for y := range original {
-				if ansi.StringWidth(original[y]) != ansi.StringWidth(highlighted[y]) {
-					t.Fatal("selection highlight changed cell geometry")
-				}
+				require.Equal(t, ansi.StringWidth(highlighted[y]), ansi.StringWidth(original[y]), "selection highlight changed cell geometry")
 			}
 		})
 	}
@@ -123,23 +129,17 @@ func TestDragFreezesDisplayedFrameWhileObservationsContinue(t *testing.T) {
 	rows := append(m.rows[:0:0], m.rows...)
 	rows[0].Sandbox.Name = "updated alpha"
 	m.Update(observationMsg{generation: m.generation, rows: rows})
-	if m.worker.State != "running" || m.rows[0].Sandbox.Name != "updated alpha" {
-		t.Fatal("drag blocked background observations")
-	}
+	require.EqualValues(t, "running", m.worker.State)
+	require.EqualValues(t, "updated alpha", m.rows[0].Sandbox.Name)
 	frozen := m.View().Content
-	if ansi.Strip(frozen) != ansi.Strip(frame) {
-		t.Fatal("observation changed the displayed selection frame")
-	}
+	require.Equal(t, ansi.Strip(frame), ansi.Strip(frozen), "observation changed the displayed selection frame")
 	want := m.textSelection.text()
 	_, command := m.Update(tea.MouseReleaseMsg{X: h.x + 3, Y: h.y, Button: tea.MouseLeft})
 	assertClipboard(t, command, want)
-	if m.View().Content != frozen {
-		t.Fatal("release erased the copied selection")
-	}
+	require.Equal(t, frozen, m.View().Content, "release erased the copied selection")
 	m.Update(keyMsg('x', "x"))
-	if m.textSelection != nil || !strings.Contains(m.View().Content, "updated alpha") {
-		t.Fatal("next interaction did not restore latest observations")
-	}
+	require.Nil(t, m.textSelection)
+	require.Contains(t, m.View().Content, "updated alpha")
 }
 
 func TestDragPreservesInputsDialogsAndDetails(t *testing.T) {
@@ -157,15 +157,12 @@ func TestDragPreservesInputsDialogsAndDetails(t *testing.T) {
 			m.Update(tea.MouseClickMsg{X: 0, Y: 0, Button: tea.MouseLeft})
 			m.Update(tea.MouseMotionMsg{X: 4, Y: 0, Button: tea.MouseLeft})
 			_, command := m.Update(tea.MouseReleaseMsg{X: 4, Y: 0, Button: tea.MouseLeft})
-			if command == nil || m.input != input || m.expanded != "a" || m.focus != "actions" {
-				t.Fatal("drag changed active input, focus, or details")
-			}
-			if input != nil && (input.text != "draft text" || input.cursor != 4) {
-				t.Fatal("drag changed input text or cursor")
-			}
-			if context == "dialog" && (m.dialog != "startup" || m.button != 1) {
-				t.Fatal("drag changed the active dialog")
-			}
+			require.NotNil(t, command)
+			require.False(t, m.input != input)
+			require.EqualValues(t, "a", m.expanded)
+			require.EqualValues(t, "actions", m.focus)
+			require.False(t, input != nil && (input.text != "draft text" || input.cursor != 4), "drag changed input text or cursor")
+			require.False(t, context == "dialog" && (m.dialog != "startup" || m.button != 1), "drag changed the active dialog")
 		})
 	}
 }
@@ -183,15 +180,15 @@ func TestEscapeAndResizeCancelDragWithoutActivating(t *testing.T) {
 		} else {
 			m.Update(tea.WindowSizeMsg{Width: 60, Height: 18})
 		}
-		if _, command := m.Update(tea.MouseReleaseMsg{X: 5, Y: 0, Button: tea.MouseLeft}); command != nil {
-			t.Fatal("cancelled drag copied or activated on release")
-		}
-		if m.textSelection != nil || m.input == nil || m.input.text != "draft" || m.expanded != "a" {
-			t.Fatal("cancelling drag changed the active editor or details")
-		}
-		if m.View().MouseMode != tea.MouseModeCellMotion {
-			t.Fatal("cancelling drag disabled mouse navigation")
-		}
+
+		_, command := m.Update(tea.MouseReleaseMsg{X: 5, Y: 0, Button: tea.MouseLeft})
+		require.Nil(t, command, "cancelled drag copied or activated on release")
+
+		require.Nil(t, m.textSelection)
+		require.NotNil(t, m.input)
+		require.EqualValues(t, "draft", m.input.text)
+		require.EqualValues(t, "a", m.expanded)
+		require.Equal(t, tea.MouseMode(tea.MouseModeCellMotion), m.View().MouseMode, "cancelling drag disabled mouse navigation")
 	}
 }
 
@@ -204,13 +201,11 @@ func TestPointerAfterCopyUsesLatestLayout(t *testing.T) {
 	m.rows[0].Sandbox.Name = "latest name"
 	m.hits = []hit{{x: h.x, y: h.y, w: h.w, action: "select", id: "a"}}
 	m.Update(tea.MouseClickMsg{X: h.x, Y: h.y, Button: tea.MouseLeft})
-	if m.textSelection == nil || !strings.Contains(m.textSelection.frame, "latest name") {
-		t.Fatal("next mouse press did not render latest layout")
-	}
+	require.NotNil(t, m.textSelection)
+	require.Contains(t, m.textSelection.frame, "latest name")
 	m.Update(tea.MouseReleaseMsg{X: h.x, Y: h.y, Button: tea.MouseLeft})
-	if m.selected != "b" || m.expanded != "b" {
-		t.Fatal("next click used stale hit targets")
-	}
+	require.EqualValues(t, "b", m.selected)
+	require.EqualValues(t, "b", m.expanded)
 }
 
 func TestPendingClickDoesNotActivateAReplacementStatusAction(t *testing.T) {
@@ -221,9 +216,9 @@ func TestPendingClickDoesNotActivateAReplacementStatusAction(t *testing.T) {
 	// Once SSH is ready, Refresh replaces its numeric table position.
 	m.checks.Checks = []precheck.Check{{Name: "Sandbox SSH", Level: precheck.Ready}}
 	_, command := m.Update(tea.MouseReleaseMsg{X: h.x, Y: h.y, Button: tea.MouseLeft})
-	if command != nil || m.dialog != "" || m.refreshing {
-		t.Fatal("release activated the replacement status action")
-	}
+	require.Nil(t, command)
+	require.EqualValues(t, "", m.dialog)
+	require.False(t, m.refreshing)
 }
 
 func TestDragClampsEndpointsAndIgnoresScrollUntilRelease(t *testing.T) {
@@ -232,15 +227,12 @@ func TestDragClampsEndpointsAndIgnoresScrollUntilRelease(t *testing.T) {
 	m.Update(tea.MouseClickMsg{X: 1, Y: 0, Button: tea.MouseLeft})
 	m.Update(tea.MouseMotionMsg{X: 1000, Y: 1000, Button: tea.MouseLeft})
 	m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
-	if m.scroll != 0 {
-		t.Fatal("wheel scrolled the frozen frame while dragging")
-	}
+	require.Equal(t, 0, m.scroll, "wheel scrolled the frozen frame while dragging")
 	_, command := m.Update(tea.MouseReleaseMsg{X: 1000, Y: 1000, Button: tea.MouseNone})
 	assertClipboard(t, command, "lpha\nbeta")
 	m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
-	if m.textSelection != nil || m.scroll != 3 {
-		t.Fatal("wheel did not clear completed selection and resume scrolling")
-	}
+	require.Nil(t, m.textSelection)
+	require.EqualValues(t, 3, m.scroll)
 }
 
 func TestNonLeftPressDoesNotNavigateOrStartSelection(t *testing.T) {
@@ -249,9 +241,9 @@ func TestNonLeftPressDoesNotNavigateOrStartSelection(t *testing.T) {
 	for _, button := range []tea.MouseButton{tea.MouseMiddle, tea.MouseRight} {
 		m.Update(tea.MouseClickMsg{X: h.x, Y: h.y, Button: button})
 		m.Update(tea.MouseReleaseMsg{X: h.x, Y: h.y, Button: button})
-		if m.textSelection != nil || m.selected != "a" || m.expanded != "a" {
-			t.Fatal("non-left press started selection or activated a control")
-		}
+		require.Nil(t, m.textSelection)
+		require.EqualValues(t, "a", m.selected)
+		require.EqualValues(t, "a", m.expanded)
 	}
 }
 
@@ -263,12 +255,9 @@ func TestSelectionRemainsVisibleWithoutColor(t *testing.T) {
 	m.Update(tea.MouseClickMsg{X: 0, Y: 0, Button: tea.MouseLeft})
 	m.Update(tea.MouseMotionMsg{X: 4, Y: 0, Button: tea.MouseLeft})
 	view := m.View()
-	if !strings.Contains(view.Content, "\x1b[7m") || view.MouseMode != tea.MouseModeCellMotion {
-		t.Fatal("selection lost reverse-video visibility without color")
-	}
+	require.Contains(t, view.Content, "\x1b[7m")
+	require.False(t, view.MouseMode != tea.MouseModeCellMotion)
 	for _, line := range strings.Split(view.Content, "\n") {
-		if ansi.StringWidth(line) != 60 {
-			t.Fatal("selection changed narrow terminal geometry")
-		}
+		require.Equal(t, 60, ansi.StringWidth(line), "selection changed narrow terminal geometry")
 	}
 }

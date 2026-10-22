@@ -5,6 +5,7 @@ Repository paths in role instructions resolve from the repository root.
 
 | Role | Instructions |
 | --- | --- |
+| Read-only repository research | [Clerk](clerk.md) |
 | Go implementation and focused tests | [Go implementer](go_implementer.md) |
 | Herdr and Docker Sandboxes contracts and review | [Herdr expert](herdr_expert.md) |
 | Builds, isolated tests, evidence, and assigned commits | [Legwork](legwork.md) |

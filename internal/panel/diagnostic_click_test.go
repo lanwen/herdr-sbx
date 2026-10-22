@@ -5,6 +5,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func clickDiagnostic(t *testing.T, m *model, index string) {
@@ -23,17 +24,20 @@ func TestDiagnosticClickSelectsBeforeOpeningRecovery(t *testing.T) {
 		{code: store.CodeOwnershipConflict, scope: "b", detail: "second failure"},
 	}
 	clickDiagnostic(t, m, "0")
-	if m.focus != "errors" || m.errorIndex != 0 || m.selected != selected || m.expanded != preview {
-		t.Fatalf("first click changed sandbox preview instead of only selecting: focus=%s index=%d selected=%s expanded=%s", m.focus, m.errorIndex, m.selected, m.expanded)
-	}
+	require.EqualValues(t, "errors", m.focus)
+	require.EqualValues(t, 0, m.errorIndex)
+	require.False(t, m.selected != selected)
+	require.False(t, m.expanded != preview)
 	clickDiagnostic(t, m, "1")
-	if m.focus != "errors" || m.errorIndex != 1 || m.selected != selected || m.expanded != preview {
-		t.Fatalf("clicking another group changed sandbox preview: focus=%s index=%d selected=%s expanded=%s", m.focus, m.errorIndex, m.selected, m.expanded)
-	}
+	require.EqualValues(t, "errors", m.focus)
+	require.EqualValues(t, 1, m.errorIndex)
+	require.False(t, m.selected != selected)
+	require.False(t, m.expanded != preview)
 	clickDiagnostic(t, m, "1")
-	if m.page != "Sandboxes" || m.focus != "table" || m.selected != "b" || m.expanded != "b" {
-		t.Fatalf("second click did not open recovery: page=%s focus=%s expanded=%s", m.page, m.focus, m.expanded)
-	}
+	require.EqualValues(t, "Sandboxes", m.page)
+	require.EqualValues(t, "table", m.focus)
+	require.EqualValues(t, "b", m.selected)
+	require.EqualValues(t, "b", m.expanded)
 }
 
 func TestDiagnosticClickUsesVisibleGroupInNewAndAll(t *testing.T) {
@@ -50,13 +54,14 @@ func TestDiagnosticClickUsesVisibleGroupInNewAndAll(t *testing.T) {
 			}
 			selected, preview := m.selected, m.expanded
 			clickDiagnostic(t, m, "1")
-			if m.focus != "errors" || m.visibleErrors()[m.errorIndex].scope != "b" || m.selected != selected || m.expanded != preview {
-				t.Fatalf("click selected wrong visible group: focus=%s index=%d expanded=%s", m.focus, m.errorIndex, m.expanded)
-			}
+			require.EqualValues(t, "errors", m.focus)
+			require.EqualValues(t, "b", m.visibleErrors()[m.errorIndex].scope)
+			require.False(t, m.selected != selected)
+			require.False(t, m.expanded != preview)
 			m.key(keyMsg(tea.KeyEnter, ""))
-			if m.selected != "b" || m.expanded != "b" || m.focus != "table" {
-				t.Fatalf("Enter did not recover selected group: expanded=%s", m.expanded)
-			}
+			require.EqualValues(t, "b", m.selected)
+			require.EqualValues(t, "b", m.expanded)
+			require.EqualValues(t, "table", m.focus)
 		})
 	}
 }
@@ -71,9 +76,7 @@ func TestDiagnosticClickTracksGroupAcrossPolling(t *testing.T) {
 		"beta":  {Code: store.CodeOwnershipConflict, Scope: "b", Detail: "beta updated failure"},
 	}})
 	clickDiagnostic(t, m, "1")
-	if m.expanded != "b" {
-		t.Fatalf("poll reorder lost clicked group: expanded=%s", m.expanded)
-	}
+	require.Equal(t, "b", m.expanded, "poll reorder lost clicked group: expanded=%s", m.expanded)
 
 	m = modelFixture(t)
 	m.width, m.height = 110, 50
@@ -83,9 +86,9 @@ func TestDiagnosticClickTracksGroupAcrossPolling(t *testing.T) {
 		"beta": {Code: store.CodeOwnershipConflict, Scope: "b", Detail: "beta failure"},
 	}})
 	clickDiagnostic(t, m, "0")
-	if m.focus != "errors" || m.selected != "a" || m.expanded != "a" {
-		t.Fatal("replacement group opened recovery on its first click")
-	}
+	require.EqualValues(t, "errors", m.focus)
+	require.EqualValues(t, "a", m.selected)
+	require.EqualValues(t, "a", m.expanded)
 }
 
 func TestDiagnosticKeyboardNavigationResetsMouseActivation(t *testing.T) {
@@ -96,13 +99,11 @@ func TestDiagnosticKeyboardNavigationResetsMouseActivation(t *testing.T) {
 	m.key(keyMsg(tea.KeyUp, ""))
 	m.key(keyMsg(tea.KeyDown, ""))
 	clickDiagnostic(t, m, "0")
-	if m.focus != "errors" || m.selected != "a" || m.expanded != "a" {
-		t.Fatal("click after keyboard navigation opened recovery")
-	}
+	require.EqualValues(t, "errors", m.focus)
+	require.EqualValues(t, "a", m.selected)
+	require.EqualValues(t, "a", m.expanded)
 	m.key(keyMsg(tea.KeyEnter, ""))
-	if m.expanded != "a" {
-		t.Fatal("Enter did not open selected recovery immediately")
-	}
+	require.Equal(t, "a", m.expanded, "Enter did not open selected recovery immediately")
 }
 
 func TestDiagnosticRecoveryResetsMouseActivationForLaterFailure(t *testing.T) {
@@ -115,9 +116,9 @@ func TestDiagnosticRecoveryResetsMouseActivationForLaterFailure(t *testing.T) {
 		"alpha": {Code: store.CodeGuestPluginSync, Scope: "a", Detail: "later alpha failure"},
 	}})
 	clickDiagnostic(t, m, "0")
-	if m.focus != "errors" || m.selected != "a" || m.expanded != "a" {
-		t.Fatal("first click on a later failure opened recovery")
-	}
+	require.EqualValues(t, "errors", m.focus)
+	require.EqualValues(t, "a", m.selected)
+	require.EqualValues(t, "a", m.expanded)
 }
 
 func TestDiagnosticDragDoesNotSelectOrOpenRecovery(t *testing.T) {
@@ -128,13 +129,14 @@ func TestDiagnosticDragDoesNotSelectOrOpenRecovery(t *testing.T) {
 	m.Update(tea.MouseClickMsg{X: h.x, Y: h.y, Button: tea.MouseLeft})
 	m.Update(tea.MouseMotionMsg{X: h.x + 3, Y: h.y, Button: tea.MouseLeft})
 	_, cmd := m.Update(tea.MouseReleaseMsg{X: h.x + 3, Y: h.y, Button: tea.MouseLeft})
-	if cmd == nil || m.focus == "errors" || m.selected != "a" || m.expanded != "a" {
-		t.Fatal("drag failed to copy or activated diagnostic")
-	}
+	require.NotNil(t, cmd)
+	require.NotEqualValues(t, "errors", m.focus)
+	require.EqualValues(t, "a", m.selected)
+	require.EqualValues(t, "a", m.expanded)
 	clickDiagnostic(t, m, "0")
-	if m.focus != "errors" || m.selected != "a" || m.expanded != "a" {
-		t.Fatal("first click after drag opened recovery")
-	}
+	require.EqualValues(t, "errors", m.focus)
+	require.EqualValues(t, "a", m.selected)
+	require.EqualValues(t, "a", m.expanded)
 }
 
 func TestDiagnosticReleaseKeepsPressedGroupAcrossPolling(t *testing.T) {
@@ -154,11 +156,14 @@ func TestDiagnosticReleaseKeepsPressedGroupAcrossPolling(t *testing.T) {
 			m.mergeErrors(workerMsg{errors: errors})
 			m.Update(tea.MouseReleaseMsg{X: h.x, Y: h.y, Button: tea.MouseLeft})
 			if recovered {
-				if m.focus != "table" || m.selected != "a" || m.expanded != "a" {
-					t.Fatal("release selected a replacement for the recovered group")
-				}
-			} else if m.focus != "errors" || m.visibleErrors()[m.errorIndex].scope != "b" || m.selected != "a" || m.expanded != "a" {
-				t.Fatal("release lost the pressed group after polling")
+				require.EqualValues(t, "table", m.focus)
+				require.EqualValues(t, "a", m.selected)
+				require.EqualValues(t, "a", m.expanded)
+			} else {
+				require.EqualValues(t, "errors", m.focus)
+				require.EqualValues(t, "b", m.visibleErrors()[m.errorIndex].scope)
+				require.EqualValues(t, "a", m.selected)
+				require.EqualValues(t, "a", m.expanded)
 			}
 		})
 	}

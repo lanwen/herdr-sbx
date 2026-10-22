@@ -19,6 +19,8 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/registration"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type lifecycleTransport func(*http.Request) (*http.Response, error)
@@ -43,9 +45,7 @@ func newLifecycleFixture(t *testing.T) *lifecycleFixture {
 	t.Setenv("HERDR_SANDBOXES_SBX_APP_NAME", "")
 	bin := t.TempDir()
 	for _, name := range []string{"herdr", "sbx", "ssh"} {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 99\n"), 0700); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 99\n"), 0700))
 	}
 	t.Setenv("PATH", bin)
 	f := &lifecycleFixture{t: t, scope: store.ScopeID("/tmp/lifecycle-test.sock"), catalog: `[{"id":"machine-1","label":"sbx · demo","target":"demo.sbx","session":"default"}]`}
@@ -104,9 +104,7 @@ func (f *lifecycleFixture) defaultRun(_ context.Context, cmd process.Command) (s
 
 func (f *lifecycleFixture) save(items ...store.Tracked) {
 	f.t.Helper()
-	if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{f.scope: items}}); err != nil {
-		f.t.Fatal(err)
-	}
+	require.NoError(f.t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{f.scope: items}}))
 }
 
 func (f *lifecycleFixture) scheduler() *lifecycleScheduler {
@@ -120,31 +118,24 @@ func ownedRegistration() store.Tracked {
 func (f *lifecycleFixture) assertCount(want int) {
 	f.t.Helper()
 	state, err := store.LoadState()
-	if err != nil || len(state.Scopes[f.scope]) != want {
-		f.t.Fatalf("state=%#v, err=%v, want %d registrations", state, err, want)
-	}
+	require.NoError(f.t, err)
+	require.Len(f.t, state.Scopes[f.scope], want)
 }
 
 func TestLifecycleDeletionPreservesStateWhenAbsenceIsUnknown(t *testing.T) {
 	f := newLifecycleFixture(t)
 	f.save(ownedRegistration())
 	f.request = func(*http.Request) (*http.Response, error) { return nil, errors.New("unavailable") }
-	if f.scheduler().removeDeleted(sbx.LifecycleEvent{SandboxID: "old"}) {
-		t.Fatal("unknown absence was treated as completed deletion")
-	}
+	require.False(t, f.scheduler().removeDeleted(sbx.LifecycleEvent{SandboxID: "old"}), "unknown absence was treated as completed deletion")
 	f.assertCount(1)
 }
 
 func TestDeletionRecoveryOnlyChecksMissingTrackedSandboxes(t *testing.T) {
 	f := newLifecycleFixture(t)
 	f.save(ownedRegistration())
-	if err := store.RecordSandboxStatus(f.scope, sbx.Sandbox{ID: "old", Name: "demo", Status: "stopped"}, "ready", "retained registration", false); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.RecordSandboxStatus(f.scope, sbx.Sandbox{ID: "old", Name: "demo", Status: "stopped"}, "ready", "retained registration", false))
 	f.request = func(r *http.Request) (*http.Response, error) {
-		if r.URL.Path != "/sandbox" {
-			t.Fatalf("probed deletion for present stopped sandbox: %s", r.URL.Path)
-		}
+		require.Equal(t, "/sandbox", r.URL.Path, "probed deletion for present stopped sandbox: %s", r.URL.Path)
 		return lifecycleResponse(200, `[{"uuid":"old","name":"demo","status":"stopped"}]`), nil
 	}
 	f.scheduler().recoverMissedDeletes()
@@ -153,35 +144,30 @@ func TestDeletionRecoveryOnlyChecksMissingTrackedSandboxes(t *testing.T) {
 
 func TestDeletionRecoveryClearsUnrelatedLegacyDetailWithoutRegistration(t *testing.T) {
 	f := newLifecycleFixture(t)
-	if err := store.RecordSandboxStatus(f.scope, sbx.Sandbox{ID: "new", Name: "new", Status: "stopped"}, "not checked", "sandbox deletion recovery is unavailable", true); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.WarningTransition(f.scope+"/absence", "old warning"); err != nil {
-		t.Fatal(err)
+	require.NoError(t, store.RecordSandboxStatus(f.scope, sbx.Sandbox{ID: "new", Name: "new", Status: "stopped"}, "not checked", "sandbox deletion recovery is unavailable", true))
+	{
+		_, err := store.WarningTransition(f.scope+"/absence", "old warning")
+		require.NoError(t, err)
 	}
 	f.request = func(r *http.Request) (*http.Response, error) {
-		if r.URL.Path != "/sandbox" {
-			t.Fatalf("probed deletion without tracked registration: %s", r.URL.Path)
-		}
+		require.Equal(t, "/sandbox", r.URL.Path, "probed deletion without tracked registration: %s", r.URL.Path)
 		return lifecycleResponse(200, `[{"uuid":"new","name":"new","status":"stopped"}]`), nil
 	}
 	f.scheduler().recoverMissedDeletes()
 	status, err := store.ReadStatusStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := status.Sandboxes[store.StatusKey(f.scope, "new")]; got.Stale || got.Detail != "" || len(status.Warnings) != 0 {
-		t.Fatalf("legacy uncertainty remains: %+v warnings=%+v", got, status.Warnings)
-	}
+	require.NoError(t, err)
+
+	got := status.Sandboxes[store.StatusKey(f.scope, "new")]
+	require.False(t, got.Stale)
+	require.EqualValues(t, "", got.Detail)
+	require.Len(t, status.Warnings, 0)
 }
 
 func TestDeletionRecoveryFailureIsScopedAndClearsAfterRecovery(t *testing.T) {
 	f := newLifecycleFixture(t)
 	f.save(ownedRegistration())
 	for _, sb := range []sbx.Sandbox{{ID: "old", Name: "demo", Status: "running"}, {ID: "new", Name: "new", Status: "stopped"}} {
-		if err := store.RecordSandboxStatus(f.scope, sb, "not checked", "awaiting registration", false); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, store.RecordSandboxStatus(f.scope, sb, "not checked", "awaiting registration", false))
 	}
 	f.request = func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path == "/sandbox" {
@@ -192,14 +178,16 @@ func TestDeletionRecoveryFailureIsScopedAndClearsAfterRecovery(t *testing.T) {
 	f.scheduler().recoverMissedDeletes()
 	f.assertCount(1)
 	status, err := store.ReadStatusStore()
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		got := status.Sandboxes[store.StatusKey(f.scope, "new")]
+		require.False(t, got.Stale)
+		require.EqualValues(t, "awaiting registration", got.Detail)
 	}
-	if got := status.Sandboxes[store.StatusKey(f.scope, "new")]; got.Stale || got.Detail != "awaiting registration" {
-		t.Fatalf("unrelated stopped sandbox changed: %+v", got)
-	}
-	if got := status.Sandboxes[store.StatusKey(f.scope, "old")]; !got.Stale || !strings.Contains(got.Detail, "Its herdr registration was kept") {
-		t.Fatalf("missing sandbox lacks specific explanation: %+v", got)
+	{
+		got := status.Sandboxes[store.StatusKey(f.scope, "old")]
+		require.True(t, got.Stale)
+		require.Contains(t, got.Detail, "Its herdr registration was kept")
 	}
 	var diagnostic store.ErrorRecord
 	for _, item := range status.Errors {
@@ -207,26 +195,23 @@ func TestDeletionRecoveryFailureIsScopedAndClearsAfterRecovery(t *testing.T) {
 			diagnostic = item
 		}
 	}
-	if diagnostic.Ref == "" || !strings.Contains(diagnostic.Detail, "unavailable") || !strings.Contains(diagnostic.Detail, "registration was kept") || store.SeverityForCode(diagnostic.Code) != store.SeverityWarning {
-		t.Fatalf("deletion uncertainty lacks coded cause: %+v", status.Errors)
-	}
+	require.NotEqualValues(t, "", diagnostic.Ref)
+	require.Contains(t, diagnostic.Detail, "unavailable")
+	require.Contains(t, diagnostic.Detail, "registration was kept")
+	require.False(t, store.SeverityForCode(diagnostic.Code) != store.SeverityWarning)
 	f.request = func(r *http.Request) (*http.Response, error) {
 		return lifecycleResponse(200, `[{"uuid":"old","name":"demo","status":"stopped"},{"uuid":"new","name":"new","status":"stopped"}]`), nil
 	}
 	f.scheduler().recoverMissedDeletes()
 	status, err = store.ReadStatusStore()
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		got := status.Sandboxes[store.StatusKey(f.scope, "old")]
+		require.False(t, got.Stale)
+		require.NotContains(t, got.Detail, "deleted")
 	}
-	if got := status.Sandboxes[store.StatusKey(f.scope, "old")]; got.Stale || strings.Contains(got.Detail, "deleted") {
-		t.Fatalf("recovered sandbox retains deletion uncertainty: %+v", got)
-	}
-	if len(status.Warnings) != 0 {
-		t.Fatalf("recovered warning remains: %+v", status.Warnings)
-	}
-	if len(status.Errors) != 0 {
-		t.Fatalf("recovered diagnostic remains: %+v", status.Errors)
-	}
+	require.Len(t, status.Warnings, 0, "recovered warning remains: %+v", status.Warnings)
+	require.Len(t, status.Errors, 0, "recovered diagnostic remains: %+v", status.Errors)
 }
 
 func TestCatchupClearsDeletionWarningAfterConfirmedAbsence(t *testing.T) {
@@ -249,16 +234,13 @@ func TestCatchupClearsDeletionWarningAfterConfirmedAbsence(t *testing.T) {
 	f.scheduler().processCatchup(true)
 	f.assertCount(0)
 	status, err := store.ReadStatusStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if warning := status.Warnings[store.StatusKey(f.scope, "old")+"/absence"]; warning != "" {
-		t.Fatalf("deleted sandbox retains warning: %s", warning)
-	}
+	require.NoError(t, err)
+
+	warning := status.Warnings[store.StatusKey(f.scope, "old")+"/absence"]
+	require.Equal(t, "", warning, "deleted sandbox retains warning: %s", warning)
+
 	for _, item := range status.Errors {
-		if item.Code == "S0002" {
-			t.Fatalf("deleted sandbox retains diagnostic: %+v", item)
-		}
+		require.NotEqual(t, "S0002", item.Code, "deleted sandbox retains diagnostic: %+v", item)
 	}
 }
 
@@ -279,27 +261,20 @@ func TestConfirmedAbsenceClearsVerificationFailureWhenCleanupIsDeferred(t *testi
 		return lifecycleResponse(404, `{"code":"sandbox_not_found"}`), nil
 	}
 	unlock, err := store.LockState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer unlock()
 	f.scheduler().recoverMissedDeletes()
 	f.assertCount(1)
 	status, err := store.ReadStatusStore()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for _, item := range status.Errors {
-		if item.Code == store.CodeSandboxDeletion {
-			t.Fatalf("confirmed deletion retains verification diagnostic: %+v", item)
-		}
+		require.NotEqual(t, store.CodeSandboxDeletion, item.Code, "confirmed deletion retains verification diagnostic: %+v", item)
 	}
-	if detail := status.Sandboxes[store.StatusKey(f.scope, "old")].Detail; strings.Contains(detail, "confirm") {
-		t.Fatalf("confirmed deletion retains verification detail: %s", detail)
-	}
-	if len(f.removed) != 0 {
-		t.Fatalf("deferred cleanup removed herdr machine: %v", f.removed)
-	}
+
+	detail := status.Sandboxes[store.StatusKey(f.scope, "old")].Detail
+	require.NotContains(t, detail, "confirm", "confirmed deletion retains verification detail: %s", detail)
+
+	require.Len(t, f.removed, 0, "deferred cleanup removed herdr machine: %v", f.removed)
 }
 
 func TestCatchupRecoversConfirmedDeletionWhenInventoryIsAmbiguous(t *testing.T) {
@@ -307,9 +282,7 @@ func TestCatchupRecoversConfirmedDeletionWhenInventoryIsAmbiguous(t *testing.T) 
 	f.save(ownedRegistration())
 	f.scheduler().processCatchup(true)
 	f.assertCount(0)
-	if len(f.removed) != 1 {
-		t.Fatalf("removed = %v", f.removed)
-	}
+	require.Len(t, f.removed, 1, "removed = %v", f.removed)
 }
 
 // The panel's r action invokes Reconcile without starting a lifecycle watcher.
@@ -318,9 +291,7 @@ func TestManualReconcileRemovesDeletedSandbox(t *testing.T) {
 		t.Run(inventory, func(t *testing.T) {
 			f := newLifecycleFixture(t)
 			f.save(ownedRegistration())
-			if err := store.RecordSandboxStatus(f.scope, sbx.Sandbox{ID: "old", Name: "demo", Status: "running"}, "ready", "registered", false); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, store.RecordSandboxStatus(f.scope, sbx.Sandbox{ID: "old", Name: "demo", Status: "running"}, "ready", "registered", false))
 			original := f.request
 			f.request = func(r *http.Request) (*http.Response, error) {
 				if r.URL.Path == "/sandbox" {
@@ -332,18 +303,12 @@ func TestManualReconcileRemovesDeletedSandbox(t *testing.T) {
 			// Empty inventory can still block registration; confirmed deletion
 			// must be recovered independently of that prerequisite.
 			_ = f.service.registrations.Reconcile(&output)
-			if len(f.removed) != 1 {
-				t.Fatalf("deleted sandbox machine remains after refresh: removed=%v output=%s", f.removed, output.String())
-			}
+			require.Len(t, f.removed, 1, "deleted sandbox machine remains after refresh: removed=%v output=%s", f.removed, output.String())
 			f.assertCount(0)
 			snapshot, err := store.Snapshot(f.scope)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			for _, status := range snapshot.Sandboxes {
-				if status.SandboxID == "old" {
-					t.Fatalf("deleted sandbox remains in panel status: %#v", status)
-				}
+				require.NotEqual(t, "old", status.SandboxID, "deleted sandbox remains in panel status: %#v", status)
 			}
 		})
 	}
@@ -376,9 +341,7 @@ func TestManualReconcilePreservesUnconfirmedOrUnownedMachines(t *testing.T) {
 			}
 			f.save(item)
 			_ = f.service.registrations.Reconcile(io.Discard)
-			if len(f.removed) != 0 {
-				t.Fatalf("removed protected machine: %v", f.removed)
-			}
+			require.Len(t, f.removed, 0, "removed protected machine: %v", f.removed)
 			f.assertCount(1)
 		})
 	}
@@ -386,43 +349,34 @@ func TestManualReconcilePreservesUnconfirmedOrUnownedMachines(t *testing.T) {
 
 func TestLifecycleSchedulerIgnoresOtherEventTypes(t *testing.T) {
 	s := newLifecycleFixture(t).scheduler()
-	if !s.enqueue(sbx.LifecycleEvent{Type: "other", Action: "deleted", SandboxID: "old"}) || len(s.retired) != 0 || len(s.deletes) != 0 || len(s.queue) != 0 {
-		t.Fatal("unrelated event changed scheduler state")
-	}
+	require.True(t, s.enqueue(sbx.LifecycleEvent{Type: "other", Action: "deleted", SandboxID: "old"}))
+	require.Len(t, s.retired, 0)
+	require.Len(t, s.deletes, 0)
+	require.Len(t, s.queue, 0)
 }
 
 func TestLifecycleDeletionRemovesOnlyOwnedProfileInItsScope(t *testing.T) {
 	f := newLifecycleFixture(t)
 	item := ownedRegistration()
 	other := store.Tracked{SandboxID: "other", Label: "other desk", Target: "other.sbx", ProfileID: "other-machine"}
-	if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{f.scope: {item}, "other-scope": {other}}}); err != nil {
-		t.Fatal(err)
-	}
-	if !f.scheduler().removeDeleted(sbx.LifecycleEvent{SandboxID: "old"}) || len(f.removed) != 1 {
-		t.Fatalf("owned deletion did not finish: %v", f.removed)
-	}
+	require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{f.scope: {item}, "other-scope": {other}}}))
+	require.True(t, f.scheduler().removeDeleted(sbx.LifecycleEvent{SandboxID: "old"}))
+	require.Len(t, f.removed, 1)
 	f.assertCount(0)
 	state, _ := store.LoadState()
-	if len(state.Scopes["other-scope"]) != 1 {
-		t.Fatal("deletion changed another daemon scope")
-	}
+	require.Len(t, state.Scopes["other-scope"], 1, "deletion changed another daemon scope")
 }
 
 func TestLifecycleDeletionRetainsCrossScopeMachineAssociation(t *testing.T) {
 	f := newLifecycleFixture(t)
 	item := ownedRegistration()
-	if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{f.scope: {item}, "other-scope": {item}}}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{f.scope: {item}, "other-scope": {item}}}))
 	f.scheduler().removeDeleted(sbx.LifecycleEvent{SandboxID: "old"})
-	if len(f.removed) != 0 {
-		t.Fatalf("ambiguous cross-scope machine was removed: %v", f.removed)
-	}
+	require.Len(t, f.removed, 0, "ambiguous cross-scope machine was removed: %v", f.removed)
 	f.assertCount(1)
 	state, err := store.LoadState()
-	if err != nil || len(state.Scopes["other-scope"]) != 1 {
-		t.Fatalf("cross-scope association changed: %+v %v", state, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, state.Scopes["other-scope"], 1)
 }
 
 func TestLifecycleDeletionRetainsMismatchedProfile(t *testing.T) {
@@ -431,9 +385,7 @@ func TestLifecycleDeletionRetainsMismatchedProfile(t *testing.T) {
 	f.catalog = `[{"id":"machine-1","label":"manual","target":"different","session":"default"}]`
 	f.scheduler().removeDeleted(sbx.LifecycleEvent{SandboxID: "old"})
 	f.assertCount(1)
-	if len(f.removed) != 0 {
-		t.Fatal("manually changed profile removed")
-	}
+	require.Len(t, f.removed, 0, "manually changed profile removed")
 }
 
 func TestLifecycleQueueKeepsDeletionWhenFull(t *testing.T) {
@@ -443,17 +395,13 @@ func TestLifecycleQueueKeepsDeletionWhenFull(t *testing.T) {
 	for len(s.queue) < cap(s.queue) {
 		s.enqueue(sbx.LifecycleEvent{Type: "sandbox.lifecycle", Action: "stopped", SandboxID: "queued"})
 	}
-	if s.enqueue(sbx.LifecycleEvent{Type: "sandbox.lifecycle", Action: "deleted", SandboxID: "old"}) {
-		t.Fatal("full queue accepted event")
-	}
-	if !s.retired["old"] || len(s.deletes) != 1 {
-		t.Fatal("overflow lost deletion intent")
-	}
+	require.False(t, s.enqueue(sbx.LifecycleEvent{Type: "sandbox.lifecycle", Action: "deleted", SandboxID: "old"}), "full queue accepted event")
+	require.True(t, s.retired["old"])
+	require.Len(t, s.deletes, 1)
 	s.processDeletes()
 	f.assertCount(0)
-	if len(s.deletes) != 0 || len(f.removed) != 1 {
-		t.Fatal("overflow deletion was not processed")
-	}
+	require.Len(t, s.deletes, 0)
+	require.Len(t, f.removed, 1)
 }
 
 func TestLifecycleGapRequestsCatchupWithoutCrossStreamComparison(t *testing.T) {
@@ -461,16 +409,12 @@ func TestLifecycleGapRequestsCatchupWithoutCrossStreamComparison(t *testing.T) {
 	for _, seq := range []uint64{3, 5} {
 		s.enqueue(sbx.LifecycleEvent{Type: "sandbox.lifecycle", Action: "stopped", SandboxID: "old", Seq: &seq})
 	}
-	if !s.catchup {
-		t.Fatal("sequence gap did not request catch-up")
-	}
+	require.True(t, s.catchup, "sequence gap did not request catch-up")
 	s.catchup = false
 	s.beginStream()
 	seq := uint64(100)
 	s.enqueue(sbx.LifecycleEvent{Type: "sandbox.lifecycle", Action: "stopped", SandboxID: "old", Seq: &seq})
-	if s.catchup {
-		t.Fatal("new stream compared its sequence to the previous stream")
-	}
+	require.False(t, s.catchup, "new stream compared its sequence to the previous stream")
 }
 
 func TestLifecycleDeletionKeepsPendingIntentVisible(t *testing.T) {
@@ -480,9 +424,7 @@ func TestLifecycleDeletionKeepsPendingIntentVisible(t *testing.T) {
 	f.save(item)
 	f.scheduler().removeDeleted(sbx.LifecycleEvent{SandboxID: "old"})
 	f.assertCount(1)
-	if len(f.removed) != 0 {
-		t.Fatal("unresolved profile removed")
-	}
+	require.Len(t, f.removed, 0, "unresolved profile removed")
 }
 
 func TestLifecycleDeletionClearsStateWhenOwnedProfileIsAlreadyAbsent(t *testing.T) {
@@ -491,9 +433,7 @@ func TestLifecycleDeletionClearsStateWhenOwnedProfileIsAlreadyAbsent(t *testing.
 	f.catalog = `[]`
 	f.scheduler().removeDeleted(sbx.LifecycleEvent{SandboxID: "old"})
 	f.assertCount(0)
-	if len(f.removed) != 0 {
-		t.Fatal("absent machine was removed twice")
-	}
+	require.Len(t, f.removed, 0, "absent machine was removed twice")
 }
 
 func TestWorkerUsesPluginAndSessionLiveness(t *testing.T) {
@@ -510,13 +450,9 @@ func TestWorkerUsesPluginAndSessionLiveness(t *testing.T) {
 		}
 		return "", errors.New("unexpected command")
 	}
-	if !f.service.workerAlive() {
-		t.Fatal("running participating session did not keep worker alive")
-	}
+	require.True(t, f.service.workerAlive(), "running participating session did not keep worker alive")
 	enabled = false
-	if f.service.workerAlive() {
-		t.Fatal("disabled plugin kept worker alive")
-	}
+	require.False(t, f.service.workerAlive(), "disabled plugin kept worker alive")
 }
 
 func TestWorkerRebindsToTheOtherRunningSession(t *testing.T) {
@@ -524,19 +460,15 @@ func TestWorkerRebindsToTheOtherRunningSession(t *testing.T) {
 	f.service.herdr.RebindSocket("old.sock")
 	f.run = func(_ context.Context, cmd process.Command) (string, error) {
 		if strings.Join(cmd.Args, " ") == "session list --json" {
-			if len(cmd.Unset) == 0 {
-				t.Fatal("session discovery inherited worker socket")
-			}
+			require.NotEqual(t, 0, len(cmd.Unset), "session discovery inherited worker socket")
 			return `{"sessions":[{"running":false,"socket_path":"old.sock"},{"running":true,"socket_path":"new.sock"}]}`, nil
 		}
-		if strings.Join(cmd.Args, " ") != "status server --json" || cmd.Env["HERDR_SOCKET_PATH"] != "new.sock" {
-			t.Fatalf("status was not rebound: %#v", cmd)
-		}
+		require.EqualValues(t, "status server --json", strings.Join(cmd.Args, " "))
+		require.EqualValues(t, "new.sock", cmd.Env["HERDR_SOCKET_PATH"])
 		return `{"running":true}`, nil
 	}
-	if !f.service.herdr.RebindToRunningSession(context.Background()) || !f.service.herdr.LocalServerRunning(context.Background()) {
-		t.Fatal("failed to bind the new server")
-	}
+	require.True(t, f.service.herdr.RebindToRunningSession(context.Background()))
+	require.True(t, f.service.herdr.LocalServerRunning(context.Background()))
 }
 
 func TestWorkerAllowsABriefServerHandoffGap(t *testing.T) {
@@ -560,9 +492,7 @@ func TestWorkerAllowsABriefServerHandoffGap(t *testing.T) {
 	go func() { f.service.stopWhenServerEnds(ctx, cancel); close(done) }()
 	select {
 	case <-done:
-		if time.Since(started) < f.service.serverHandoff {
-			t.Fatal("worker stopped before its handoff grace period")
-		}
+		require.False(t, time.Since(started) < f.service.serverHandoff, "worker stopped before its handoff grace period")
 	case <-time.After(3 * time.Second):
 		t.Fatal("worker did not stop after its handoff grace period")
 	}
@@ -584,22 +514,20 @@ func TestWorkerReconnectsWhileHerdrRemainsLive(t *testing.T) {
 		return f.defaultRun(ctx, cmd)
 	}
 	f.service.workerReconnect = time.Millisecond
-	if err := f.service.Worker(io.Discard); err != nil || attempts.Load() != 2 {
-		t.Fatalf("attempts=%d, error=%v", attempts.Load(), err)
-	}
+
+	err := f.service.Worker(io.Discard)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, attempts.Load())
 }
 
 func TestLocalServerStatusUsesSupportedJSON(t *testing.T) {
 	f := newLifecycleFixture(t)
 	f.run = func(_ context.Context, cmd process.Command) (string, error) {
-		if cmd.Name != "herdr" || strings.Join(cmd.Args, " ") != "status server --json" {
-			t.Fatalf("unexpected server query: %#v", cmd)
-		}
+		require.EqualValues(t, "herdr", cmd.Name)
+		require.EqualValues(t, "status server --json", strings.Join(cmd.Args, " "))
 		return `{"running":true}`, nil
 	}
-	if !f.service.herdr.LocalServerRunning(context.Background()) {
-		t.Fatal("server was not recognized as running")
-	}
+	require.True(t, f.service.herdr.LocalServerRunning(context.Background()), "server was not recognized as running")
 }
 
 func TestWatchCancelsSchedulerBeforeAWorkerRetry(t *testing.T) {
@@ -647,14 +575,11 @@ func TestWatchCancelsSchedulerBeforeAWorkerRetry(t *testing.T) {
 	}()
 	err := f.service.watchContext(ctx, io.Discard)
 	<-producerDone
-	if err == nil || ctx.Err() != nil {
-		t.Fatalf("watch did not stop on lost daemon: err=%v context=%v", err, ctx.Err())
-	}
+	require.Error(t, err)
+	require.NoError(t, ctx.Err())
 	select {
 	case err := <-canceled:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("scheduler command ended with %v", err)
-		}
+		require.ErrorIs(t, err, context.Canceled, "scheduler command ended with %v", err)
 	default:
 		t.Fatal("watch returned before its in-flight scheduler command was canceled")
 	}
@@ -677,9 +602,7 @@ func TestWorkerReportsStreamSyncAndReconnect(t *testing.T) {
 	synced := make(chan struct{}, 1)
 	states := make(chan string, 8)
 	report := func(state, detail string, sync bool) {
-		if err := store.RecordWorkerStatus(state, detail, sync); err != nil {
-			t.Error(err)
-		}
+		assert.NoError(t, store.RecordWorkerStatus(state, detail, sync))
 		if state != "" {
 			states <- state
 		}
@@ -703,22 +626,19 @@ func TestWorkerReportsStreamSyncAndReconnect(t *testing.T) {
 		}
 		writer.Close()
 	}()
-	if err := f.service.watchWithStatus(ctx, io.Discard, report); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, f.service.watchWithStatus(ctx, io.Discard, report))
 	<-producerDone
 	close(states)
 	var got []string
 	for state := range states {
 		got = append(got, state)
 	}
-	if strings.Join(got, ",") != "running,reconnecting" {
-		t.Fatalf("states: %v", got)
-	}
+	require.Equal(t, "running,reconnecting", strings.Join(got, ","), "states: %v", got)
 	saved, err := store.ReadStatusStore()
-	if err != nil || saved.Worker == nil || saved.Worker.LastSync.IsZero() || saved.Worker.State != "reconnecting" {
-		t.Fatalf("saved=%#v err=%v", saved.Worker, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, saved.Worker)
+	require.False(t, saved.Worker.LastSync.IsZero())
+	require.EqualValues(t, "reconnecting", saved.Worker.State)
 }
 
 func TestPluginDefaultsChangeRequestsCatchupWithoutLifecycleEvent(t *testing.T) {
@@ -733,21 +653,13 @@ func TestPluginDefaultsChangeRequestsCatchupWithoutLifecycleEvent(t *testing.T) 
 		return f.defaultRun(ctx, cmd)
 	}
 	scheduler.processPluginDefaults()
-	if inspections != 0 {
-		t.Fatal("unchanged defaults triggered reconciliation")
-	}
-	if err := store.SetGuestPluginDefault("example.plugin", true); err != nil {
-		t.Fatal(err)
-	}
+	require.Equal(t, 0, inspections, "unchanged defaults triggered reconciliation")
+	require.NoError(t, store.SetGuestPluginDefault("example.plugin", true))
 	scheduler.processPluginDefaults()
-	if inspections == 0 {
-		t.Fatal("saved choice did not trigger reconciliation")
-	}
+	require.NotEqual(t, 0, inspections, "saved choice did not trigger reconciliation")
 	previous := inspections
 	scheduler.processPluginDefaults()
-	if inspections != previous {
-		t.Fatal("same choice repeatedly triggered reconciliation")
-	}
+	require.Equal(t, previous, inspections, "same choice repeatedly triggered reconciliation")
 }
 
 func TestLifecycleDeletionRetainsOwnershipWithMalformedMachineCatalog(t *testing.T) {
@@ -756,13 +668,9 @@ func TestLifecycleDeletionRetainsOwnershipWithMalformedMachineCatalog(t *testing
 			f := newLifecycleFixture(t)
 			f.save(ownedRegistration())
 			f.catalog = catalog
-			if f.scheduler().removeDeleted(sbx.LifecycleEvent{SandboxID: "old"}) {
-				t.Fatal("malformed machine catalog completed deletion")
-			}
+			require.False(t, f.scheduler().removeDeleted(sbx.LifecycleEvent{SandboxID: "old"}), "malformed machine catalog completed deletion")
 			f.assertCount(1)
-			if len(f.removed) != 0 {
-				t.Fatalf("malformed catalog removed machines: %v", f.removed)
-			}
+			require.Len(t, f.removed, 0, "malformed catalog removed machines: %v", f.removed)
 		})
 	}
 }
@@ -772,18 +680,14 @@ func TestCatchupFailureShowsReasonAndCancellationStaysQuiet(t *testing.T) {
 		t.Run(fmt.Sprintf("cancelled_%t", cancelled), func(t *testing.T) {
 			f := newLifecycleFixture(t)
 			sb := sbx.Sandbox{ID: "old", Name: "demo", Status: "stopped"}
-			if err := store.RecordSandboxStatus(f.scope, sb, "ready", "last observed status", false); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, store.RecordSandboxStatus(f.scope, sb, "ready", "last observed status", false))
 			failure := errors.New("sandbox inventory fixture unavailable")
 			if cancelled {
 				failure = fmt.Errorf("refresh interrupted: %w", context.Canceled)
 			}
 			requests := 0
 			f.request = func(r *http.Request) (*http.Response, error) {
-				if r.URL.Path != "/sandbox" {
-					t.Fatalf("unexpected probe: %s", r.URL.Path)
-				}
+				require.Equal(t, "/sandbox", r.URL.Path, "unexpected probe: %s", r.URL.Path)
 				requests++
 				if requests > 1 {
 					return nil, failure
@@ -795,20 +699,21 @@ func TestCatchupFailureShowsReasonAndCancellationStaysQuiet(t *testing.T) {
 			scheduler.out = &output
 			scheduler.processCatchup(true)
 			saved, err := store.ReadStatusStore()
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			cached := saved.Sandboxes[store.StatusKey(f.scope, "old")]
 			warning := saved.Warnings[f.scope+"/catch-up"]
 			if cancelled {
-				if warning != "" || cached.Stale || cached.Detail != "last observed status" || strings.Contains(output.String(), "Docker Sandboxes warning:") {
-					t.Fatalf("cancellation reported failure: status=%+v warning=%q output=%s", cached, warning, output.String())
-				}
+				require.EqualValues(t, "", warning)
+				require.False(t, cached.Stale)
+				require.EqualValues(t, "last observed status", cached.Detail)
+				require.NotContains(t, output.String(), "Docker Sandboxes warning:")
 				return
 			}
-			if !cached.Stale || !strings.HasPrefix(cached.Detail, "Could not refresh sandbox state: ") || !strings.Contains(cached.Detail, failure.Error()) || warning != cached.Detail || !strings.Contains(output.String(), warning) {
-				t.Fatalf("refresh cause lost: status=%+v warning=%q output=%s", cached, warning, output.String())
-			}
+			require.True(t, cached.Stale)
+			require.True(t, strings.HasPrefix(cached.Detail, "Could not refresh sandbox state: "))
+			require.Contains(t, cached.Detail, failure.Error())
+			require.False(t, warning != cached.Detail)
+			require.Contains(t, output.String(), warning)
 		})
 	}
 }
@@ -826,7 +731,5 @@ func TestMissedDeletionReleasesRemovedEntryMetadataOnNameReuse(t *testing.T) {
 	}
 	f.scheduler().recoverMissedDeletes()
 	f.assertCount(0)
-	if len(f.removed) != 0 {
-		t.Fatalf("local cleanup removed native replacement: %v", f.removed)
-	}
+	require.Len(t, f.removed, 0, "local cleanup removed native replacement: %v", f.removed)
 }

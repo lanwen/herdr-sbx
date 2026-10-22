@@ -3,6 +3,8 @@ package guestplugins
 import (
 	"bytes"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 const hostKeys = `[keys]
@@ -20,27 +22,16 @@ command = "other.toggle"
 func TestMergeKeys(t *testing.T) {
 	guest := []byte("# keep a backup of comments\n[theme]\nname = 'sand'\n")
 	merged, err := mergeKeys([]byte(hostKeys), guest, "example.actions")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	doc, err := parseConfig(merged)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if doc["theme"].(map[string]any)["name"] != "sand" {
-		t.Fatal("lost guest settings")
-	}
+	require.NoError(t, err)
+	require.False(t, doc["theme"].(map[string]any)["name"] != "sand", "lost guest settings")
 	keys := doc["keys"].(map[string]any)
-	if len(keys["command"].([]any)) != 1 {
-		t.Fatal("copied unrelated shortcuts")
-	}
-	if len(keyNames(keys["prefix"])) != 2 {
-		t.Fatal("missing local prefix")
-	}
+	require.Len(t, keys["command"].([]any), 1, "copied unrelated shortcuts")
+	require.Len(t, keyNames(keys["prefix"]), 2, "missing local prefix")
 	again, err := mergeKeys([]byte(hostKeys), merged, "example.actions")
-	if err != nil || !bytes.Equal(again, merged) {
-		t.Fatalf("not idempotent: %v", err)
-	}
+	require.NoError(t, err)
+	require.True(t, bytes.Equal(again, merged), "merge must be idempotent")
 }
 func TestMergeRejectsConflicts(t *testing.T) {
 	for name, guest := range map[string]string{
@@ -58,9 +49,8 @@ quit="ctrl+a"`,
 		"invalid": "[broken",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := mergeKeys([]byte(hostKeys), []byte(guest), "example.actions"); err == nil {
-				t.Fatal("accepted conflict")
-			}
+			_, err := mergeKeys([]byte(hostKeys), []byte(guest), "example.actions")
+			require.Error(t, err, "accepted conflict")
 		})
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/lanwen/herdr-sbx/internal/process"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMachineNativeEnabledObservation(t *testing.T) {
@@ -21,17 +22,16 @@ func TestMachineNativeEnabledObservation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			machines, err := parseMachines(`[{"id":"m1","label":"renamed","target":"demo.sbx","session":"default"` + tc.field + `}]`)
-			if err != nil || len(machines) != 1 {
-				t.Fatalf("machines=%#v err=%v", machines, err)
-			}
+			require.NoError(t, err)
+			require.Len(t, machines, 1)
 			got := machines[0].Enabled
-			if (got != nil) != tc.known || (got != nil && *got != tc.want) {
-				t.Fatalf("native enabled=%v, want known=%t value=%t", got, tc.known, tc.want)
-			}
+			require.False(t, (got != nil) != tc.known)
+			require.False(t, got != nil && *got != tc.want)
 		})
 	}
-	if _, err := parseMachines(`[{"id":"m1","enabled":"false"}]`); err == nil {
-		t.Fatal("non-boolean native state was accepted")
+	{
+		_, err := parseMachines(`[{"id":"m1","enabled":"false"}]`)
+		require.Error(t, err, "non-boolean native state was accepted")
 	}
 }
 
@@ -46,16 +46,16 @@ func TestSetMachineEnabledUsesOnlyHostCatalogCommand(t *testing.T) {
 			calls := 0
 			client := New(process.Runner{Execute: func(_ context.Context, command process.Command) (string, error) {
 				calls++
-				if command.Name != "herdr" || strings.Join(command.Args, " ") != "machine "+action+" m1" || command.Env["HERDR_SOCKET_PATH"] != "isolated.sock" {
-					t.Fatalf("unexpected operation: %#v", command)
-				}
+				require.EqualValues(t, "herdr", command.Name)
+				require.False(t, strings.Join(command.Args, " ") != "machine "+action+" m1")
+				require.EqualValues(t, "isolated.sock", command.Env["HERDR_SOCKET_PATH"])
 				return "saved", nil
 			}})
 			client.RebindSocket("isolated.sock")
 			output, err := client.SetMachineEnabled(context.Background(), "m1", enabled)
-			if err != nil || output != "saved" || calls != 1 {
-				t.Fatalf("output=%q calls=%d err=%v", output, calls, err)
-			}
+			require.NoError(t, err)
+			require.EqualValues(t, "saved", output)
+			require.EqualValues(t, 1, calls)
 		})
 	}
 }
@@ -68,15 +68,13 @@ func TestSetMachineEnabledRetainsFailure(t *testing.T) {
 	}})
 	_, err := client.SetMachineEnabled(context.Background(), "m1", false)
 	var upstream *CommandError
-	if !errors.As(err, &upstream) || upstream.Code != "catalog_unavailable" {
-		t.Fatalf("upstream failure lost: %v", err)
-	}
+	require.ErrorAs(t, err, &upstream)
+	require.EqualValues(t, "catalog_unavailable", upstream.Code)
 	for _, id := range []string{"", " m1", "m1 ", "--help"} {
-		if _, err := client.SetMachineEnabled(context.Background(), id, false); err == nil {
-			t.Fatalf("invalid profile ID accepted: %q", id)
+		{
+			_, err := client.SetMachineEnabled(context.Background(), id, false)
+			require.Error(t, err, "invalid profile ID accepted: %q", id)
 		}
 	}
-	if calls != 1 {
-		t.Fatalf("invalid profile ID reached herdr: %d calls", calls)
-	}
+	require.Equal(t, 1, calls, "invalid profile ID reached herdr: %d calls", calls)
 }

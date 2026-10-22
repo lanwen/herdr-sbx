@@ -11,6 +11,7 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/registration"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 // TestCaptureScreenshots is an opt-in capture fixture, not a live integration.
@@ -21,17 +22,11 @@ func TestCaptureScreenshots(t *testing.T) {
 		t.Skip("set PANEL_SCREENSHOT_DIR to capture simulated frames")
 	}
 	t.Setenv("NO_COLOR", "")
-	if err := os.Unsetenv("NO_COLOR"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Unsetenv("NO_COLOR"))
+	require.NoError(t, os.MkdirAll(dir, 0755))
 	write := func(name string, m *model) {
 		t.Helper()
-		if err := os.WriteFile(filepath.Join(dir, name+".ansi"), []byte(m.View().Content), 0644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name+".ansi"), []byte(m.View().Content), 0644))
 	}
 	m := screenshotModel()
 	write("sandboxes", m)

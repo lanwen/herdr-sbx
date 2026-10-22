@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDetailsConfirmationUsesHintWithLocalControls(t *testing.T) {
@@ -17,23 +18,20 @@ func TestDetailsConfirmationUsesHintWithLocalControls(t *testing.T) {
 	hint := strings.Index(view, "╭─ Hint")
 	details := strings.Index(view, "beta (stopped)")
 	confirm := strings.Index(view, "Fix herdr in beta?")
-	if details < 0 || hint < details || confirm < hint {
-		t.Fatalf("confirmation did not stay in Hint below details: %s", view)
-	}
+	require.False(t, details < 0)
+	require.False(t, hint < details)
+	require.False(t, confirm < hint)
 	m.key(keyMsg(tea.KeyRight, ""))
-	if m.button != 1 || m.dialog != "fix-herdr" || m.page != "Sandboxes" {
-		t.Fatal("confirmation lost local keyboard focus")
-	}
+	require.EqualValues(t, 1, m.button)
+	require.EqualValues(t, "fix-herdr", m.dialog)
+	require.EqualValues(t, "Sandboxes", m.page)
 	m.View()
 	for _, h := range m.hits {
 		if h.action == "dialog" && h.id == "0" {
-			if h.y <= strings.Count(view[:hint], "\n") {
-				t.Fatal("confirmation mouse target is outside Hint")
-			}
-			m.click(h.x, h.y)
-			if m.dialog != "" || m.expanded != "b" {
-				t.Fatal("mouse Cancel did not preserve details")
-			}
+			require.False(t, h.y <= strings.Count(view[:hint], "\n"), "confirmation mouse target is outside Hint")
+			clickAt(m, h.x, h.y)
+			require.EqualValues(t, "", m.dialog)
+			require.EqualValues(t, "b", m.expanded)
 			return
 		}
 	}
@@ -46,16 +44,12 @@ func TestSandboxActionSpinnerAndOutcomeUseHint(t *testing.T) {
 	m.run("a", store.CodeManagement, "Saved management choice", func() error { return nil })
 	first := ansi.Strip(m.View().Content)
 	hint := strings.Index(first, "╭─ Hint")
-	if hint < 0 || !strings.Contains(first[hint:], "◐ Updating sandbox connection for alpha") {
-		t.Fatalf("active action missing from Hint: %s", first)
-	}
+	require.False(t, hint < 0)
+	require.Contains(t, first[hint:], "◐ Updating sandbox connection for alpha")
 	m.ticks++
-	if !strings.Contains(ansi.Strip(m.View().Content), "◓ Updating sandbox connection") {
-		t.Fatal("action spinner did not advance")
-	}
+	require.Contains(t, ansi.Strip(m.View().Content), "◓ Updating sandbox connection", "action spinner did not advance")
 	m.Update(operationMsg{target: "a", code: store.CodeManagement, notice: "Saved management choice"})
 	view := ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "Saved management choice") || strings.Contains(view, "◓") {
-		t.Fatalf("completion did not replace the spinner: %s", view)
-	}
+	require.Contains(t, view, "Saved management choice")
+	require.NotContains(t, view, "◓")
 }

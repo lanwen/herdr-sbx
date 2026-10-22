@@ -2,7 +2,6 @@ package process
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestRunnerCapturedOutputLimit(t *testing.T) {
@@ -17,30 +18,27 @@ func TestRunnerCapturedOutputLimit(t *testing.T) {
 		t.Run(strconv.Itoa(size), func(t *testing.T) {
 			output, err := (Runner{}).CombinedOutput(context.Background(), outputHelper("bytes", size))
 			if size > maxOutputBytes {
-				if !errors.Is(err, errOutputLimit) || output != "" {
-					t.Fatalf("overflow = %d bytes, %v", len(output), err)
-				}
+				require.ErrorIs(t, err, errOutputLimit)
+				require.EqualValues(t, "", output)
 				return
 			}
-			if err != nil || len(output) != size || strings.Trim(output, "x") != "" {
-				t.Fatalf("capture = %d bytes, %v; want %d", len(output), err, size)
-			}
+			require.NoError(t, err)
+			require.Len(t, output, size)
+			require.EqualValues(t, "", strings.Trim(output, "x"))
 		})
 	}
 }
 
 func TestRunnerMergesOutput(t *testing.T) {
 	output, err := (Runner{}).CombinedOutput(context.Background(), outputHelper("merged", 0))
-	if err != nil || output != "stdout\nstderr\n" {
-		t.Fatalf("merged output = %q, %v", output, err)
-	}
+	require.NoError(t, err)
+	require.EqualValues(t, "stdout\nstderr\n", output)
 }
 
 func TestRunnerLimitsCombinedStreams(t *testing.T) {
 	output, err := (Runner{}).CombinedOutput(context.Background(), outputHelper("combined-limit", 0))
-	if !errors.Is(err, errOutputLimit) || output != "" {
-		t.Fatalf("combined overflow = %d bytes, %v", len(output), err)
-	}
+	require.ErrorIs(t, err, errOutputLimit)
+	require.EqualValues(t, "", output)
 }
 
 func TestRunnerStopsContinuingProducer(t *testing.T) {
@@ -48,9 +46,9 @@ func TestRunnerStopsContinuingProducer(t *testing.T) {
 	command := outputHelper("continuous", 0)
 	command.Timeout = 5 * time.Second
 	output, err := (Runner{}).CombinedOutput(context.Background(), command)
-	if !errors.Is(err, errOutputLimit) || output != "" || time.Since(started) > 3*time.Second {
-		t.Fatalf("producer result = %d bytes, %v after %v", len(output), err, time.Since(started))
-	}
+	require.ErrorIs(t, err, errOutputLimit)
+	require.EqualValues(t, "", output)
+	require.False(t, time.Since(started) > 3*time.Second)
 }
 
 func TestRunnerCancellationAndTimeout(t *testing.T) {
@@ -60,34 +58,28 @@ func TestRunnerCancellationAndTimeout(t *testing.T) {
 		timer := time.AfterFunc(100*time.Millisecond, cancel)
 		defer timer.Stop()
 		_, err := (Runner{}).CombinedOutput(ctx, outputHelper("sleep", 0))
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("cancelled command = %v", err)
-		}
+		require.ErrorIs(t, err, context.Canceled, "cancelled command = %v", err)
 	})
 	t.Run("cancelled before start", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		_, err := (Runner{}).CombinedOutput(ctx, outputHelper("sleep", 0))
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("cancelled command = %v", err)
-		}
+		require.ErrorIs(t, err, context.Canceled, "cancelled command = %v", err)
 	})
 	t.Run("timeout", func(t *testing.T) {
 		command := outputHelper("sleep", 0)
 		command.Timeout = 100 * time.Millisecond
 		_, err := (Runner{}).CombinedOutput(context.Background(), command)
-		if err == nil || err.Error() != "timed out" {
-			t.Fatalf("timed out command = %v", err)
-		}
+		require.Error(t, err)
+		require.EqualValues(t, "timed out", err.Error())
 	})
 }
 
 func TestRunnerBoundsInheritedPipeWait(t *testing.T) {
 	started := time.Now()
 	_, err := (Runner{}).CombinedOutput(context.Background(), outputHelper("inherited", 0))
-	if !errors.Is(err, exec.ErrWaitDelay) || time.Since(started) > 2500*time.Millisecond {
-		t.Fatalf("inherited pipe result = %v after %v", err, time.Since(started))
-	}
+	require.ErrorIs(t, err, exec.ErrWaitDelay)
+	require.False(t, time.Since(started) > 2500*time.Millisecond)
 }
 
 func outputHelper(mode string, size int) Command {
@@ -137,7 +129,6 @@ func TestRunnerStreamsStdinToRealProcess(t *testing.T) {
 	output, err := (Runner{}).CombinedOutput(context.Background(), Command{
 		Name: "/bin/cat", Stdin: strings.NewReader(payload), Timeout: time.Second,
 	})
-	if err != nil || output != payload {
-		t.Fatalf("stdin roundtrip = %q, %v", output, err)
-	}
+	require.NoError(t, err)
+	require.False(t, output != payload)
 }

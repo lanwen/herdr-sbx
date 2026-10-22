@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 // The old implementation replaced a local operation failure with a worker poll
@@ -17,42 +18,28 @@ func TestOperationErrorSurvivesStalePollUntilPersistenceIsObserved(t *testing.T)
 	m.refreshing, m.workerLoaded = true, true
 	stale := m.pollWorker()().(workerMsg)
 	_, command := m.Update(operationMsg{target: "a", code: store.CodeRename, err: errors.New("label taken")})
-	if m.notice != "" || m.focus != "table" {
-		t.Fatalf("failure changed sandbox focus: %q / %s", m.notice, m.focus)
-	}
+	require.EqualValues(t, "", m.notice)
+	require.EqualValues(t, "table", m.focus)
 	m.Update(stale)
-	if len(m.errors) != 1 {
-		t.Fatal("stale poll erased operation failure")
-	}
+	require.Len(t, m.errors, 1, "stale poll erased operation failure")
 	for _, message := range commandMessages(command) {
 		if persisted, ok := message.(errorsPersistedMsg); ok {
 			m.Update(persisted)
 		}
 	}
 	m.Update(stale)
-	if len(m.errors) != 1 {
-		t.Fatal("late stale poll erased persisted failure")
-	}
+	require.Len(t, m.errors, 1, "late stale poll erased persisted failure")
 	fresh := m.pollWorker()().(workerMsg)
 	m.Update(fresh)
-	if len(m.errors) != 1 || m.errors[0].detail != "label taken" {
-		t.Fatalf("persisted error missing: %+v", m.errors)
-	}
-	if len(m.errorChanges) != 0 {
-		t.Fatal("confirmed local overlay was not released")
-	}
+	require.Len(t, m.errors, 1)
+	require.EqualValues(t, "label taken", m.errors[0].detail)
+	require.Len(t, m.errorChanges, 0, "confirmed local overlay was not released")
 	// A later confirming recovery may now clear the error.
-	if err := store.ClearError(store.CodeRename, "a"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.ClearError(store.CodeRename, "a"))
 	m.Update(m.pollWorker()())
-	if len(m.errors) != 0 {
-		t.Fatal("confirmed recovery did not clear error")
-	}
+	require.Len(t, m.errors, 0, "confirmed recovery did not clear error")
 	m.Update(fresh)
-	if len(m.errors) != 0 {
-		t.Fatal("older snapshot resurrected recovered error")
-	}
+	require.Len(t, m.errors, 0, "older snapshot resurrected recovered error")
 }
 
 func TestLocalOperationErrorsDoNotMaskOrClearPluginSiblings(t *testing.T) {
@@ -66,47 +53,35 @@ func TestLocalOperationErrorsDoNotMaskOrClearPluginSiblings(t *testing.T) {
 	m.mergeErrors(workerMsg{observedAt: observed, errors: plugins})
 	m.addError(code, scope, errors.New("same failure"))
 	m.mergeErrors(workerMsg{observedAt: observed.Add(time.Second), errors: plugins})
-	if len(m.errors) != 3 {
-		t.Fatalf("local operation masked plugin diagnostics: %+v", m.errors)
-	}
+	require.Len(t, m.errors, 3, "local operation masked plugin diagnostics: %+v", m.errors)
 	counts := map[string]int{}
 	for _, entry := range m.errors {
 		counts[entry.pluginID] = entry.count
 	}
-	if counts[""] != 1 || counts["first.plugin"] != 2 || counts["second.plugin"] != 3 {
-		t.Fatalf("local operation changed independent counts: %+v", counts)
-	}
+	require.EqualValues(t, 1, counts[""])
+	require.EqualValues(t, 2, counts["first.plugin"])
+	require.EqualValues(t, 3, counts["second.plugin"])
 	// Seed both siblings together, then persist local failure and recovery in
 	// their original order. An operation recovery must not clear either plugin.
-	if err := store.SetGuestPluginFailures(scope, []store.PluginFailure{{Code: code, PluginID: "first.plugin", Detail: "same failure"}, {Code: code, PluginID: "second.plugin", Detail: "same failure"}}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SetGuestPluginFailures(scope, []store.PluginFailure{{Code: code, PluginID: "first.plugin", Detail: "same failure"}, {Code: code, PluginID: "second.plugin", Detail: "same failure"}}))
 	m.clearError(code, scope)
 	m.mergeErrors(workerMsg{observedAt: observed.Add(2 * time.Second), errors: plugins})
-	if len(m.errors) != 2 {
-		t.Fatalf("local recovery removed plugin siblings or resurrected local error: %+v", m.errors)
-	}
+	require.Len(t, m.errors, 2, "local recovery removed plugin siblings or resurrected local error: %+v", m.errors)
 	for _, effect := range m.effects {
-		if err := effect.apply(); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, effect.apply())
 	}
 	saved, err := store.ReadStatusStore()
-	if err != nil || len(saved.Errors) != 2 {
-		t.Fatalf("local recovery cleared durable plugin siblings: %v %+v", err, saved.Errors)
-	}
+	require.NoError(t, err)
+	require.Len(t, saved.Errors, 2)
 }
 
 func TestUnwatchFailureKeepsSandboxNavigation(t *testing.T) {
 	m := modelFixture(t)
 	m.Update(operationMsg{target: "a", code: store.CodeManagement, err: errors.New("another reconciliation is already running")})
-	if len(m.errors) != 1 || m.focus != "table" {
-		t.Fatalf("error is missing or table focus was lost: %+v, %s", m.errors, m.focus)
-	}
+	require.Len(t, m.errors, 1)
+	require.EqualValues(t, "table", m.focus)
 	m.key(keyMsg(tea.KeyDown, ""))
-	if m.selected != "b" {
-		t.Fatalf("Down did not move to another sandbox: %s", m.selected)
-	}
+	require.Equal(t, "b", m.selected, "Down did not move to another sandbox: %s", m.selected)
 }
 
 func TestErrorWritesPreserveOrderAcrossUpdates(t *testing.T) {
@@ -116,8 +91,9 @@ func TestErrorWritesPreserveOrderAcrossUpdates(t *testing.T) {
 	_, second := m.Update(operationMsg{target: "a", code: store.CodeRename, notice: "Saved"})
 	// The recovery waits for the earlier failed-operation write.
 	for _, message := range commandMessages(second) {
-		if _, ok := message.(errorsPersistedMsg); ok {
-			t.Fatal("error writes ran concurrently")
+		{
+			_, ok := message.(errorsPersistedMsg)
+			require.False(t, ok, "error writes ran concurrently")
 		}
 	}
 	var next tea.Cmd
@@ -128,22 +104,17 @@ func TestErrorWritesPreserveOrderAcrossUpdates(t *testing.T) {
 	}
 	stale := m.pollWorker()().(workerMsg)
 	m.Update(stale)
-	if len(m.errors) != 0 {
-		t.Fatal("pending recovery was overwritten by persisted failure")
-	}
+	require.Len(t, m.errors, 0, "pending recovery was overwritten by persisted failure")
 	for _, message := range commandMessages(next) {
 		if persisted, ok := message.(errorsPersistedMsg); ok {
 			m.Update(persisted)
 		}
 	}
 	m.Update(m.pollWorker()())
-	if len(m.errors) != 0 {
-		t.Fatal("serialized recovery did not clear error")
-	}
+	require.Len(t, m.errors, 0, "serialized recovery did not clear error")
 	saved, err := store.ReadStatusStore()
-	if err != nil || len(saved.Errors) != 0 {
-		t.Fatalf("recovered error remains on disk: %v %+v", err, saved.Errors)
-	}
+	require.NoError(t, err)
+	require.Len(t, saved.Errors, 0)
 }
 
 func TestErrorHistoryRemainsReachableWithoutActiveErrors(t *testing.T) {
@@ -153,15 +124,13 @@ func TestErrorHistoryRemainsReachableWithoutActiveErrors(t *testing.T) {
 	m.events = []store.EventRecord{{Code: store.CodeGuestPluginSync, Scope: "a", Detail: "dependency missing", At: time.Now()}}
 	m.selected = "b"
 	m.key(keyMsg(tea.KeyDown, ""))
-	if m.page != "Sandboxes" || m.focus != "events" {
-		t.Fatal("history navigation changed tab")
-	}
+	require.EqualValues(t, "Sandboxes", m.page)
+	require.EqualValues(t, "events", m.focus)
 	m.key(keyMsg(tea.KeyEnter, ""))
 	m.key(keyMsg(tea.KeyEnd, ""))
 	content := m.View().Content
-	if !strings.Contains(content, "dependency missing") || len(strings.Split(content, "\n")) != m.height {
-		t.Fatalf("small history view unusable: %s", content)
-	}
+	require.Contains(t, content, "dependency missing")
+	require.Len(t, strings.Split(content, "\n"), m.height)
 }
 
 func commandMessages(command tea.Cmd) []tea.Msg {
@@ -183,36 +152,22 @@ func TestNoticeTracksCurrentActionAndNavigation(t *testing.T) {
 	m := modelFixture(t)
 	m.notice = "herdr label saved"
 	m.key(keyMsg('p', "p"))
-	if m.notice != "" {
-		t.Fatal("old success remained after changing tabs")
-	}
+	require.Equal(t, "", m.notice, "old success remained after changing tabs")
 	m.openTab("Sandboxes")
 	m.notice = "herdr plugin choice saved"
 	m.key(keyMsg(tea.KeyDown, ""))
-	if m.notice != "" {
-		t.Fatal("old success remained after changing sandbox")
-	}
+	require.Equal(t, "", m.notice, "old success remained after changing sandbox")
 	m.notice = "Saved"
 	m.addError(store.CodeSSHSetup, "Host", errors.New("missing key"))
 	m.key(keyMsg('e', "e"))
-	if m.notice != "" {
-		t.Fatal("old success remained after focusing errors")
-	}
+	require.Equal(t, "", m.notice, "old success remained after focusing errors")
 	m.run("a", store.CodeRename, "herdr label saved", func() error { return nil })
-	if !strings.Contains(m.notice, "Saving herdr label for alpha") {
-		t.Fatalf("current action not named: %q", m.notice)
-	}
+	require.Contains(t, m.notice, "Saving herdr label for alpha", "current action not named: %q", m.notice)
 	m.openTab("Plugins")
-	if m.notice != "" {
-		t.Fatal("navigation retained previous action hint")
-	}
+	require.Equal(t, "", m.notice, "navigation retained previous action hint")
 	m.refreshing = true
 	m.Update(operationMsg{target: "a", code: store.CodeRename, notice: "herdr label saved"})
-	if m.notice != "" {
-		t.Fatalf("completion appeared outside its action context: %q", m.notice)
-	}
+	require.Equal(t, "", m.notice, "completion appeared outside its action context: %q", m.notice)
 	m.key(keyMsg('s', "s"))
-	if m.notice != "" {
-		t.Fatal("completed feedback remained on navigation")
-	}
+	require.Equal(t, "", m.notice, "completed feedback remained on navigation")
 }

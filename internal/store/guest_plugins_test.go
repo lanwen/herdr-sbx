@@ -1,27 +1,22 @@
 package store
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestGuestDefaultsAreExplicitAndIndependent(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	settings, err := ReadGuestPluginDefaults()
-	if err != nil || len(settings.Plugins) != 0 {
-		t.Fatalf("fresh defaults: %+v %v", settings, err)
-	}
-	if err := SetGuestPluginDefault("one.plugin", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := SetGuestPluginDefault("two.plugin", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := SetGuestPluginDefault("one.plugin", false); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.Len(t, settings.Plugins, 0)
+	require.NoError(t, SetGuestPluginDefault("one.plugin", true))
+	require.NoError(t, SetGuestPluginDefault("two.plugin", true))
+	require.NoError(t, SetGuestPluginDefault("one.plugin", false))
 	settings, err = ReadGuestPluginDefaults()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if settings.Plugins["one.plugin"].Enabled || !settings.Plugins["two.plugin"].Enabled || settings.Plugins["new.plugin"].Enabled {
-		t.Fatal(settings)
-	}
+	require.NoError(t, err)
+	require.False(t, settings.Plugins["one.plugin"].Enabled)
+	require.True(t, settings.Plugins["two.plugin"].Enabled)
+	require.False(t, settings.Plugins["new.plugin"].Enabled)
 }

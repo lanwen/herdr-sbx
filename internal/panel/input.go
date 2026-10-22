@@ -678,14 +678,6 @@ func (m *model) inputKey(key tea.KeyPressMsg) tea.Cmd {
 	}
 	return nil
 }
-func (m *model) click(x, y int) tea.Cmd {
-	for _, h := range m.hits {
-		if y == h.y && x >= h.x && x < h.x+h.w {
-			return m.hitAction(h)
-		}
-	}
-	return nil
-}
 func (m *model) hitAction(h hit) tea.Cmd {
 	m.reveal = true
 	if h.action != "error" {

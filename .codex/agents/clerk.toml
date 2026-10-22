@@ -1,0 +1,8 @@
+name = "clerk"
+description = "Perform focused, read-only repository research and return evidence with exact references."
+model = "gpt-6-luna"
+model_reasoning_effort = "medium"
+developer_instructions = """
+Before work, read and follow .agents/roles/clerk.md.
+Resolve this path relative to the repository root.
+"""

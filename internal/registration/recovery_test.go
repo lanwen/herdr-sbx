@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"io"
 	"regexp"
-
-	"github.com/charmbracelet/x/ansi"
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRegistrationMismatchRecoversThenRegistersOnce(t *testing.T) {
@@ -66,28 +66,26 @@ func TestRegistrationMismatchRecoversThenRegistersOnce(t *testing.T) {
 	}
 	fixture.rebuildClients()
 	for range 3 {
-		if err := fixture.service.ReconcileContext(context.Background(), io.Discard); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, fixture.service.ReconcileContext(context.Background(), io.Discard))
 	}
 	// The intermediate retrying state has no active diagnostic to notify.
 	state, err := store.LoadState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	items := state.Scopes[store.ScopeID("/tmp/recovery.sock")]
-	if adds != 2 || handoffs != 1 || notifications != 0 || len(items) != 1 || items[0].Pending || items[0].ProfileID != "machine-1" {
-		t.Fatalf("adds=%d handoffs=%d notifications=%d items=%+v", adds, handoffs, notifications, items)
-	}
+	require.EqualValues(t, 2, adds)
+	require.EqualValues(t, 1, handoffs)
+	require.EqualValues(t, 0, notifications)
+	require.Len(t, items, 1)
+	require.False(t, items[0].Pending)
+	require.EqualValues(t, "machine-1", items[0].ProfileID)
 }
 
 func TestRegistrationNotificationsRetryDeliveryAndResetAfterRecovery(t *testing.T) {
 	fixture := newRegistrationFixture(t, "[]")
 	calls := 0
 	fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
-		if command.Name != "herdr" || command.Args[0] != "notification" {
-			t.Fatalf("unexpected command: %+v", command)
-		}
+		require.EqualValues(t, "herdr", command.Name)
+		require.EqualValues(t, "notification", command.Args[0])
 		calls++
 		if calls == 1 {
 			return "", errors.New("socket unavailable")
@@ -96,29 +94,22 @@ func TestRegistrationNotificationsRetryDeliveryAndResetAfterRecovery(t *testing.
 	}
 	fixture.rebuildClients()
 	issue := result{Name: "demo", Status: "setup required", Detail: "SSH unavailable"}
-	if err := saveResultError(store.StatusKey("scope", "id"), issue); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, saveResultError(store.StatusKey("scope", "id"), issue))
 	for range 3 {
 		fixture.service.notifyResult(context.Background(), io.Discard, "scope", "id", issue)
 	}
-	if calls != 2 {
-		t.Fatalf("notifications=%d, want failed delivery plus one retry", calls)
-	}
+	require.Equal(t, 2, calls, "notifications=%d, want failed delivery plus one retry", calls)
 	fixture.service.notifyResult(context.Background(), io.Discard, "scope", "id", result{Name: "demo", Status: "ready", Detail: "reachable"})
 	fixture.service.notifyResult(context.Background(), io.Discard, "scope", "id", issue)
-	if calls != 3 {
-		t.Fatalf("recurrence did not notify: %d", calls)
-	}
+	require.Equal(t, 3, calls, "recurrence did not notify: %d", calls)
 }
 
 func TestRegistrationNotificationUsesOnePersistedDiagnostic(t *testing.T) {
 	fixture := newRegistrationFixture(t, "[]")
 	var bodies []string
 	fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
-		if command.Name != "herdr" || command.Args[0] != "notification" {
-			t.Fatalf("unexpected command: %+v", command)
-		}
+		require.EqualValues(t, "herdr", command.Name)
+		require.EqualValues(t, "notification", command.Args[0])
 		for i, arg := range command.Args {
 			if arg == "--body" {
 				bodies = append(bodies, command.Args[i+1])
@@ -133,45 +124,39 @@ func TestRegistrationNotificationUsesOnePersistedDiagnostic(t *testing.T) {
 	}}
 	// Without a saved cause there is no reference that the user can find.
 	fixture.service.notifyResult(context.Background(), io.Discard, "scope", "id", issue)
-	if len(bodies) != 0 {
-		t.Fatalf("unsaved diagnostic notified: %q", bodies)
-	}
-	if err := saveResultError(store.StatusKey("scope", "id"), issue); err != nil {
-		t.Fatal(err)
-	}
+	require.Len(t, bodies, 0, "unsaved diagnostic notified: %q", bodies)
+	require.NoError(t, saveResultError(store.StatusKey("scope", "id"), issue))
 	primary, found, err := store.PrimaryError(store.StatusKey("scope", "id"))
-	if err != nil || !found || primary.PluginID != "a.plugin" {
-		t.Fatalf("primary=%+v found=%v err=%v", primary, found, err)
-	}
+	require.NoError(t, err)
+	require.True(t, found)
+	require.EqualValues(t, "a.plugin", primary.PluginID)
 	for range 3 {
 		fixture.service.notifyResult(context.Background(), io.Discard, "scope", "id", issue)
 	}
-	if len(bodies) != 1 {
-		t.Fatalf("notifications=%q", bodies)
-	}
+	require.Len(t, bodies, 1, "notifications=%q", bodies)
 	body := bodies[0]
-	if ansi.StringWidth(body) > 120 || strings.ContainsAny(body, "\r\n") || !regexp.MustCompile(` · [a-z0-9]{6} · `).MatchString(body) || !strings.Contains(body, primary.Ref) || !strings.Contains(body, "Unexpected guest plugin response") || !strings.HasSuffix(body, "more in TUI") || strings.Contains(body, "build output") || strings.Contains(body, "secret") {
-		t.Fatalf("notification did not stay concise and findable: %q", body)
-	}
+	require.False(t, ansi.StringWidth(body) > 120)
+	require.False(t, strings.ContainsAny(body, "\r\n"))
+	require.True(t, regexp.MustCompile(` · [a-z0-9]{6} · `).MatchString(body))
+	require.Contains(t, body, primary.Ref)
+	require.Contains(t, body, "Unexpected guest plugin response")
+	require.True(t, strings.HasSuffix(body, "more in TUI"))
+	require.NotContains(t, body, "build output")
+	require.NotContains(t, body, "secret")
 	// A confirmed recovery resets delivery deduplication for a later failure.
 	ready := result{Name: issue.Name, Status: "ready"}
-	if err := saveResultError(store.StatusKey("scope", "id"), ready); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, saveResultError(store.StatusKey("scope", "id"), ready))
 	fixture.service.notifyResult(context.Background(), io.Discard, "scope", "id", ready)
-	if err := saveResultError(store.StatusKey("scope", "id"), issue); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, saveResultError(store.StatusKey("scope", "id"), issue))
 	fixture.service.notifyResult(context.Background(), io.Discard, "scope", "id", issue)
-	if len(bodies) != 2 || bodies[0] == bodies[1] {
-		t.Fatalf("new failure did not get a fresh notification reference: %q", bodies)
-	}
+	require.Len(t, bodies, 2)
+	require.False(t, bodies[0] == bodies[1])
 }
 
 func TestRegistrationDiagnosticSaveFailureIsReported(t *testing.T) {
 	newRegistrationFixture(t, "[]")
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", "/dev/null/not-a-directory")
-	if err := saveResultError("scope", result{Status: "setup required", Detail: "unreachable"}); err == nil {
-		t.Fatal("diagnostic persistence failure was discarded")
-	}
+
+	err := saveResultError("scope", result{Status: "setup required", Detail: "unreachable"})
+	require.Error(t, err, "diagnostic persistence failure was discarded")
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/lanwen/herdr-sbx/internal/process"
+	"github.com/stretchr/testify/require"
 )
 
 type daemonTestTransport func(*http.Request) (*http.Response, error)
@@ -37,18 +38,14 @@ func TestSandboxAbsenceRequiresA404(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			client := NewWithTransport(process.Runner{}, daemonTestTransport(func(r *http.Request) (*http.Response, error) {
-				if r.Method != http.MethodGet || r.URL.Path != "/sandbox/demo" {
-					t.Fatalf("unexpected request: %s %s", r.Method, r.URL)
-				}
+				require.False(t, r.Method != http.MethodGet)
+				require.EqualValues(t, "/sandbox/demo", r.URL.Path)
 				return &http.Response{StatusCode: test.status, Body: io.NopCloser(strings.NewReader(test.body))}, nil
 			}))
 			absent, err := client.SandboxAbsent(context.Background(), "unused", "demo", "old")
-			if errors.Is(err, ErrSandboxIdentityChanged) != (test.name == "replacement") {
-				t.Fatalf("incorrect replacement proof: %v", err)
-			}
-			if absent != test.absent || (err != nil) != test.err {
-				t.Fatalf("absence = %v, %v", absent, err)
-			}
+			require.Equal(t, (test.name == "replacement"), errors.Is(err, ErrSandboxIdentityChanged), "incorrect replacement proof: %v", err)
+			require.False(t, absent != test.absent)
+			require.False(t, (err != nil) != test.err)
 		})
 	}
 }
@@ -57,9 +54,7 @@ func TestLifecycleReaderAcceptsInitialReplayAndUnknownFields(t *testing.T) {
 	stream := `{"type":"sandbox.lifecycle","action":"started","sandbox_id":"s1","sandbox_name":"demo","extra":true}` + "\n" +
 		`{"type":"sandbox.lifecycle","action":"sync","unknown":"ok"}` + "\n"
 	client := NewWithTransport(process.Runner{}, daemonTestTransport(func(r *http.Request) (*http.Response, error) {
-		if r.URL.RequestURI() != "/events?type=sandbox.lifecycle" {
-			t.Fatalf("unexpected stream request: %s", r.URL)
-		}
+		require.Equal(t, "/events?type=sandbox.lifecycle", r.URL.RequestURI(), "unexpected stream request: %s", r.URL)
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(stream))}, nil
 	}))
 	var got []LifecycleEvent
@@ -67,16 +62,17 @@ func TestLifecycleReaderAcceptsInitialReplayAndUnknownFields(t *testing.T) {
 		got = append(got, event)
 		return true
 	})
-	if err != nil || len(got) != 2 || got[0].Action != "started" || got[0].SandboxID != "s1" || got[1].Action != "sync" {
-		t.Fatalf("events = %#v, err = %v", got, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	require.EqualValues(t, "started", got[0].Action)
+	require.EqualValues(t, "s1", got[0].SandboxID)
+	require.EqualValues(t, "sync", got[1].Action)
 }
 
 func TestDaemonClientDoesNotKeepIdleConnections(t *testing.T) {
 	transport, ok := New(process.Runner{}).httpClient("unused").Transport.(*http.Transport)
-	if !ok || !transport.DisableKeepAlives {
-		t.Fatalf("transport = %#v", transport)
-	}
+	require.True(t, ok)
+	require.True(t, transport.DisableKeepAlives)
 }
 
 func TestSandboxAppScopeIsExplicit(t *testing.T) {
@@ -98,9 +94,7 @@ func TestSandboxAppScopeIsExplicit(t *testing.T) {
 		"sbx --app-name isolated diagnose --json",
 		"sbx --app-name isolated exec demo -- pwd -P",
 	}
-	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("commands = %q, want %q", calls, want)
-	}
+	require.Equal(t, strings.Join(want, "\n"), strings.Join(calls, "\n"), "commands = %q, want %q", calls, want)
 }
 
 func TestInventoryEnvelopeAndDaemonStatusNoise(t *testing.T) {
@@ -110,13 +104,13 @@ func TestInventoryEnvelopeAndDaemonStatusNoise(t *testing.T) {
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"result":{"sandboxes":[{"id":"s1","name":"demo","state":"running"}]}}`))}, nil
 	}))
 	sandboxes, err := client.Inventory(context.Background(), "unused")
-	if err != nil || len(sandboxes) != 1 || sandboxes[0].ID != "s1" || sandboxes[0].Status != "running" {
-		t.Fatalf("inventory=%#v err=%v", sandboxes, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, sandboxes, 1)
+	require.EqualValues(t, "s1", sandboxes[0].ID)
+	require.EqualValues(t, "running", sandboxes[0].Status)
 	daemon, err := client.DaemonStatus(context.Background())
-	if err != nil || daemon.Status != "stopped" {
-		t.Fatalf("daemon=%#v err=%v", daemon, err)
-	}
+	require.NoError(t, err)
+	require.EqualValues(t, "stopped", daemon.Status)
 }
 
 func TestInventoryWorkspaceMetadata(t *testing.T) {
@@ -140,16 +134,14 @@ func TestInventoryWorkspaceMetadata(t *testing.T) {
 				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
 			}))
 			items, err := client.Inventory(context.Background(), "unused")
-			if err != nil || len(items) != 1 {
-				t.Fatalf("inventory=%#v err=%v", items, err)
-			}
-			if items[0].Workspace != "/project" || items[0].WorkspaceNeedsProbe != test.probe {
-				t.Fatalf("sandbox=%#v", items[0])
-			}
+			require.NoError(t, err)
+			require.Len(t, items, 1)
+			require.EqualValues(t, "/project", items[0].Workspace)
+			require.False(t, items[0].WorkspaceNeedsProbe != test.probe)
 			encoded, err := json.Marshal(items[0])
-			if err != nil || strings.Contains(string(encoded), "NeedsProbe") || strings.Contains(string(encoded), "labels") {
-				t.Fatalf("internal metadata exposed: %s (%v)", encoded, err)
-			}
+			require.NoError(t, err)
+			require.NotContains(t, string(encoded), "NeedsProbe")
+			require.NotContains(t, string(encoded), "labels")
 		})
 	}
 }
@@ -161,11 +153,15 @@ func TestInventoryRejectsNonStringWorkspace(t *testing.T) {
 			client := NewWithTransport(process.Runner{}, daemonTestTransport(func(*http.Request) (*http.Response, error) {
 				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("[" + body + "]"))}, nil
 			}))
-			if _, err := client.Inventory(context.Background(), "unused"); err == nil || !strings.Contains(err.Error(), "workspace is not a string") {
-				t.Fatalf("inventory error=%v", err)
+			{
+				_, err := client.Inventory(context.Background(), "unused")
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "workspace is not a string")
 			}
-			if _, err := parseSandbox(body); err == nil || !strings.Contains(err.Error(), "workspace is not a string") {
-				t.Fatalf("sandbox error=%v", err)
+			{
+				_, err := parseSandbox(body)
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "workspace is not a string")
 			}
 		})
 	}

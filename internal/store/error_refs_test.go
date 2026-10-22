@@ -4,73 +4,57 @@ import (
 	"regexp"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestErrorReferenceSurvivesRepeatDismissalAndChangesAfterRecovery(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
-	if err := RecordError(CodeManagement, "sandbox", "cannot update"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, RecordError(CodeManagement, "sandbox", "cannot update"))
 	first := mustPrimaryError(t, "sandbox")
-	if !regexp.MustCompile(`^[a-z0-9]{6}$`).MatchString(first.Ref) {
-		t.Fatalf("invalid reference %q", first.Ref)
-	}
-	if err := DismissError(first); err != nil {
-		t.Fatal(err)
-	}
-	if err := RecordError(CodeManagement, "sandbox", "cannot update"); err != nil {
-		t.Fatal(err)
-	}
+	require.True(t, regexp.MustCompile(`^[a-z0-9]{6}$`).MatchString(first.Ref), "invalid reference %q", first.Ref)
+	require.NoError(t, DismissError(first))
+	require.NoError(t, RecordError(CodeManagement, "sandbox", "cannot update"))
 	repeated := mustPrimaryError(t, "sandbox")
-	if repeated.Ref != first.Ref || !repeated.Dismissed || repeated.Count != 2 {
-		t.Fatalf("repeat identity changed: first=%+v repeated=%+v", first, repeated)
-	}
-	if err := ClearError(CodeManagement, "sandbox"); err != nil {
-		t.Fatal(err)
-	}
-	if _, found, err := PrimaryError("sandbox"); err != nil || found {
-		t.Fatalf("cleared diagnostic: found=%v err=%v", found, err)
-	}
-	if err := RecordError(CodeManagement, "sandbox", "cannot update"); err != nil {
-		t.Fatal(err)
-	}
-	if current := mustPrimaryError(t, "sandbox"); current.Ref == first.Ref || current.Dismissed {
-		t.Fatalf("recovery retained old identity: %+v", current)
-	}
+	require.False(t, repeated.Ref != first.Ref)
+	require.True(t, repeated.Dismissed)
+	require.EqualValues(t, 2, repeated.Count)
+	require.NoError(t, ClearError(CodeManagement, "sandbox"))
+
+	_, found, err := PrimaryError("sandbox")
+	require.NoError(t, err)
+	require.False(t, found)
+
+	require.NoError(t, RecordError(CodeManagement, "sandbox", "cannot update"))
+
+	current := mustPrimaryError(t, "sandbox")
+	require.False(t, current.Ref == first.Ref)
+	require.False(t, current.Dismissed)
 }
 
 func TestPluginReferenceCorrelatesFailureRecoveryAndChangedCause(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	failure := PluginFailure{PluginID: "example.plugin", Code: CodeGuestPluginSync, Detail: "Build failed", Output: "missing compiler", OccurredAt: time.Now()}
-	if err := SetGuestPluginFailures("sandbox", []PluginFailure{failure}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, SetGuestPluginFailures("sandbox", []PluginFailure{failure}))
 	first := mustPrimaryError(t, "sandbox")
 	failure.OccurredAt = failure.OccurredAt.Add(time.Minute)
-	if err := SetGuestPluginFailures("sandbox", []PluginFailure{failure}); err != nil {
-		t.Fatal(err)
-	}
-	if repeated := mustPrimaryError(t, "sandbox"); repeated.Ref != first.Ref {
-		t.Fatalf("repeat reference changed: %+v", repeated)
-	}
+	require.NoError(t, SetGuestPluginFailures("sandbox", []PluginFailure{failure}))
+
+	repeated := mustPrimaryError(t, "sandbox")
+	require.Equal(t, first.Ref, repeated.Ref, "repeat reference changed: %+v", repeated)
+
 	failure.Output = "missing dependency"
-	if err := SetGuestPluginFailures("sandbox", []PluginFailure{failure}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, SetGuestPluginFailures("sandbox", []PluginFailure{failure}))
 	changed := mustPrimaryError(t, "sandbox")
-	if changed.Ref == first.Ref {
-		t.Fatalf("new cause retained reference %q", first.Ref)
-	}
-	if err := ClearGuestPluginFailure("sandbox"); err != nil {
-		t.Fatal(err)
-	}
+	require.NotEqual(t, first.Ref, changed.Ref, "new cause retained reference %q", first.Ref)
+	require.NoError(t, ClearGuestPluginFailure("sandbox"))
 	s, err := ReadStatusStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(s.Events) != 3 || s.Events[0].Ref != first.Ref || s.Events[1].Ref != changed.Ref || s.Events[2].Ref != changed.Ref || !s.Events[2].Resolved {
-		t.Fatalf("uncorrelated history: %+v", s.Events)
-	}
+	require.NoError(t, err)
+	require.Len(t, s.Events, 3)
+	require.False(t, s.Events[0].Ref != first.Ref)
+	require.False(t, s.Events[1].Ref != changed.Ref)
+	require.False(t, s.Events[2].Ref != changed.Ref)
+	require.True(t, s.Events[2].Resolved)
 }
 
 func TestReferenceAllocationRejectsActiveAndRecentCollisions(t *testing.T) {
@@ -84,61 +68,52 @@ func TestReferenceAllocationRejectsActiveAndRecentCollisions(t *testing.T) {
 		i++
 		return ref
 	})
-	if got != "unique" || i != 3 {
-		t.Fatalf("reference=%q attempts=%d", got, i)
-	}
+	require.EqualValues(t, "unique", got)
+	require.EqualValues(t, 3, i)
 }
 
 func TestLegacyReferencesAreBackfilledOnUpdate(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
-	if err := UpdateStatusStore(func(s *StatusStore) {
+	require.NoError(t, UpdateStatusStore(func(s *StatusStore) {
 		s.Errors["legacy"] = ErrorRecord{Code: CodeRegistration, Scope: "sandbox", Detail: "failed", Count: 2, Dismissed: true}
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if before := mustPrimaryError(t, "sandbox"); before.Ref != "" {
-		t.Fatalf("fixture not legacy: %+v", before)
-	}
-	if err := UpdateStatusStore(func(s *StatusStore) {}); err != nil {
-		t.Fatal(err)
-	}
+	}))
+
+	before := mustPrimaryError(t, "sandbox")
+	require.Equal(t, "", before.Ref, "fixture not legacy: %+v", before)
+
+	require.NoError(t, UpdateStatusStore(func(s *StatusStore) {}))
 	updated := mustPrimaryError(t, "sandbox")
-	if updated.Ref == "" || updated.Count != 2 || !updated.Dismissed {
-		t.Fatalf("legacy migration changed outcome: %+v", updated)
-	}
-	if err := UpdateStatusStore(func(s *StatusStore) {}); err != nil {
-		t.Fatal(err)
-	}
-	if again := mustPrimaryError(t, "sandbox"); again.Ref != updated.Ref {
-		t.Fatalf("legacy reference not durable: %+v", again)
-	}
+	require.NotEqualValues(t, "", updated.Ref)
+	require.EqualValues(t, 2, updated.Count)
+	require.True(t, updated.Dismissed)
+	require.NoError(t, UpdateStatusStore(func(s *StatusStore) {}))
+
+	again := mustPrimaryError(t, "sandbox")
+	require.Equal(t, updated.Ref, again.Ref, "legacy reference not durable: %+v", again)
 }
 
 func TestPrimaryErrorUsesSeverityThenStablePluginOrder(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
-	if err := UpdateStatusStore(func(s *StatusStore) {
+	require.NoError(t, UpdateStatusStore(func(s *StatusStore) {
 		s.Errors["warning"] = ErrorRecord{Code: CodeOwnershipConflict, Scope: "sandbox"}
 		s.Errors["other-sandbox"] = ErrorRecord{Code: CodeManagement, Scope: "other"}
 		s.Errors["last-plugin"] = ErrorRecord{Code: CodeGuestPluginSync, Scope: "sandbox", PluginID: "example.z", Ref: "last00"}
 		s.Errors["first-plugin"] = ErrorRecord{Code: CodeSandboxNetwork, Scope: "sandbox", PluginID: "example.a", Ref: "first0", Dismissed: true}
-	}); err != nil {
-		t.Fatal(err)
-	}
+	}))
 	for range 10 {
-		if primary := mustPrimaryError(t, "sandbox"); primary.Ref != "first0" {
-			t.Fatalf("unstable primary diagnostic: %+v", primary)
-		}
+		primary := mustPrimaryError(t, "sandbox")
+		require.Equal(t, "first0", primary.Ref, "unstable primary diagnostic: %+v", primary)
 	}
-	if _, found, err := PrimaryError("missing"); err != nil || found {
-		t.Fatalf("missing scope found=%v err=%v", found, err)
-	}
+
+	_, found, err := PrimaryError("missing")
+	require.NoError(t, err)
+	require.False(t, found)
 }
 
 func mustPrimaryError(t *testing.T, scope string) ErrorRecord {
 	t.Helper()
 	entry, found, err := PrimaryError(scope)
-	if err != nil || !found {
-		t.Fatalf("primary error: found=%v err=%v", found, err)
-	}
+	require.NoError(t, err)
+	require.True(t, found)
 	return entry
 }

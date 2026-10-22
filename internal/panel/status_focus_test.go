@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/lanwen/herdr-sbx/internal/precheck"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestStatusFocusClampsWhenItsFinalActionDisappears(t *testing.T) {
@@ -32,13 +33,11 @@ func TestStatusFocusClampsWhenItsFinalActionDisappears(t *testing.T) {
 				message = operationMsg{target: "Host", code: store.CodePluginDiscovery}
 			}
 			m.button = len(m.statusActions()) - 1
-			if m.button == 0 {
-				t.Fatal("fixture has no disappearing action")
-			}
+			require.NotEqual(t, 0, m.button, "fixture has no disappearing action")
 			m.Update(message)
-			if m.button != 0 || len(m.statusActions()) != 1 || !m.reveal {
-				t.Fatalf("Status focus remained outside available actions: %d/%d", m.button, len(m.statusActions()))
-			}
+			require.EqualValues(t, 0, m.button)
+			require.Len(t, m.statusActions(), 1)
+			require.True(t, m.reveal)
 		})
 	}
 }
@@ -50,7 +49,6 @@ func TestStatusActionClampingPreservesDialogFocus(t *testing.T) {
 	m.worker = store.WorkerStatus{State: "running", LastSync: time.Now()}
 	m.checks.Checks = []precheck.Check{{Name: "Sandbox SSH", Level: precheck.Ready}}
 	m.Update(workerMsg{status: m.worker})
-	if m.button != 1 || m.dialog != "startup" {
-		t.Fatal("Status action shrink changed dialog focus")
-	}
+	require.EqualValues(t, 1, m.button)
+	require.EqualValues(t, "startup", m.dialog)
 }

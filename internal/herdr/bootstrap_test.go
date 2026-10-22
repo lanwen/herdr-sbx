@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lanwen/herdr-sbx/internal/process"
+	"github.com/stretchr/testify/require"
 )
 
 // Opt in with SBX_TEST_HERDR_BINARY. Only the transport is substituted:
@@ -19,15 +20,11 @@ func TestProjectBootstrapRealServer(t *testing.T) {
 		t.Skip("set SBX_TEST_HERDR_BINARY for the isolated real-server gate")
 	}
 	root, err := os.MkdirTemp("/tmp", "sbx-cwd-")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer os.RemoveAll(root)
 	for key, dir := range map[string]string{"HOME": "h", "XDG_CONFIG_HOME": "c", "XDG_STATE_HOME": "s", "XDG_RUNTIME_DIR": "r"} {
 		path := filepath.Join(root, dir)
-		if err := os.MkdirAll(path, 0700); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.MkdirAll(path, 0700))
 		t.Setenv(key, path)
 	}
 	for _, key := range []string{"HERDR_SOCKET_PATH", "HERDR_CLIENT_SOCKET_PATH", "HERDR_SESSION", "HERDR_STARTUP_CWD"} {
@@ -35,12 +32,8 @@ func TestProjectBootstrapRealServer(t *testing.T) {
 	}
 	t.Setenv("HERDR_CONFIG_PATH", filepath.Join(root, "c", "config.toml"))
 	bin := filepath.Join(root, "bin")
-	if err := os.Mkdir(bin, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(binary, filepath.Join(bin, "herdr")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Mkdir(bin, 0700))
+	require.NoError(t, os.Symlink(binary, filepath.Join(bin, "herdr")))
 	t.Setenv("PATH", bin+":/usr/bin:/bin")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -50,55 +43,40 @@ func TestProjectBootstrapRealServer(t *testing.T) {
 		_ = exec.CommandContext(stopCtx, binary, "--session", "default", "server", "stop").Run()
 	}()
 	client := New(process.Runner{Execute: func(ctx context.Context, command process.Command) (string, error) {
-		if command.Name != "ssh" {
-			t.Fatalf("unexpected command: %#v", command)
-		}
+		require.Equal(t, "ssh", command.Name, "unexpected command: %#v", command)
 		out, err := exec.CommandContext(ctx, "/bin/sh", "-c", command.Args[len(command.Args)-1]).CombinedOutput()
 		return string(out), err
 	}})
 	running, err := client.GuestServerRunning(ctx, "test.sbx")
-	if err != nil || running {
-		t.Fatalf("initial running=%v err=%v", running, err)
-	}
+	require.NoError(t, err)
+	require.False(t, running)
 	cwd := filepath.Join(root, "project ' spaces")
-	if err := os.Mkdir(cwd, 0700); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Mkdir(cwd, 0700))
 	// Match pwd -P in a sandbox (macOS resolves /tmp to /private/tmp).
 	cwd, err = filepath.EvalSymlinks(cwd)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for range 2 {
-		if err := client.StartProjectServer(ctx, "test.sbx", cwd); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, client.StartProjectServer(ctx, "test.sbx", cwd))
 	}
 	running, err = client.GuestServerRunning(ctx, "test.sbx")
-	if err != nil || !running {
-		t.Fatalf("started running=%v err=%v", running, err)
-	}
+	require.NoError(t, err)
+	require.True(t, running)
 	output, err := exec.CommandContext(ctx, binary, "--session", "default", "pane", "list").CombinedOutput()
-	if err != nil {
-		t.Fatalf("panes: %v %s", err, output)
-	}
+	require.NoError(t, err, "panes: %v %s", err, output)
 	panes, err := parsePanes(string(output))
-	if err != nil || len(panes) != 1 || panes[0].CWD != cwd {
-		t.Fatalf("panes=%#v err=%v", panes, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, panes, 1)
+	require.False(t, panes[0].CWD != cwd)
 	other := filepath.Join(root, "another-project")
-	if err := os.Mkdir(other, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := client.StartProjectServer(ctx, "test.sbx", other); err == nil {
-		t.Fatal("existing session was not preserved")
+	require.NoError(t, os.Mkdir(other, 0700))
+	{
+		err := client.StartProjectServer(ctx, "test.sbx", other)
+		require.Error(t, err, "existing session was not preserved")
 	}
 	output, err = exec.CommandContext(ctx, binary, "--session", "default", "pane", "list").CombinedOutput()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	panes, err = parsePanes(string(output))
-	if err != nil || len(panes) != 1 || panes[0].CWD != cwd {
-		t.Fatalf("existing workspace changed: %#v %v", panes, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, panes, 1)
+	require.False(t, panes[0].CWD != cwd)
 }

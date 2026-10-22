@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/pelletier/go-toml/v2 v2.2.4
+	github.com/stretchr/testify v1.12.1
 	github.com/urfave/cli/v3 v3.13.0
 )
 
@@ -24,6 +25,7 @@ require (
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/xo/terminfo v1.0.0 // indirect
+	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 )

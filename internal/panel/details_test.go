@@ -2,65 +2,56 @@ package panel
 
 import (
 	"context"
-	"github.com/charmbracelet/x/ansi"
-	"github.com/lanwen/herdr-sbx/internal/store"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/lanwen/herdr-sbx/internal/guestplugins"
+	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSandboxPreviewNavigationAndFocusedDetails(t *testing.T) {
 	m := modelFixture(t)
 	m.plugins = []guestplugins.Choice{{ID: "one"}, {ID: "two"}}
-	if m.selected != "a" || m.expanded != "a" || m.focus != "table" {
-		t.Fatal("initial preview missing")
-	}
+	require.EqualValues(t, "a", m.selected)
+	require.EqualValues(t, "a", m.expanded)
+	require.EqualValues(t, "table", m.focus)
 	m.key(keyMsg(tea.KeyDown, ""))
-	if m.selected != "b" || m.expanded != "b" || m.focus != "table" {
-		t.Fatal("Down entered details instead of next sandbox")
-	}
+	require.EqualValues(t, "b", m.selected)
+	require.EqualValues(t, "b", m.expanded)
+	require.EqualValues(t, "table", m.focus)
 	m.key(keyMsg(tea.KeyUp, ""))
-	if m.selected != "a" || m.expanded != "a" {
-		t.Fatal("Up did not follow selection")
-	}
+	require.EqualValues(t, "a", m.selected)
+	require.EqualValues(t, "a", m.expanded)
 	m.key(keyMsg(tea.KeyEnter, ""))
-	if m.focus != "actions" || m.button != 0 {
-		t.Fatal("Enter did not focus primary action")
-	}
+	require.EqualValues(t, "actions", m.focus)
+	require.EqualValues(t, 0, m.button)
 	m.key(keyMsg(tea.KeyRight, ""))
-	if m.page != "Sandboxes" || m.button != 1 {
-		t.Fatal("Right switched tabs or missed action")
-	}
+	require.EqualValues(t, "Sandboxes", m.page)
+	require.EqualValues(t, 1, m.button)
 	m.key(keyMsg(tea.KeyLeft, ""))
-	if m.button != 0 {
-		t.Fatal("Left missed primary action")
-	}
+	require.Equal(t, 0, m.button, "Left missed primary action")
 	m.key(keyMsg(tea.KeyUp, ""))
-	if m.focus != "actions" || m.selected != "a" {
-		t.Fatal("Up escaped first details row")
-	}
+	require.EqualValues(t, "actions", m.focus)
+	require.EqualValues(t, "a", m.selected)
 	m.key(keyMsg(tea.KeyDown, ""))
-	if m.focus != "plugins" || m.detailIndex != 0 {
-		t.Fatal("Down did not enter first plugin")
-	}
+	require.EqualValues(t, "plugins", m.focus)
+	require.EqualValues(t, 0, m.detailIndex)
 	m.key(keyMsg(tea.KeyDown, ""))
 	m.key(keyMsg(tea.KeyDown, ""))
-	if m.focus != "plugins" || m.detailIndex != 1 || m.selected != "a" {
-		t.Fatal("Down escaped last plugin")
-	}
+	require.EqualValues(t, "plugins", m.focus)
+	require.EqualValues(t, 1, m.detailIndex)
+	require.EqualValues(t, "a", m.selected)
 	m.key(keyMsg(tea.KeyUp, ""))
 	m.key(keyMsg(tea.KeyUp, ""))
-	if m.focus != "actions" || m.button != 0 {
-		t.Fatal("Up did not return to action row")
-	}
+	require.EqualValues(t, "actions", m.focus)
+	require.EqualValues(t, 0, m.button)
 	m.key(keyMsg(tea.KeyEscape, ""))
-	if m.focus != "table" || m.expanded != "a" {
-		t.Fatal("Escape removed preview")
-	}
+	require.EqualValues(t, "table", m.focus)
+	require.EqualValues(t, "a", m.expanded)
 }
 
 func TestDetailsHomeEndAndNoPluginsStayInside(t *testing.T) {
@@ -72,22 +63,18 @@ func TestDetailsHomeEndAndNoPluginsStayInside(t *testing.T) {
 		m.key(keyMsg(tea.KeyEnter, ""))
 		m.key(keyMsg(tea.KeyEnd, ""))
 		if withPlugins {
-			if m.focus != "plugins" || m.detailIndex != 1 {
-				t.Fatal("End did not reach last plugin")
-			}
+			require.EqualValues(t, "plugins", m.focus)
+			require.EqualValues(t, 1, m.detailIndex)
 		} else {
-			if m.focus != "actions" || m.button != len(m.sandboxActions(m.rows[0]))-1 {
-				t.Fatal("End did not reach last action")
-			}
+			require.EqualValues(t, "actions", m.focus)
+			require.False(t, m.button != len(m.sandboxActions(m.rows[0]))-1)
 		}
 		m.key(keyMsg(tea.KeyDown, ""))
-		if m.selected != "a" || m.focus == "table" {
-			t.Fatal("Down escaped details")
-		}
+		require.EqualValues(t, "a", m.selected)
+		require.NotEqualValues(t, "table", m.focus)
 		m.key(keyMsg(tea.KeyHome, ""))
-		if m.focus != "actions" || m.button != 0 {
-			t.Fatal("Home missed primary action")
-		}
+		require.EqualValues(t, "actions", m.focus)
+		require.EqualValues(t, 0, m.button)
 	}
 }
 func TestDetailsHeaderAndNestedPluginGeometry(t *testing.T) {
@@ -102,29 +89,20 @@ func TestDetailsHeaderAndNestedPluginGeometry(t *testing.T) {
 		m.plugins = []guestplugins.Choice{{ID: strings.Repeat("long.plugin.", 5)}, {ID: "second.plugin"}}
 		details := m.sandboxDetails(m.rows[0])
 		header := ansi.Strip(details[0].text)
-		if !strings.Contains(header, "✓ alpha") || ansi.StringWidth(header) != width-4 {
-			t.Fatalf("wrong header: %q", header)
-		}
-		if width == 110 && !strings.Contains(header, "5m ago") {
-			t.Fatal("wide header lost observation age")
-		}
-		if !strings.Contains(details[0].text, colorSuccess) {
-			t.Fatal("runtime lost semantic color")
-		}
+		require.Contains(t, header, "✓ alpha")
+		require.False(t, ansi.StringWidth(header) != width-4)
+		require.False(t, width == 110 && !strings.Contains(header, "5m ago"), "wide header lost observation age")
+		require.Contains(t, details[0].text, colorSuccess, "runtime lost semantic color")
 		card := ansi.Strip(strings.Join(lineTexts(details), "\n"))
 		for _, text := range []string{"API desk", "? Stale", "observation", "running (stale)"} {
-			if !strings.Contains(card, text) {
-				t.Fatalf("summary lost %q: %s", text, card)
-			}
+			require.Contains(t, card, text, "summary lost %q: %s", text, card)
 		}
 
 		for _, l := range details {
-			if strings.Contains(ansi.Strip(l.text), "Sandbox:") || strings.Contains(ansi.Strip(l.text), "Runtime:") || strings.Contains(ansi.Strip(l.text), "Registration:") {
-				t.Fatal("old details heading retained")
-			}
-			if ansi.StringWidth(l.text) != width-4 {
-				t.Fatalf("nested width=%d want %d", ansi.StringWidth(l.text), width-4)
-			}
+			require.NotContains(t, ansi.Strip(l.text), "Sandbox:")
+			require.NotContains(t, ansi.Strip(l.text), "Runtime:")
+			require.NotContains(t, ansi.Strip(l.text), "Registration:")
+			require.Equal(t, width-4, ansi.StringWidth(l.text), "nested width=%d want %d", ansi.StringWidth(l.text), width-4)
 		}
 		m.focus = "plugins"
 		m.detailIndex = 1
@@ -136,21 +114,16 @@ func TestDetailsHeaderAndNestedPluginGeometry(t *testing.T) {
 				target = h
 			}
 		}
-		if target.w == 0 {
-			t.Fatal("selected plugin not visible")
-		}
+		require.NotEqual(t, 0, target.w, "selected plugin not visible")
 		rendered := strings.Split(ansi.Strip(view), "\n")[target.y]
-		if ansi.Cut(rendered, target.x, target.x+2) != "> " {
-			t.Fatalf("highlight/mouse prefix shifted: %q %#v", rendered, target)
-		}
+		require.Equal(t, "> ", ansi.Cut(rendered, target.x, target.x+2), "highlight/mouse prefix shifted: %q %#v", rendered, target)
 		selected := ansi.Cut(strings.Split(view, "\n")[target.y], target.x, target.x+target.w)
-		if !strings.Contains(selected, backgroundSelected) || !strings.HasPrefix(ansi.Strip(selected), "> ") {
-			t.Fatal("selected fill does not begin at plugin prefix")
-		}
-		command := m.click(target.x, target.y)
-		if command == nil || m.dialog != "" || m.detailIndex != 1 {
-			t.Fatal("nested plugin click targeted wrong choice")
-		}
+		require.Contains(t, selected, backgroundSelected)
+		require.True(t, strings.HasPrefix(ansi.Strip(selected), "> "))
+		command := clickAt(m, target.x, target.y)
+		require.NotNil(t, command)
+		require.EqualValues(t, "", m.dialog)
+		require.EqualValues(t, 1, m.detailIndex)
 	}
 }
 
@@ -172,15 +145,12 @@ func TestDetailActionsWrapWholeButtonsWithClickableTargets(t *testing.T) {
 				if h.action != "action" {
 					continue
 				}
-				if h.x+h.w > ansi.StringWidth(plain) || !strings.Contains(ansi.Cut(plain, h.x, h.x+h.w), labels[h.id]) {
-					t.Fatalf("width %d: action %s hit misses full button in %q", width, h.id, plain)
-				}
+				require.False(t, h.x+h.w > ansi.StringWidth(plain))
+				require.Contains(t, ansi.Cut(plain, h.x, h.x+h.w), labels[h.id])
 				seen[h.id] = true
 			}
 		}
-		if len(seen) != len(labels) {
-			t.Fatalf("width %d: got %d action hits", width, len(seen))
-		}
+		require.Len(t, seen, len(labels), "width %d: got %d action hits", width, len(seen))
 	}
 }
 
@@ -202,9 +172,7 @@ func TestSandboxActionsAreContextual(t *testing.T) {
 			for _, action := range m.sandboxActions(m.rows[tc.row]) {
 				got = append(got, action.id)
 			}
-			if !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("actions = %v; want %v", got, tc.want)
-			}
+			require.Equal(t, tc.want, got, "actions = %v; want %v", got, tc.want)
 		})
 	}
 	m.rows[0].Status.Connection = "failed"
@@ -212,9 +180,7 @@ func TestSandboxActionsAreContextual(t *testing.T) {
 	for _, action := range m.sandboxActions(m.rows[0]) {
 		recovery = append(recovery, action.id)
 	}
-	if !reflect.DeepEqual(recovery, []string{"disable", "resync", "rename"}) {
-		t.Fatalf("failed sandbox actions = %v", recovery)
-	}
+	require.Equal(t, []string{"disable", "resync", "rename"}, recovery, "failed sandbox actions = %v", recovery)
 }
 
 func TestDisabledDetailsSeparateAndIndentNotes(t *testing.T) {
@@ -226,9 +192,7 @@ func TestDisabledDetailsSeparateAndIndentNotes(t *testing.T) {
 	r.Status.Detail = "The guest registration needs review before sandbox management can begin."
 	lines := m.sandboxDetails(r)
 	card := ansi.Strip(strings.Join(lineTexts(lines), "\n"))
-	if strings.Contains(card, r.Status.Detail) {
-		t.Fatal("guidance belongs in Hint")
-	}
+	require.NotContains(t, card, r.Status.Detail, "guidance belongs in Hint")
 	firstAction, pluginIndex, identityIndex := -1, -1, -1
 	for i, l := range lines {
 		plain := ansi.Strip(l.text)
@@ -242,21 +206,16 @@ func TestDisabledDetailsSeparateAndIndentNotes(t *testing.T) {
 			if h.action == "action" && h.id == "enable" {
 				firstAction = i
 				bg := strings.Replace(colorAccent, "[38;", "[48;", 1)
-				if !strings.Contains(l.text, bg) || strings.TrimSpace(ansi.Cut(plain, h.x, h.x+h.w)) != "Enable (space)" {
-					t.Fatalf("wrong primary action: %q %#v", l.text, h)
-				}
+				require.Contains(t, l.text, bg)
+				require.EqualValues(t, "Enable (space)", strings.TrimSpace(ansi.Cut(plain, h.x, h.x+h.w)))
 			}
 		}
 	}
-	if firstAction < 1 || identityIndex <= firstAction || pluginIndex <= identityIndex {
-		t.Fatal("actions, identity, plugins order lost")
-	}
-	if strings.Trim(ansi.Strip(lines[firstAction-1].text), " │") != "" {
-		t.Fatal("header and actions lack separator")
-	}
-	if strings.Trim(ansi.Strip(lines[identityIndex-1].text), " │") != "" {
-		t.Fatal("actions and identity lack separator")
-	}
+	require.False(t, firstAction < 1)
+	require.False(t, identityIndex <= firstAction)
+	require.False(t, pluginIndex <= identityIndex)
+	require.Equal(t, "", strings.Trim(ansi.Strip(lines[firstAction-1].text), " │"), "header and actions lack separator")
+	require.Equal(t, "", strings.Trim(ansi.Strip(lines[identityIndex-1].text), " │"), "actions and identity lack separator")
 	m.focus, m.button = "actions", 0
 	focused := m.sandboxDetails(r)
 	for _, l := range focused {
@@ -279,27 +238,21 @@ func TestSpaceRunsPrimaryWhileEnterRunsSelectedAction(t *testing.T) {
 		}
 	}
 	m.key(keyMsg(tea.KeyEnter, ""))
-	if m.input == nil || m.input.kind != "rename" {
-		t.Fatal("Enter did not activate selected secondary")
-	}
+	require.NotNil(t, m.input)
+	require.EqualValues(t, "rename", m.input.kind)
 	m.key(keyMsg(tea.KeyEscape, ""))
 	calls := 0
 	m.setEnabledFn = func(_ context.Context, scope, id string, choice store.EnabledChoice) error {
 		calls++
-		if choice != store.Disabled {
-			t.Fatal("Space did not toggle primary")
-		}
+		require.Equal(t, store.EnabledChoice(store.Disabled), choice, "Space did not toggle primary")
 		return store.SetEnabled(scope, id, choice)
 	}
 	cmd := m.key(keyMsg(tea.KeySpace, " "))
-	if cmd == nil || m.input != nil {
-		t.Fatal("Space activated secondary instead of primary")
-	}
+	require.NotNil(t, cmd)
+	require.Nil(t, m.input)
 	m.refreshing = true
 	m.Update(cmd())
-	if calls != 1 {
-		t.Fatal("Space dispatched wrong number of actions")
-	}
+	require.Equal(t, 1, calls, "Space dispatched wrong number of actions")
 }
 
 func TestDetailsHorizontalEntryAndReturnPreservesPreviewAndRenameInput(t *testing.T) {
@@ -307,48 +260,41 @@ func TestDetailsHorizontalEntryAndReturnPreservesPreviewAndRenameInput(t *testin
 	m.plugins = []guestplugins.Choice{{ID: "one"}, {ID: "two"}}
 	for _, entry := range []rune{tea.KeyEnter, tea.KeyRight} {
 		m.key(keyMsg(entry, ""))
-		if m.focus != "actions" || m.button != 0 || m.page != "Sandboxes" {
-			t.Fatal("entry did not focus primary action")
-		}
+		require.EqualValues(t, "actions", m.focus)
+		require.EqualValues(t, 0, m.button)
+		require.EqualValues(t, "Sandboxes", m.page)
 		m.key(keyMsg(tea.KeyRight, ""))
-		if m.focus != "actions" || m.button != 1 {
-			t.Fatal("Right did not advance action")
-		}
+		require.EqualValues(t, "actions", m.focus)
+		require.EqualValues(t, 1, m.button)
 		m.key(keyMsg(tea.KeyLeft, ""))
-		if m.focus != "actions" || m.button != 0 {
-			t.Fatal("Left exited before primary action")
-		}
+		require.EqualValues(t, "actions", m.focus)
+		require.EqualValues(t, 0, m.button)
 		m.key(keyMsg(tea.KeyLeft, ""))
-		if m.focus != "table" || m.selected != "a" || m.expanded != "a" {
-			t.Fatal("Left at primary did not return to list preview")
-		}
+		require.EqualValues(t, "table", m.focus)
+		require.EqualValues(t, "a", m.selected)
+		require.EqualValues(t, "a", m.expanded)
 	}
 	m.key(keyMsg(tea.KeyRight, ""))
 	m.key(keyMsg(tea.KeyDown, ""))
-	if m.focus != "plugins" {
-		t.Fatal("Down did not enter plugins")
-	}
+	require.Equal(t, "plugins", m.focus, "Down did not enter plugins")
 	m.key(keyMsg(tea.KeyRight, ""))
-	if m.focus != "plugins" || m.detailIndex != 0 {
-		t.Fatal("Right changed plugin focus")
-	}
+	require.EqualValues(t, "plugins", m.focus)
+	require.EqualValues(t, 0, m.detailIndex)
 	m.key(keyMsg(tea.KeyLeft, ""))
-	if m.focus != "table" || m.expanded != "a" {
-		t.Fatal("Left did not return from plugin controls")
-	}
+	require.EqualValues(t, "table", m.focus)
+	require.EqualValues(t, "a", m.expanded)
 	m.key(keyMsg(tea.KeyRight, ""))
 	m.key(keyMsg(tea.KeyEscape, ""))
-	if m.focus != "table" || m.expanded != "a" {
-		t.Fatal("Escape no longer returns to list")
-	}
+	require.EqualValues(t, "table", m.focus)
+	require.EqualValues(t, "a", m.expanded)
 	m.beginRename()
 	m.input.text, m.input.cursor = "label", 2
 	m.key(keyMsg(tea.KeyRight, ""))
-	if m.input == nil || m.input.cursor != 3 || m.page != "Sandboxes" {
-		t.Fatal("Right escaped rename instead of editing cursor")
-	}
+	require.NotNil(t, m.input)
+	require.EqualValues(t, 3, m.input.cursor)
+	require.EqualValues(t, "Sandboxes", m.page)
 	m.key(keyMsg(tea.KeyLeft, ""))
-	if m.input == nil || m.input.cursor != 2 || m.expanded != "a" {
-		t.Fatal("Left escaped rename instead of editing cursor")
-	}
+	require.NotNil(t, m.input)
+	require.EqualValues(t, 2, m.input.cursor)
+	require.EqualValues(t, "a", m.expanded)
 }

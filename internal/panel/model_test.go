@@ -12,9 +12,16 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/registration"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func keyMsg(code rune, text string) tea.KeyPressMsg { return tea.KeyPressMsg{Code: code, Text: text} }
+func clickAt(m *model, x, y int) tea.Cmd {
+	m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	_, command := m.Update(tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft})
+	return command
+}
+
 func modelFixture(t *testing.T) *model {
 	t.Helper()
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
@@ -29,29 +36,21 @@ func modelFixture(t *testing.T) *model {
 func TestExpansionSelectionAndFiltering(t *testing.T) {
 	m := modelFixture(t)
 	m.key(keyMsg(tea.KeyEnter, ""))
-	if m.expanded != "a" {
-		t.Fatal(m.expanded)
-	}
+	require.Equal(t, "a", m.expanded, m.expanded)
 	m.key(keyMsg(tea.KeyEscape, ""))
 	m.key(keyMsg(tea.KeyDown, ""))
 	m.key(keyMsg(tea.KeyEnter, ""))
-	if m.expanded != "b" {
-		t.Fatal(m.expanded)
-	}
+	require.Equal(t, "b", m.expanded, m.expanded)
 	m.key(keyMsg('/', "/"))
 	m.key(keyMsg('A', "API"))
-	if m.selected != "a" || m.expanded != "a" || len(m.visibleRows()) != 1 {
-		t.Fatalf("selection=%s expansion=%s", m.selected, m.expanded)
-	}
+	require.EqualValues(t, "a", m.selected)
+	require.EqualValues(t, "a", m.expanded)
+	require.Len(t, m.visibleRows(), 1)
 	m.key(keyMsg(tea.KeyEscape, ""))
-	if m.queries["Sandboxes"] != "API" {
-		t.Fatal("Escape discarded filter")
-	}
+	require.Equal(t, "API", m.queries["Sandboxes"], "Escape discarded filter")
 	m.key(keyMsg(tea.KeyEscape, ""))
 	m.key(keyMsg(tea.KeyEscape, ""))
-	if m.queries["Sandboxes"] != "" {
-		t.Fatal("table Escape failed to clear")
-	}
+	require.Equal(t, "", m.queries["Sandboxes"], "table Escape failed to clear")
 }
 func TestRenamePreservesTextAcrossRefreshAndFailure(t *testing.T) {
 	m := modelFixture(t)
@@ -59,82 +58,44 @@ func TestRenamePreservesTextAcrossRefreshAndFailure(t *testing.T) {
 	m.input.text = "New desk"
 	m.input.cursor = 8
 	m.mergeRows([]registration.SandboxRow{m.rows[1], m.rows[0]})
-	if m.rows[0].Sandbox.ID != "a" || m.input.text != "New desk" {
-		t.Fatal("refresh disturbed editor/order")
-	}
+	require.EqualValues(t, "a", m.rows[0].Sandbox.ID)
+	require.EqualValues(t, "New desk", m.input.text)
 	m.refreshing = true
 	m.Update(operationMsg{target: "a", code: store.CodeRename, err: errors.New("name taken"), rename: true})
-	if m.input == nil || m.input.text != "New desk" {
-		t.Fatal("failed rename discarded text")
-	}
+	require.NotNil(t, m.input)
+	require.EqualValues(t, "New desk", m.input.text)
 	m.key(keyMsg(tea.KeyEscape, ""))
-	if m.rows[0].Label != "API desk" {
-		t.Fatal("cancel changed label")
-	}
+	require.Equal(t, "API desk", m.rows[0].Label, "cancel changed label")
 }
 func TestInputCapturesGlobalShortcuts(t *testing.T) {
 	m := modelFixture(t)
 	m.beginRename()
 	m.key(keyMsg('q', "q"))
 	m.key(keyMsg('p', "p"))
-	if m.page != "Sandboxes" || !strings.HasSuffix(m.input.text, "qp") {
-		t.Fatal("global shortcut ran during input")
-	}
+	require.EqualValues(t, "Sandboxes", m.page)
+	require.True(t, strings.HasSuffix(m.input.text, "qp"))
 }
 func TestInventoryFailureRetainsRowsAndPersistsError(t *testing.T) {
 	m := modelFixture(t)
 	m.refreshing = true
 	_, cmd := m.Update(observationMsg{err: errors.New("daemon unavailable")})
 	runCommands(cmd)
-	if len(m.rows) != 2 || !m.rows[0].Status.Stale {
-		t.Fatal("inventory failure removed or refreshed rows")
-	}
+	require.Len(t, m.rows, 2)
+	require.True(t, m.rows[0].Status.Stale)
 	saved, err := store.ReadStatusStore()
-	if err != nil || len(saved.Errors) != 1 {
-		t.Fatalf("error not persisted: %v %#v", err, saved.Errors)
-	}
+	require.NoError(t, err)
+	require.Len(t, saved.Errors, 1)
 }
 func TestStoppedWorkerPromptDefaultsToKeepStopped(t *testing.T) {
 	m := modelFixture(t)
 	_, cmd := m.Update(workerMsg{initialized: true, status: store.WorkerStatus{State: "stopped"}})
-	if cmd != nil || m.dialog != "startup" || m.button != 0 {
-		t.Fatal("stopped worker started automatically")
-	}
+	require.Nil(t, cmd)
+	require.EqualValues(t, "startup", m.dialog)
+	require.EqualValues(t, 0, m.button)
 	m.key(keyMsg(tea.KeyEscape, ""))
-	if m.dialog != "" {
-		t.Fatal("decline failed")
-	}
+	require.Equal(t, "", m.dialog, "decline failed")
 	m.key(keyMsg('p', "p"))
-	if m.page != "Plugins" {
-		t.Fatal("configuration unavailable while stopped")
-	}
-}
-func TestMouseSelectionAndPreviewShareLayout(t *testing.T) {
-	m := modelFixture(t)
-	m.View()
-	var target hit
-	for _, h := range m.hits {
-		if h.id == "b" && h.action == "select" {
-			target = h
-		}
-	}
-	if target.w == 0 {
-		t.Fatal("missing sandbox selection hit")
-	}
-	m.click(target.x, target.y)
-	if m.selected != "b" || m.expanded != "b" || m.focus != "table" {
-		t.Fatal("row click did not preview without entering details")
-	}
-	m.View()
-	for _, h := range m.hits {
-		if h.id == "b" && h.action == "select" {
-			target = h
-		}
-	}
-	m.click(target.x, target.y)
-	if m.expanded != "b" || m.focus != "table" {
-		t.Fatal("same-card click removed preview")
-	}
+	require.Equal(t, "Plugins", m.page, "configuration unavailable while stopped")
 }
 func TestSmallViewPreservesWorkerErrorsAndState(t *testing.T) {
 	for _, mode := range []string{"colored", "plain"} {
@@ -150,15 +111,13 @@ func TestSmallViewPreservesWorkerErrorsAndState(t *testing.T) {
 			view := m.View()
 			visible := ansi.Strip(view.Content)
 			for _, want := range []string{"Management OFF", "beta (stopped)", "Release desk", "? help"} {
-				if !strings.Contains(visible, want) {
-					t.Fatalf("missing %q in %s", want, visible)
-				}
+				require.Contains(t, visible, want, "missing %q in %s", want, visible)
 			}
 			m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
 			view = m.View()
-			if strings.Contains(ansi.Strip(view.Content), "Resize") || m.selected != "b" || m.expanded != "b" {
-				t.Fatal("resize lost state")
-			}
+			require.NotContains(t, ansi.Strip(view.Content), "Resize")
+			require.EqualValues(t, "b", m.selected)
+			require.EqualValues(t, "b", m.expanded)
 		})
 	}
 }
@@ -169,42 +128,38 @@ func TestPluginOverrideShowsLiveDefaultAndSavedChoice(t *testing.T) {
 	m.settings = store.GuestPluginDefaults{Plugins: map[string]store.GuestPluginDefault{"test.plugin": {Enabled: true}}, Overrides: map[string]map[string]bool{store.StatusKey("scope", "a"): {"test.plugin": false}}}
 	m.expanded = "a"
 	view := m.View()
-	if !strings.Contains(view.Content, "Off") || !strings.Contains(view.Content, "test.plugin") {
-		t.Fatal(view.Content)
-	}
+	require.Contains(t, view.Content, "Off")
+	require.Contains(t, view.Content, "test.plugin")
 }
 
 func TestArrowSelectionKeepsPreviewWithSelection(t *testing.T) {
 	m := modelFixture(t)
 	m.key(keyMsg(tea.KeyEnd, ""))
-	if m.selected != "b" || m.expanded != "b" || m.focus != "table" {
-		t.Fatal("End did not preview last sandbox")
-	}
+	require.EqualValues(t, "b", m.selected)
+	require.EqualValues(t, "b", m.expanded)
+	require.EqualValues(t, "table", m.focus)
 	m.ensureSelection()
-	if m.expanded != "b" {
-		t.Fatal("refresh lost preview")
-	}
+	require.Equal(t, "b", m.expanded, "refresh lost preview")
 	m.hitAction(hit{action: "select", id: "a"})
 	m.key(keyMsg(tea.KeyEnter, ""))
 	m.key(keyMsg(tea.KeyEscape, ""))
-	if m.expanded != "a" || m.focus != "table" {
-		t.Fatal("Escape removed selected preview")
-	}
+	require.EqualValues(t, "a", m.expanded)
+	require.EqualValues(t, "table", m.focus)
 	m.focus = "actions"
 	m.mergeRows(m.rows[1:])
 	m.ensureSelection()
-	if m.selected != "b" || m.expanded != "b" || m.focus != "table" {
-		t.Fatal("deleted selection did not preview replacement")
-	}
+	require.EqualValues(t, "b", m.selected)
+	require.EqualValues(t, "b", m.expanded)
+	require.EqualValues(t, "table", m.focus)
 }
 func TestMouseCannotNavigateAwayFromActiveInput(t *testing.T) {
 	m := modelFixture(t)
 	m.beginRename()
 	m.hitAction(hit{action: "select", id: "b"})
 	m.hitAction(hit{action: "page", id: "Plugins"})
-	if m.selected != "a" || m.page != "Sandboxes" || m.input == nil {
-		t.Fatal("mouse navigated away during input")
-	}
+	require.EqualValues(t, "a", m.selected)
+	require.EqualValues(t, "Sandboxes", m.page)
+	require.NotNil(t, m.input)
 }
 func TestOldRenameCompletionDoesNotEraseNewInput(t *testing.T) {
 	m := modelFixture(t)
@@ -215,21 +170,16 @@ func TestOldRenameCompletionDoesNotEraseNewInput(t *testing.T) {
 	current := m.input
 	m.refreshing = true
 	m.Update(operationMsg{target: "a", code: store.CodeRename, rename: true, input: old})
-	if m.input != current {
-		t.Fatal("old operation erased new input")
-	}
+	require.False(t, m.input != current, "old operation erased new input")
 }
 func TestCloseWaitsForPendingCleanup(t *testing.T) {
 	m := modelFixture(t)
 	m.pending["a"] = true
 	cmd := m.key(keyMsg('q', "q"))
-	if cmd != nil || !m.closing {
-		t.Fatal("closed before operation cleanup")
-	}
+	require.Nil(t, cmd)
+	require.True(t, m.closing)
 	_, cmd = m.Update(operationMsg{target: "a", code: store.CodeTemporaryAccess})
-	if cmd == nil {
-		t.Fatal("did not close after cleanup")
-	}
+	require.NotNil(t, cmd, "did not close after cleanup")
 }
 
 func runCommands(cmd tea.Cmd) {
@@ -249,10 +199,11 @@ func TestRemovalErrorRecoverySelectsDisable(t *testing.T) {
 	m.errors = []uiError{{code: store.CodeManagement, scope: "a", detail: "entry remains"}}
 	m.focusErrors()
 	m.activate()
-	if m.page != "Sandboxes" || m.selected != "a" || m.expanded != "a" || m.focus != "actions" ||
-		m.sandboxActions(m.rows[0])[m.button].id != "disable" {
-		t.Fatalf("wrong recovery: page=%s selected=%s focus=%s button=%d", m.page, m.selected, m.focus, m.button)
-	}
+	require.EqualValues(t, "Sandboxes", m.page)
+	require.EqualValues(t, "a", m.selected)
+	require.EqualValues(t, "a", m.expanded)
+	require.EqualValues(t, "actions", m.focus)
+	require.EqualValues(t, "disable", m.sandboxActions(m.rows[0])[m.button].id)
 }
 func TestNarrowActiveInputsRemainVisible(t *testing.T) {
 	for _, kind := range []string{"rename", "filter"} {
@@ -267,9 +218,7 @@ func TestNarrowActiveInputsRemainVisible(t *testing.T) {
 			if kind == "rename" {
 				caret = "█"
 			}
-			if !strings.Contains(view.Content, "editable"+caret) {
-				t.Fatalf("input hidden: %s", view.Content)
-			}
+			require.Contains(t, view.Content, "editable"+caret, "input hidden: %s", view.Content)
 		})
 	}
 }
@@ -281,9 +230,8 @@ func TestMouseRenameRevealsInlineEditor(t *testing.T) {
 	m.focus = "actions"
 	m.hitAction(hit{action: "action", id: "rename"})
 	view := m.View()
-	if m.input == nil || !strings.Contains(view.Content, "API desk█") {
-		t.Fatalf("inline editor hidden: %s", view.Content)
-	}
+	require.NotNil(t, m.input)
+	require.Contains(t, view.Content, "API desk█")
 }
 func TestErrorKeyboardSelectionRevealsRecoveryTarget(t *testing.T) {
 	m := modelFixture(t)
@@ -296,9 +244,7 @@ func TestErrorKeyboardSelectionRevealsRecoveryTarget(t *testing.T) {
 		m.key(keyMsg(tea.KeyDown, ""))
 	}
 	view := m.View()
-	if !strings.Contains(ansi.Strip(view.Content), "> H0002 · i") {
-		t.Fatalf("selected error hidden: %s", view.Content)
-	}
+	require.Contains(t, ansi.Strip(view.Content), "> H0002 · i", "selected error hidden: %s", view.Content)
 }
 
 func TestPanelObservationWhileOffDoesNotScheduleWork(t *testing.T) {
@@ -306,9 +252,8 @@ func TestPanelObservationWhileOffDoesNotScheduleWork(t *testing.T) {
 	m.worker = store.WorkerStatus{State: "stopped"}
 	m.workerLoaded = true
 	_, cmd := m.Update(observationMsg{checks: precheck.Result{Scope: "scope", Socket: "/tmp/test.sock"}})
-	if cmd != nil || len(m.pending) != 0 {
-		t.Fatal("read-only observation scheduled work while OFF")
-	}
+	require.Nil(t, cmd)
+	require.Len(t, m.pending, 0)
 }
 
 func TestPollingPreservesFocusedActionAndPreview(t *testing.T) {
@@ -323,15 +268,13 @@ func TestPollingPreservesFocusedActionAndPreview(t *testing.T) {
 	fresh.Status.Connection = "ready"
 	m.mergeRows([]registration.SandboxRow{fresh, m.rows[1]})
 	m.ensureSelection()
-	if m.focus != "actions" || m.sandboxActions(m.rows[0])[m.button].id != "rename" || m.expanded != m.selected {
-		t.Fatal("poll moved focused action or preview")
-	}
+	require.EqualValues(t, "actions", m.focus)
+	require.EqualValues(t, "rename", m.sandboxActions(m.rows[0])[m.button].id)
+	require.False(t, m.expanded != m.selected)
 	m.page, m.focus, m.button = "Status", "table", len(m.statusActions())-1
 	last := m.button
 	m.ensureSelection()
-	if m.button != last {
-		t.Fatal("sandbox poll changed Status action")
-	}
+	require.Equal(t, last, m.button, "sandbox poll changed Status action")
 }
 
 func TestRenameSubmissionSkipsUnchangedLabel(t *testing.T) {
@@ -348,12 +291,10 @@ func TestRenameSubmissionSkipsUnchangedLabel(t *testing.T) {
 			m.beginRename()
 			m.input.text = test.text
 			cmd := m.inputKey(keyMsg(tea.KeyEnter, ""))
-			if (cmd != nil) != test.changed || m.pending["a"] != test.changed || (m.input != nil) != test.changed {
-				t.Fatalf("changed=%t command=%t pending=%t editor=%+v", test.changed, cmd != nil, m.pending["a"], m.input)
-			}
-			if m.rows[0].Label != "API desk" {
-				t.Fatal("submission replaced observed label before a confirmed change")
-			}
+			require.False(t, (cmd != nil) != test.changed)
+			require.False(t, m.pending["a"] != test.changed)
+			require.False(t, (m.input != nil) != test.changed)
+			require.Equal(t, "API desk", m.rows[0].Label, "submission replaced observed label before a confirmed change")
 		})
 	}
 }

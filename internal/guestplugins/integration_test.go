@@ -13,6 +13,7 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/herdr"
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 // The SSH boundary is replaced with a local shell in a temporary HOME. All
@@ -23,14 +24,10 @@ func TestInstalledPluginsRealServer(t *testing.T) {
 		t.Skip("set SBX_TEST_HERDR_BINARY for isolated Herdr integration")
 	}
 	root, err := os.MkdirTemp("/tmp", "sbx-plugin-")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer os.RemoveAll(root)
 	root, err = filepath.EvalSymlinks(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for key, dir := range map[string]string{"HOME": "home", "XDG_CONFIG_HOME": "config", "XDG_STATE_HOME": "state", "XDG_RUNTIME_DIR": "run"} {
 		path := filepath.Join(root, dir)
 		os.MkdirAll(path, 0700)
@@ -41,9 +38,7 @@ func TestInstalledPluginsRealServer(t *testing.T) {
 	}
 	bin := filepath.Join(root, "bin")
 	os.MkdirAll(bin, 0700)
-	if err := os.Symlink(binary, filepath.Join(bin, "herdr")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Symlink(binary, filepath.Join(bin, "herdr")))
 	t.Setenv("PATH", bin+":/usr/bin:/bin:/sbin:/usr/sbin")
 	hostConfig := filepath.Join(root, "host.toml")
 	guestConfig := filepath.Join(root, "guest.toml")
@@ -98,9 +93,7 @@ command=["sh","run.sh"]
 			transfers++
 		}
 		if command.Stdin != nil && raceConfig {
-			if err := os.WriteFile(guestConfig, []byte("# concurrent edit\n[advanced]\nscrollback_limit_bytes=6000\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.WriteFile(guestConfig, []byte("# concurrent edit\n[advanced]\nscrollback_limit_bytes=6000\n"), 0600))
 		}
 		script := strings.ReplaceAll(command.Args[len(command.Args)-1], "uname -sm", "printf 'Linux aarch64\\n'")
 		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", script)
@@ -109,9 +102,7 @@ command=["sh","run.sh"]
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
-	if err := store.SetGuestPluginDefault("example.actions", true); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SetGuestPluginDefault("example.actions", true))
 	client := herdr.New(process.Runner{Execute: shell})
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -120,96 +111,63 @@ command=["sh","run.sh"]
 		stop.Env = append(os.Environ(), "HERDR_CONFIG_PATH="+guestConfig)
 		_ = stop.Run()
 	}()
-	if err := client.StartProjectServer(ctx, "fixture.sbx", root); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, client.StartProjectServer(ctx, "fixture.sbx", root))
 	for range 2 {
-		if err := ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true }); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true }))
 	}
-	if transfers != 1 {
-		t.Fatalf("unchanged plugin transferred again: %d transfers", transfers)
-	}
+	require.Equal(t, 1, transfers, "unchanged plugin transferred again: %d transfers", transfers)
 	installed, err := client.InspectGuestPlugin(ctx, "fixture.sbx", "example.actions")
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := os.Stat(filepath.Join(installed.Plugin.Root, "actions.toml"))
+		require.True(t, os.IsNotExist(err), "source manifest copied beside normalized guest manifest: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(installed.Plugin.Root, "actions.toml")); !os.IsNotExist(err) {
-		t.Fatalf("source manifest copied beside normalized guest manifest: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(installed.Plugin.Root, "herdr-plugin.toml")); err != nil {
-		t.Fatalf("normalized guest manifest missing: %v", err)
+	{
+		_, err := os.Stat(filepath.Join(installed.Plugin.Root, "herdr-plugin.toml"))
+		require.NoError(t, err, "normalized guest manifest missing: %v", err)
 	}
 	content, err := os.ReadFile(filepath.Join(installed.Plugin.Root, "herdr", "pane.sh"))
-	if err != nil || string(content) != "#!/bin/sh\nexit 0\n" {
-		t.Fatalf("installed payload differs from local files: %q, %v", content, err)
-	}
+	require.NoError(t, err)
+	require.EqualValues(t, "#!/bin/sh\nexit 0\n", string(content))
 	data, err := os.ReadFile(guestConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	doc, err := parseConfig(data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if doc["advanced"].(map[string]any)["scrollback_limit_bytes"] != int64(5000) {
-		t.Fatal("lost guest setting")
-	}
+	require.NoError(t, err)
+	require.False(t, doc["advanced"].(map[string]any)["scrollback_limit_bytes"] != int64(5000), "lost guest setting")
 	backup, err := os.ReadFile(guestConfig + ".herdr-sbx-example.actions.bak")
-	if err != nil || !strings.Contains(string(backup), "# guest settings") {
-		t.Fatalf("missing original backup: %v", err)
-	}
+	require.NoError(t, err)
+	require.Contains(t, string(backup), "# guest settings")
 	// Local installation does not opt a plugin into guests.
 	absent, err := client.InspectGuestPlugin(ctx, "fixture.sbx", "example.secondary")
-	if err != nil || absent.Plugin.ID != "" {
-		t.Fatalf("new plugin was auto-enabled: %+v %v", absent.Plugin, err)
-	}
-	if err := store.SetGuestPluginDefault("example.secondary", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true }); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.EqualValues(t, "", absent.Plugin.ID)
+	require.NoError(t, store.SetGuestPluginDefault("example.secondary", true))
+	require.NoError(t, ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true }))
 	secondary, err := client.InspectGuestPlugin(ctx, "fixture.sbx", "example.secondary")
-	if err != nil || !secondary.Plugin.Enabled {
-		t.Fatal("second plugin was not applied", err)
-	}
-	if err := store.SetGuestPluginDefault("example.secondary", false); err != nil {
-		t.Fatal(err)
-	}
-	if err := ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true }); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.True(t, secondary.Plugin.Enabled)
+	require.NoError(t, store.SetGuestPluginDefault("example.secondary", false))
+	require.NoError(t, ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true }))
 	secondary, err = client.InspectGuestPlugin(ctx, "fixture.sbx", "example.secondary")
-	if err != nil || !secondary.Plugin.Enabled {
-		t.Fatal("opt-out changed existing guest plugin", err)
-	}
+	require.NoError(t, err)
+	require.True(t, secondary.Plugin.Enabled)
 
 	// A portable plugin can use its installed files directly.
-	if err := store.SetGuestPluginDefault("example.portable", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true }); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SetGuestPluginDefault("example.portable", true))
+	require.NoError(t, ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true }))
 	generic, err := client.InspectGuestPlugin(ctx, "fixture.sbx", "example.portable")
-	if err != nil || !generic.Plugin.Enabled {
-		t.Fatal("generic bundle was not applied", err)
-	}
-	if err := store.SetGuestPluginDefault("example.portable", false); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.True(t, generic.Plugin.Enabled)
+	require.NoError(t, store.SetGuestPluginDefault("example.portable", false))
 
 	raceConfig = true
-	if err := os.WriteFile(hostConfig, []byte(strings.ReplaceAll(hostKeys, "prefix+ctrl+r", "prefix+ctrl+t")), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true }); err == nil || !strings.Contains(err.Error(), "config changed") {
-		t.Fatalf("concurrent edit was not rejected: %v", err)
+	require.NoError(t, os.WriteFile(hostConfig, []byte(strings.ReplaceAll(hostKeys, "prefix+ctrl+r", "prefix+ctrl+t")), 0600))
+	{
+		err := ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true })
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "config changed")
 	}
 	data, err = os.ReadFile(guestConfig)
-	if err != nil || !strings.Contains(string(data), "# concurrent edit") {
-		t.Fatal("overwrote concurrent configuration")
-	}
+	require.NoError(t, err)
+	require.Contains(t, string(data), "# concurrent edit")
 }
