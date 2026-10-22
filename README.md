@@ -1,18 +1,34 @@
 # herdr-sbx
 
-Connect local [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) to [Herdr](https://github.com/herdrdev/herdr).
-The plugin discovers sandboxes and adds running ones as machines named `sbx · <sandbox-name>`.
-It installs Herdr inside sandboxes when needed and creates workspaces in their project directories.
-You can also select local plugins to install inside sandboxes with their shortcuts.
+Connect local [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) to [Herdr](https://github.com/herdrdev/herdr) over SSH.
+The plugin registers running sandboxes as Herdr machines named `sbx · <sandbox-name>`.
+
+- Herdr detects and tracks the agents it supports inside connected sandboxes.
+- With Management ON, the plugin automatically installs missing Herdr and creates project workspaces in running enabled sandboxes.
+- Use Fix herdr to update or repair Herdr inside a sandbox over SSH.
+- Select local Herdr plugins to sync over SSH with their shortcuts.
+  Guest plugin sync starts Off.
+
+Sandbox table:
+
+![Sandbox manager table with simulated sandboxes](docs/screenshots/sandboxes.png)
 
 ## Quick start
 
-Use a macOS or Linux host with Herdr 0.9.1 or later, `sbx` 0.45.1 or later, and OpenSSH.
+### Requirements
+
+- A macOS or Linux host.
+- Herdr 0.9.1 or later, `sbx` 0.45.1 or later, and OpenSSH.
+- For GitHub installation, Go 1.27.3 or later and Git, with `go` and `git` available on the host's `PATH`.
+
 Start the sandbox daemon and sign in through Docker Sandboxes before using the plugin.
 Configure sandbox SSH with `sbx setup ssh`.
 
-Install Go 1.27.3 or later and Git on the host, with `go` and `git` available on `PATH`.
-Herdr downloads and builds the plugin from GitHub:
+### 1. Install
+
+If you already use a local checkout, follow the [switching instructions](docs/reference.md#local-checkout) first.
+The [local checkout route](docs/reference.md#local-checkout) uses mise to provide the pinned Go version for development.
+Herdr downloads the plugin from GitHub and runs `go build` directly:
 
 ```sh
 herdr plugin install lanwen/herdr-sbx
@@ -20,14 +36,29 @@ herdr plugin install lanwen/herdr-sbx
 
 Review and approve the installation prompt.
 Herdr enables the installed plugin.
-If you already use a local checkout, follow the [switching instructions](docs/reference.md#local-checkout) first.
 
-Management follows sandbox changes in the background while it is ON.
+### 2. Open the sandbox manager
+
 From a terminal inside local Herdr, open the sandbox manager:
 
 ```sh
 herdr plugin action invoke open-status --plugin lanwen.herdr-sbx
 ```
+
+The first opening starts Management automatically, and closing the manager leaves it running.
+Management follows sandbox changes in the background while it is ON.
+
+### 3. Find your first sandbox
+
+Use a running sandbox for your first connection.
+Newly discovered running sandboxes appear in Herdr as `sbx · <sandbox-name>` once setup completes.
+Wait for the sandbox status to show Ready in the manager.
+
+Existing Disabled choices stay Disabled.
+For a running Disabled sandbox, select Enable in the manager.
+For a stopped sandbox without an entry, start it independently before selecting Enable.
+
+## Keyboard shortcut (optional)
 
 To open the popup with prefix, then Ctrl+s, add this [keybinding](https://herdr.dev/docs/configuration/#custom-command-keybindings) to `~/.config/herdr/config.toml`.
 
@@ -42,21 +73,18 @@ description = "Docker Sandboxes"
 Run `herdr server reload-config` from a terminal inside Herdr to apply the change.
 Press your configured prefix, then Ctrl+s, to open the popup.
 
-On first use, the manager starts one daemon automatically.
-Closing the manager leaves the daemon running.
+## Manage sandboxes
+
 Use the table to enable or disable sandboxes, rename herdr labels, and select synchronized herdr plugins.
 Use the Management control to turn automatic work ON or OFF.
-Disabling a sandbox keeps its herdr entry and label; after it is disabled in herdr, you can remove the entry separately.
+Turning Management OFF does not disable existing herdr connections.
+
+Disabling a sandbox keeps its herdr entry and label.
+After it is disabled in herdr, you can remove the entry separately.
 An explicit Enable, Disable, or Rename action remains available while Management is OFF.
-The plugin binary also provides `status` for cached observations and `status --json` for a detailed snapshot.
-Use `daemon start` or `daemon stop` to control Management, and `daemon status` or `daemon status --json` to inspect its saved choice and daemon state.
-For a local checkout, run these subcommands with `bin/herdr-sbx`.
+See the [command reference](docs/reference.md#commands-and-panel) for CLI status and daemon controls.
 
 ## Screenshots
-
-Sandbox table:
-
-![Sandbox manager table with simulated sandboxes](docs/screenshots/sandboxes.png)
 
 Sandbox details and recovery actions:
 
