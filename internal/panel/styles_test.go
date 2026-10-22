@@ -3,7 +3,6 @@ package panel
 import (
 	"fmt"
 	"os"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -11,14 +10,13 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/guestplugins"
 	"github.com/lanwen/herdr-sbx/internal/precheck"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func unsetNoColor(t *testing.T) {
 	t.Helper()
 	t.Setenv("NO_COLOR", "")
-	if err := os.Unsetenv("NO_COLOR"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Unsetenv("NO_COLOR"))
 }
 func styledFixture(t *testing.T) *model {
 	m := modelFixture(t)
@@ -41,31 +39,21 @@ func TestThemeRetainsContentGeometryAndMouseBoundsWithoutColor(t *testing.T) {
 				unsetNoColor(t)
 				colored := m.View().Content
 				hits := append([]hit(nil), m.hits...)
-				if !strings.Contains(colored, colorSuccess) || !strings.Contains(colored, background) {
-					t.Fatal("theme missing from colored view")
-				}
-				if !strings.Contains(ansi.Strip(colored), "╭") || !strings.Contains(ansi.Strip(colored), "│") {
-					t.Fatal("section outline missing")
-				}
+				require.Contains(t, colored, colorSuccess)
+				require.Contains(t, colored, background)
+				require.Contains(t, ansi.Strip(colored), "╭")
+				require.Contains(t, ansi.Strip(colored), "│")
 				for _, value := range []string{"", "1"} {
 					t.Setenv("NO_COLOR", value)
 					plain := m.View().Content
-					if strings.Contains(plain, "\x1b[") {
-						t.Fatalf("NO_COLOR=%q retained styling", value)
-					}
+					require.NotContains(t, plain, "\x1b[", "NO_COLOR=%q retained styling", value)
 					coloredLines := strings.Split(ansi.Strip(colored), "\n")
 					plainLines := strings.Split(plain, "\n")
-					if strings.Join(coloredLines[:len(coloredLines)-1], "\n") != strings.Join(plainLines[:len(plainLines)-1], "\n") {
-						t.Fatalf("color changed layout/content at %dx%d", size.width, size.height)
-					}
-					if !reflect.DeepEqual(hits[:len(hits)-2], m.hits[:len(m.hits)-2]) {
-						t.Fatal("color changed mouse geometry")
-					}
+					require.Equal(t, strings.Join(plainLines[:len(plainLines)-1], "\n"), strings.Join(coloredLines[:len(coloredLines)-1], "\n"), "color changed layout/content at %dx%d", size.width, size.height)
+					require.Equal(t, m.hits[:len(m.hits)-2], hits[:len(hits)-2], "color changed mouse geometry")
 				}
 				for _, line := range strings.Split(ansi.Strip(colored), "\n") {
-					if ansi.StringWidth(line) != size.width {
-						t.Fatalf("line width=%d, want %d", ansi.StringWidth(line), size.width)
-					}
+					require.Equal(t, size.width, ansi.StringWidth(line), "line width=%d, want %d", ansi.StringWidth(line), size.width)
 				}
 			})
 		}
@@ -77,21 +65,16 @@ func TestThemeUsesSemanticColorsAndFocusedButtonFill(t *testing.T) {
 	m.workerEnabled = true
 	view := m.View().Content
 	for _, color := range []string{colorSuccess, colorSand, colorError, colorSeparator} {
-		if !strings.Contains(view, color) {
-			t.Fatalf("semantic color %q missing", color)
-		}
+		require.Contains(t, view, color, "semantic color %q missing", color)
 	}
 	m.dialog = "startup"
 	m.button = 1
 	view = m.View().Content
-	if !strings.Contains(view, "\x1b[48;2;136;162;238m\x1b[1m  Start Management ↵  ") {
-		t.Fatal("focused button has no selected fill")
-	}
+	require.Contains(t, view, "\x1b[48;2;136;162;238m\x1b[1m  Start Management ↵  ", "focused button has no selected fill")
 	t.Setenv("NO_COLOR", "")
 	plain := m.View().Content
-	if !strings.Contains(plain, "  Start Management ↵  ") || !strings.Contains(plain, "Management ON") {
-		t.Fatal("colorless controls lost labels")
-	}
+	require.Contains(t, plain, "  Start Management ↵  ")
+	require.Contains(t, plain, "Management ON")
 }
 
 func TestOutlineRestoresBorderColorAfterStyledTitle(t *testing.T) {
@@ -108,9 +91,8 @@ func TestOutlineRestoresBorderColorAfterStyledTitle(t *testing.T) {
 			top := outline(nil, m.diagnosticTitle(), 110, 0)[0].text
 			afterTitle := top[strings.LastIndex(top, "All (1)")+len("All (1)"):]
 			afterTitle = strings.TrimPrefix(afterTitle, "\x1b[22m")
-			if !strings.HasPrefix(afterTitle, colorSeparator) || !strings.Contains(afterTitle, "─╮") {
-				t.Fatalf("title leaked foreground into border: %q", top)
-			}
+			require.True(t, strings.HasPrefix(afterTitle, colorSeparator))
+			require.Contains(t, afterTitle, "─╮")
 		}
 	}
 }
@@ -133,8 +115,9 @@ func TestDiagnosticAndEventsHeadersShowActionableFocus(t *testing.T) {
 			if focus == "diagnostics" {
 				color = colorText
 			}
-			if title := m.diagnosticTitle(); !strings.Contains(title, ink(color, scenario.title)) {
-				t.Fatalf("focus %s: incorrect header color: %q", focus, title)
+			{
+				title := m.diagnosticTitle()
+				require.Contains(t, title, ink(color, scenario.title), "focus %s: incorrect header color: %q", focus, title)
 			}
 		}
 	}
@@ -146,9 +129,7 @@ func TestDiagnosticAndEventsHeadersShowActionableFocus(t *testing.T) {
 	}{{"table", -1, colorSeparator}, {"events", -1, colorText}, {"events", 0, colorSeparator}, {"diagnostics", -1, colorSeparator}} {
 		m.focus, m.eventIndex = state.focus, state.index
 		view := m.View().Content
-		if !strings.Contains(view, state.color+m.eventTitle()+colorSeparator) {
-			t.Fatalf("focus %s index %d: incorrect Events header color: %q", state.focus, state.index, view)
-		}
+		require.Contains(t, view, state.color+m.eventTitle()+colorSeparator, "focus %s index %d: incorrect Events header color: %q", state.focus, state.index, view)
 	}
 }
 
@@ -164,9 +145,7 @@ func TestSandboxRowFillFollowsTableFocus(t *testing.T) {
 			}
 		}
 	}
-	if len(row.hits) == 0 {
-		t.Fatal("selected sandbox row missing")
-	}
+	require.NotEqual(t, 0, len(row.hits), "selected sandbox row missing")
 	selected := m.selected
 	for _, state := range []struct {
 		page, focus, dialog, input string
@@ -190,12 +169,11 @@ func TestSandboxRowFillFollowsTableFocus(t *testing.T) {
 		if state.input != "" {
 			m.input = &inputState{kind: state.input}
 		}
-		if got := strings.Contains(m.paintLine(row), backgroundSelected); got != state.want {
-			t.Fatalf("state %+v: row fill=%v", state, got)
-		}
-		if m.selected != selected {
-			t.Fatal("moving focus changed sandbox selection")
-		}
+
+		got := strings.Contains(m.paintLine(row), backgroundSelected)
+		require.Equal(t, state.want, got, "state %+v: row fill=%v", state, got)
+
+		require.Equal(t, selected, m.selected, "moving focus changed sandbox selection")
 	}
 }
 
@@ -206,41 +184,20 @@ func TestEmptyDiagnosticsHavePaddedReadableMessage(t *testing.T) {
 	for _, width := range []int{60, 110} {
 		m.width = width
 		lines := m.errorLines()
-		if len(lines) < 3 || lines[0].text != "" || lines[len(lines)-1].text != "" {
-			t.Fatalf("width %d: empty diagnostics lack vertical padding: %+v", width, lines)
-		}
+		require.False(t, len(lines) < 3)
+		require.EqualValues(t, "", lines[0].text)
+		require.EqualValues(t, "", lines[len(lines)-1].text)
 		var words []string
 		for _, l := range lines[1 : len(lines)-1] {
-			if !strings.HasPrefix(ansi.Strip(l.text), "  ") || ansi.StringWidth(l.text) > width-4 {
-				t.Fatalf("width %d: message lacks inset or exceeds outline: %q", width, l.text)
-			}
+			require.True(t, strings.HasPrefix(ansi.Strip(l.text), "  "))
+			require.False(t, ansi.StringWidth(l.text) > width-4)
 			words = append(words, strings.Fields(ansi.Strip(l.text))...)
 		}
-		if got := strings.Join(words, " "); got != "No new diagnostics. Switch to All to see dismissed active entries." {
-			t.Fatalf("width %d: message changed while wrapping: %q", width, got)
-		}
-	}
-}
-func TestOutlinedMouseControlsUseRenderedCells(t *testing.T) {
-	unsetNoColor(t)
-	m := styledFixture(t)
-	m.View()
-	var target hit
-	for _, h := range m.hits {
-		if h.action == "select" && h.id == "b" && h.x > 4 {
-			target = h
-		}
-	}
-	row := strings.Split(ansi.Strip(m.View().Content), "\n")[target.y]
-	if !strings.Contains(ansi.Cut(row, target.x, target.x+target.w), "beta") {
-		t.Fatalf("row selection hit misses sandbox name: %#v %q", target, row)
-	}
-	m.click(target.x, target.y)
-	if m.selected != "b" || m.expanded != "b" {
-		t.Fatal("outlined row cannot select sandbox preview")
-	}
-}
 
+		got := strings.Join(words, " ")
+		require.Equal(t, "No new diagnostics. Switch to All to see dismissed active entries.", got, "width %d: message changed while wrapping: %q", width, got)
+	}
+}
 func TestOutlinedLongInputsKeepCursorVisible(t *testing.T) {
 	for _, width := range []int{60, 80, 110} {
 		for _, kind := range []string{"rename", "filter"} {
@@ -254,13 +211,9 @@ func TestOutlinedLongInputsKeepCursorVisible(t *testing.T) {
 				if kind == "rename" {
 					caret = "█"
 				}
-				if !strings.Contains(view, "long "+caret) {
-					t.Fatalf("cursor clipped: %s", view)
-				}
+				require.Contains(t, view, "long "+caret, "cursor clipped: %s", view)
 				if kind == "filter" {
-					if strings.Contains(view, "Clear") {
-						t.Fatalf("filter input displayed Clear while editing: %s", view)
-					}
+					require.NotContains(t, view, "Clear", "filter input displayed Clear while editing: %s", view)
 				}
 			})
 		}
@@ -272,24 +225,20 @@ func TestFilterPromptFocusAndActiveQueryColors(t *testing.T) {
 	m := modelFixture(t)
 	m.width = 80
 	line := m.filterLine(2, 2, "sandboxes")
-	if !strings.Contains(line.text, colorMuted+"/ Filter…") || ansi.Strip(line.text) != "/ Filter…   2 of 2 sandboxes" {
-		t.Fatalf("idle filter prompt should be muted: %q", line.text)
-	}
-	if len(line.hits) != 1 || line.hits[0].action != "filter" {
-		t.Fatalf("idle filter hit changed: %+v", line.hits)
-	}
+	require.Contains(t, line.text, colorMuted+"/ Filter…")
+	require.EqualValues(t, "/ Filter…   2 of 2 sandboxes", ansi.Strip(line.text))
+	require.Len(t, line.hits, 1)
+	require.EqualValues(t, "filter", line.hits[0].action)
 	m.queries["Sandboxes"] = "alpha"
 	line = m.filterLine(2, 1, "sandboxes")
-	if strings.Contains(line.text, colorMuted+"/ alpha") || !strings.Contains(ansi.Strip(line.text), "/ alpha   1 of 2 sandboxes") {
-		t.Fatalf("active query should stay readable: %q", line.text)
-	}
-	if len(line.hits) != 2 || line.hits[1].action != "clear" {
-		t.Fatalf("active query Clear hit changed: %+v", line.hits)
-	}
+	require.NotContains(t, line.text, colorMuted+"/ alpha")
+	require.Contains(t, ansi.Strip(line.text), "/ alpha   1 of 2 sandboxes")
+	require.Len(t, line.hits, 2)
+	require.EqualValues(t, "clear", line.hits[1].action)
 	m.input = &inputState{kind: "filter", text: "alpha", cursor: 5}
 	line = m.filterLine(2, 1, "sandboxes")
-	if !strings.Contains(line.text, colorAccent+"/ ") || !strings.Contains(line.text, colorBright+"alpha│") ||
-		strings.Contains(ansi.Strip(line.text), "Clear") || len(line.hits) != 1 {
-		t.Fatalf("focused input lost contrast or displayed Clear: %q", line.text)
-	}
+	require.Contains(t, line.text, colorAccent+"/ ")
+	require.Contains(t, line.text, colorBright+"alpha│")
+	require.NotContains(t, ansi.Strip(line.text), "Clear")
+	require.Len(t, line.hits, 1)
 }

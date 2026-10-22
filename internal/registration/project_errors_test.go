@@ -10,6 +10,7 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestProjectWorkspaceHerdrFailures(t *testing.T) {
@@ -35,39 +36,25 @@ func TestProjectWorkspaceHerdrFailures(t *testing.T) {
 			f.rebuildClients()
 			item := store.Tracked{SandboxID: "sb1", ProfileID: "machine-1", Label: "original label", Target: "demo.sbx", ProjectWorkspacePending: "/project"}
 			st := store.State{Version: 1, Scopes: map[string][]store.Tracked{"scope": {item}}}
-			if err := store.SaveState(st); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, store.SaveState(st))
 			got := f.service.projectReadiness(context.Background(), "scope", &st, sbx.Sandbox{ID: "sb1", Name: "demo", Status: "running"}, &item, true, func() bool { return true })
-			if got.Status != "workspace setup required" || !strings.Contains(got.Detail, tc.detail) {
-				t.Fatalf("outcome=%#v", got)
-			}
-			if err := saveResultError("scope/sb1", got); err != nil {
-				t.Fatal(err)
-			}
+			require.EqualValues(t, "workspace setup required", got.Status)
+			require.Contains(t, got.Detail, tc.detail)
+			require.NoError(t, saveResultError("scope/sb1", got))
 			status, err := store.ReadStatusStore()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(status.Errors) != 1 {
-				t.Fatalf("diagnostics=%#v", status.Errors)
-			}
+			require.NoError(t, err)
+			require.Len(t, status.Errors, 1, "diagnostics=%#v", status.Errors)
 			for _, entry := range status.Errors {
-				if entry.Code != tc.code {
-					t.Fatalf("code=%s want=%s", entry.Code, tc.code)
-				}
+				require.Equal(t, tc.code, entry.Code, "code=%s want=%s", entry.Code, tc.code)
 			}
 			saved, err := store.LoadState()
-			if err != nil || !reflect.DeepEqual(saved.Scopes, st.Scopes) || !reflect.DeepEqual(item, st.Scopes["scope"][0]) {
-				t.Fatalf("ownership or workspace changed: saved=%#v item=%#v err=%v", saved, item, err)
-			}
-			if err := saveResultError("scope/sb1", result{Status: "ready"}); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+			require.True(t, reflect.DeepEqual(saved.Scopes, st.Scopes))
+			require.True(t, reflect.DeepEqual(item, st.Scopes["scope"][0]))
+			require.NoError(t, saveResultError("scope/sb1", result{Status: "ready"}))
 			status, err = store.ReadStatusStore()
-			if err != nil || len(status.Errors) != 0 {
-				t.Fatalf("recovery did not clear diagnostic: errors=%#v err=%v", status.Errors, err)
-			}
+			require.NoError(t, err)
+			require.Len(t, status.Errors, 0)
 		})
 	}
 }

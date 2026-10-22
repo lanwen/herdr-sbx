@@ -16,6 +16,7 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestProjectReadinessRetainsSeparatePluginAttempts(t *testing.T) {
@@ -27,16 +28,10 @@ func TestProjectReadinessRetainsSeparatePluginAttempts(t *testing.T) {
 	for _, id := range []string{"example.first", "example.second"} {
 		root := t.TempDir()
 		manifest := filepath.Join(root, "herdr-plugin.toml")
-		if err := os.WriteFile(manifest, []byte(fmt.Sprintf("id=%q\nversion=\"1.0.0\"\n[[build]]\ncommand=[\"sh\",\"build.sh\"]\n", id)), 0600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(root, "build.sh"), []byte("exit 1\n"), 0700); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(manifest, []byte(fmt.Sprintf("id=%q\nversion=\"1.0.0\"\n[[build]]\ncommand=[\"sh\",\"build.sh\"]\n", id)), 0600))
+		require.NoError(t, os.WriteFile(filepath.Join(root, "build.sh"), []byte("exit 1\n"), 0700))
 		plugins = append(plugins, herdr.PluginInstall{ID: id, Version: "1.0.0", Root: root, ManifestPath: manifest})
-		if err := store.SetGuestPluginDefault(id, true); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, store.SetGuestPluginDefault(id, true))
 	}
 	catalog, _ := json.Marshal(map[string]any{"result": map[string]any{"plugins": plugins}})
 	transfers := 0
@@ -75,41 +70,30 @@ func TestProjectReadinessRetainsSeparatePluginAttempts(t *testing.T) {
 	var previous []store.PluginFailure
 	for pass := range 2 {
 		outcome := fixture.service.projectReadiness(context.Background(), "scope", &state, sandbox, &item, true, func() bool { return true })
-		if outcome.Status != "manual intervention required" || len(outcome.PluginFailures) != 2 || outcome.Detail != "2 herdr plugins need manual intervention" {
-			t.Fatalf("outcome: %+v", outcome)
-		}
+		require.EqualValues(t, "manual intervention required", outcome.Status)
+		require.Len(t, outcome.PluginFailures, 2)
+		require.EqualValues(t, "2 herdr plugins need manual intervention", outcome.Detail)
 		for i, failure := range outcome.PluginFailures {
-			if failure.PluginID != plugins[i].ID || failure.Output != []string{"build log for attempt 1: artifacts.example", "build log for attempt 2"}[i] || failure.Recovery == "" || failure.OccurredAt.IsZero() {
-				t.Fatalf("plugin metadata: %+v", failure)
-			}
-			if failure.Code != []string{store.CodeSandboxNetwork, store.CodeGuestPluginSync}[i] {
-				t.Fatalf("plugin cause classification: %+v", failure)
-			}
-			if pass == 1 && (!failure.OccurredAt.Equal(previous[i].OccurredAt) || failure.Detail != previous[i].Detail) {
-				t.Fatalf("reobserving previous attempt changed outcome: before=%+v after=%+v", previous[i], failure)
+			require.False(t, failure.PluginID != plugins[i].ID)
+			require.False(t, failure.Output != []string{"build log for attempt 1: artifacts.example", "build log for attempt 2"}[i])
+			require.NotEqualValues(t, "", failure.Recovery)
+			require.False(t, failure.OccurredAt.IsZero())
+			require.Equal(t, []string{store.CodeSandboxNetwork, store.CodeGuestPluginSync}[i], failure.Code, "plugin cause classification: %+v", failure)
+			if pass == 1 {
+				require.True(t, failure.OccurredAt.Equal(previous[i].OccurredAt))
+				require.False(t, failure.Detail != previous[i].Detail)
 			}
 		}
-		if err := store.SetGuestPluginFailures(store.StatusKey("scope", "id"), outcome.PluginFailures); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, store.SetGuestPluginFailures(store.StatusKey("scope", "id"), outcome.PluginFailures))
 		previous = outcome.PluginFailures
 	}
-	if err := store.SetGuestPluginFailures(store.StatusKey("scope", "id"), previous[1:]); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SetGuestPluginFailures(store.StatusKey("scope", "id"), previous[1:]))
 	status, err := store.ReadStatusStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(status.Errors) != 1 {
-		t.Fatalf("independent recovery: %+v", status.Errors)
-	}
+	require.NoError(t, err)
+	require.Len(t, status.Errors, 1, "independent recovery: %+v", status.Errors)
 	for _, entry := range status.Errors {
-		if entry.PluginID != "example.second" || entry.Count != 1 {
-			t.Fatalf("wrong plugin recovered or repeated: %+v", entry)
-		}
+		require.EqualValues(t, "example.second", entry.PluginID)
+		require.EqualValues(t, 1, entry.Count)
 	}
-	if transfers != 2 {
-		t.Fatalf("blocked attempt rebuilt: transfers=%d", transfers)
-	}
+	require.Equal(t, 2, transfers, "blocked attempt rebuilt: transfers=%d", transfers)
 }

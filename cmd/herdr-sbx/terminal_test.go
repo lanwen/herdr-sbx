@@ -9,15 +9,16 @@ import (
 	"testing"
 
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTerminalWriterSanitizesAndReportsWrites(t *testing.T) {
 	var out bytes.Buffer
 	input := []byte("café\x1b[31m fixture\r\b\a\n\tsecond line")
 	n, err := (terminalWriter{out: &out}).Write(input)
-	if n != len(input) || err != nil || out.String() != "café fixture\n\tsecond line" {
-		t.Fatalf("write = %d, %v; output = %q", n, err, out.String())
-	}
+	require.False(t, n != len(input))
+	require.NoError(t, err)
+	require.EqualValues(t, "café fixture\n\tsecond line", out.String())
 	failure := errors.New("fixture writer failed")
 	for _, test := range []struct {
 		name string
@@ -29,9 +30,8 @@ func TestTerminalWriterSanitizesAndReportsWrites(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			n, err := (terminalWriter{out: shortTerminalWriter{err: test.err}}).Write(input)
-			if n != 0 || !errors.Is(err, test.want) {
-				t.Fatalf("write = %d, %v; want 0, %v", n, err, test.want)
-			}
+			require.EqualValues(t, 0, n)
+			require.ErrorIs(t, err, test.want)
 		})
 	}
 }
@@ -54,12 +54,14 @@ func TestTerminalTextKeepsReadableMessagesWithoutTerminalControls(t *testing.T) 
 		{"multiline unicode", "sbx · café → ready\n\tsecond line", "sbx · café → ready\n\tsecond line"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := terminalMessage(test.input); got != test.want {
-				t.Fatalf("message = %q, want %q", got, test.want)
+			{
+				got := terminalMessage(test.input)
+				require.Equal(t, test.want, got, "message = %q, want %q", got, test.want)
 			}
 			wantField := strings.NewReplacer("\n", " ", "\t", " ").Replace(test.want)
-			if got := terminalField(test.input); got != wantField {
-				t.Fatalf("field = %q, want %q", got, wantField)
+			{
+				got := terminalField(test.input)
+				require.Equal(t, wantField, got, "field = %q, want %q", got, wantField)
 			}
 		})
 	}
@@ -70,45 +72,39 @@ func TestHumanStatusSanitizesSavedFieldsAndPreservesJSON(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	field := "café\x1b[31m fixture\x1b[0m\r\b\u0085\tcolumn\nline"
 	detail := "first\x1b]0;fixture title\a line\n\tsecond\r\b line"
-	if err := store.UpdateStatusStore(func(saved *store.StatusStore) {
+	require.NoError(t, store.UpdateStatusStore(func(saved *store.StatusStore) {
 		saved.Sandboxes["fixture"] = store.SandboxStatus{
 			Name: field, Label: field, Connection: field, Observed: field,
 			Detail: detail, AssociationIssue: detail, Enabled: store.Enabled,
 		}
 		saved.Errors["fixture"] = store.ErrorRecord{Code: "D9999\x1b[31m", Scope: field, Detail: detail}
-	}); err != nil {
-		t.Fatal(err)
-	}
+	}))
 	for _, print := range []func(*bytes.Buffer, bool) error{
 		func(out *bytes.Buffer, asJSON bool) error { return printStatus(out, asJSON) },
 		func(out *bytes.Buffer, asJSON bool) error { return printDaemonStatus(out, asJSON) },
 	} {
 		var human, structured bytes.Buffer
-		if err := print(&human, false); err != nil {
-			t.Fatal(err)
-		}
-		if strings.ContainsAny(human.String(), "\x1b\r\b\u0085") || !strings.Contains(human.String(), "café fixture column line") || !strings.Contains(human.String(), "first line\n\tsecond line") {
-			t.Fatalf("unsafe or unreadable human output: %q", human.String())
-		}
-		if err := print(&structured, true); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, print(&human, false))
+		require.False(t, strings.ContainsAny(human.String(), "\x1b\r\b\u0085"))
+		require.Contains(t, human.String(), "café fixture column line")
+		require.Contains(t, human.String(), "first line\n\tsecond line")
+		require.NoError(t, print(&structured, true))
 		var report statusReport
-		if err := json.Unmarshal(structured.Bytes(), &report); err != nil {
-			t.Fatal(err)
-		}
-		if len(report.Errors) != 1 || report.Errors[0].Scope != field || report.Errors[0].Detail != detail || report.Errors[0].Code != "D9999\x1b[31m" {
-			t.Fatalf("JSON diagnostic changed: %+v", report.Errors)
-		}
+		require.NoError(t, json.Unmarshal(structured.Bytes(), &report))
+		require.Len(t, report.Errors, 1)
+		require.False(t, report.Errors[0].Scope != field)
+		require.False(t, report.Errors[0].Detail != detail)
+		require.EqualValues(t, "D9999\x1b[31m", report.Errors[0].Code)
 		if len(report.Sandboxes) != 0 {
 			row := report.Sandboxes[0]
-			if row.Name != field || row.Label != field || row.Connection != field || row.Observed != field || row.Detail != detail || row.AssociationIssue != detail {
-				t.Fatalf("JSON sandbox fields changed: %+v", row)
-			}
+			require.False(t, row.Name != field)
+			require.False(t, row.Label != field)
+			require.False(t, row.Connection != field)
+			require.False(t, row.Observed != field)
+			require.False(t, row.Detail != detail)
+			require.False(t, row.AssociationIssue != detail)
 			for _, line := range strings.Split(human.String(), "\n") {
-				if strings.Contains(line, "Enabled") && strings.Contains(line, "café") && strings.Count(line, "café fixture column line") != 4 {
-					t.Fatalf("sandbox fields reshaped table: %q", line)
-				}
+				require.False(t, strings.Contains(line, "Enabled") && strings.Contains(line, "café") && strings.Count(line, "café fixture column line") != 4, "sandbox fields reshaped table: %q", line)
 			}
 		}
 	}
@@ -120,7 +116,9 @@ func TestDaemonSummarySanitizesBeforeApplyingStyles(t *testing.T) {
 	printDaemonSummary(&out, daemonStatusReport{Daemon: store.WorkerStatus{
 		State: "running\x1b[2J", Detail: "first\x1b[31m line\n\tsecond\r line",
 	}}, paint)
-	if strings.Contains(out.String(), "\x1b[2J") || strings.Contains(out.String(), "\x1b[31m") || strings.Contains(out.String(), "\r") || !strings.Contains(out.String(), "\x1b[1mherdr-sbx\x1b[0m") || !strings.Contains(out.String(), "first line\n\tsecond line") {
-		t.Fatalf("unsafe output or intentional styling lost: %q", out.String())
-	}
+	require.NotContains(t, out.String(), "\x1b[2J")
+	require.NotContains(t, out.String(), "\x1b[31m")
+	require.NotContains(t, out.String(), "\r")
+	require.Contains(t, out.String(), "\x1b[1mherdr-sbx\x1b[0m")
+	require.Contains(t, out.String(), "first line\n\tsecond line")
 }

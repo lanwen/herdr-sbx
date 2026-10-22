@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/lanwen/herdr-sbx/internal/process"
+	"github.com/stretchr/testify/require"
 )
 
 func TestInspectGuestPluginOwnership(t *testing.T) {
@@ -41,22 +42,14 @@ func TestInspectGuestPluginOwnership(t *testing.T) {
 			home := t.TempDir()
 			// Preserve traversal components in the catalog path seen by inspection.
 			root := home + "/" + tc.root
-			if err := os.MkdirAll(filepath.Join(home, ".local/share/herdr-sbx/plugins/example.plugin-revision"), 0700); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.MkdirAll(filepath.Join(home, ".local/share/herdr-sbx/plugins/example.plugin-revision"), 0700))
 			files := root
 			if tc.symlink {
 				files = filepath.Join(home, "external")
-				if err := os.RemoveAll(root); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Symlink(files, root); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, os.RemoveAll(root))
+				require.NoError(t, os.Symlink(files, root))
 			}
-			if err := os.MkdirAll(files, 0700); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.MkdirAll(files, 0700))
 			payload := []byte("plugin payload")
 			for name, content := range map[string]string{
 				"payload":           string(payload),
@@ -66,31 +59,23 @@ func TestInspectGuestPluginOwnership(t *testing.T) {
 				if name != "payload" && tc.marker == "" {
 					continue
 				}
-				if err := os.WriteFile(filepath.Join(files, name), []byte(content), 0600); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, os.WriteFile(filepath.Join(files, name), []byte(content), 0600))
 			}
 			if tc.modified {
-				if err := os.WriteFile(filepath.Join(root, "payload"), []byte("changed"), 0600); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, os.WriteFile(filepath.Join(root, "payload"), []byte("changed"), 0600))
 			}
 			client := guestInspectionShell(t, home, root, "")
 			state, err := client.InspectGuestPlugin(context.Background(), "test.sbx", "example.plugin")
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			wantSHA := ""
 			if tc.verified {
 				wantSHA = tc.marker
 			}
-			if state.Managed != tc.managed || state.AppliedConfigSHA != wantSHA {
-				t.Fatalf("managed=%v sha=%q, want managed=%v sha=%q", state.Managed, state.AppliedConfigSHA, tc.managed, wantSHA)
-			}
+			require.False(t, state.Managed != tc.managed)
+			require.False(t, state.AppliedConfigSHA != wantSHA)
 			actual, err := os.ReadFile(filepath.Join(root, "payload"))
-			if err != nil || string(actual) != map[bool]string{false: "plugin payload", true: "changed"}[tc.modified] {
-				t.Fatalf("inspection changed guest files: %q, %v", actual, err)
-			}
+			require.NoError(t, err)
+			require.False(t, string(actual) != map[bool]string{false: "plugin payload", true: "changed"}[tc.modified])
 		})
 	}
 }
@@ -102,11 +87,9 @@ func TestInspectGuestPluginProtocolDependencies(t *testing.T) {
 			// This inspector does not need plugin-specific runtime dependencies.
 			_, err := client.InspectGuestPlugin(context.Background(), "test.sbx", "example.plugin")
 			if missing == "" {
-				if err != nil {
-					t.Fatal(err)
-				}
-			} else if err == nil || err.Error() != "plugin requires "+missing+" in the sandbox" {
-				t.Fatalf("missing dependency: %v", err)
+				require.NoError(t, err)
+			} else {
+				require.EqualError(t, err, "plugin requires "+missing+" in the sandbox", "missing dependency: %v", err)
 			}
 		})
 	}
@@ -128,12 +111,12 @@ func TestInspectGuestPluginKeepsCommandFailureCause(t *testing.T) {
 				return tc.output, cause
 			}})
 			_, err := client.InspectGuestPlugin(context.Background(), "demo.sbx", "example.plugin")
-			if err == nil || !errors.Is(err, cause) || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "ensure jq") || strings.Contains(err.Error(), "private") {
-				t.Fatalf("missing or unsafe inspection cause: %v", err)
-			}
-			if errors.Is(err, ErrGuestPluginConnection) != (tc.exitCode == "255") {
-				t.Fatalf("incorrect SSH connection classification: %v", err)
-			}
+			require.Error(t, err)
+			require.ErrorIs(t, err, cause)
+			require.Contains(t, err.Error(), tc.want)
+			require.NotContains(t, err.Error(), "ensure jq")
+			require.NotContains(t, err.Error(), "private")
+			require.Equal(t, (tc.exitCode == "255"), errors.Is(err, ErrGuestPluginConnection), "incorrect SSH connection classification: %v", err)
 		})
 	}
 }
@@ -143,9 +126,8 @@ func TestInspectGuestPluginDoesNotCallCommandTimeoutAConnectionFailure(t *testin
 		return "", context.DeadlineExceeded
 	}})
 	_, err := client.InspectGuestPlugin(context.Background(), "demo.sbx", "example.plugin")
-	if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrGuestPluginConnection) {
-		t.Fatalf("ambiguous command timeout classified as connection failure: %v", err)
-	}
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.NotErrorIs(t, err, ErrGuestPluginConnection)
 }
 
 func TestInspectGuestPluginRecognizesSandboxWorkspacePreflightFailure(t *testing.T) {
@@ -162,12 +144,10 @@ func TestInspectGuestPluginRecognizesSandboxWorkspacePreflightFailure(t *testing
 			_, err := client.InspectGuestPlugin(context.Background(), "demo.sbx", "example.plugin")
 			wantConnectionCause := !framed
 			var connection *GuestPluginConnectionError
-			if errors.Is(err, ErrGuestPluginConnection) != wantConnectionCause || !errors.Is(err, cause) || errors.As(err, &connection) != wantConnectionCause {
-				t.Fatalf("incorrect sandbox connection preflight classification: %v", err)
-			}
-			if wantConnectionCause && (connection.HostWorkspacePath != "/Users/test/project/sbxenv.yaml" || strings.Contains(err.Error(), "sbx rm")) {
-				t.Fatalf("missing or misleading structured workspace cause: %v", err)
-			}
+			require.False(t, errors.Is(err, ErrGuestPluginConnection) != wantConnectionCause)
+			require.ErrorIs(t, err, cause)
+			require.False(t, errors.As(err, &connection) != wantConnectionCause)
+			require.False(t, wantConnectionCause && (connection.HostWorkspacePath != "/Users/test/project/sbxenv.yaml" || strings.Contains(err.Error(), "sbx rm")), "missing or misleading structured workspace cause: %v", err)
 		})
 	}
 }
@@ -177,64 +157,45 @@ func TestInspectGuestPluginSymlinkTraversalStaysExternal(t *testing.T) {
 	base := filepath.Join(home, ".local/share/herdr-sbx/plugins")
 	outside := filepath.Join(home, "external")
 	for _, dir := range []string{filepath.Join(base, "example.plugin-owned"), filepath.Join(outside, "child"), filepath.Join(outside, "example.plugin-owned")} {
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.MkdirAll(dir, 0700))
 		for name, content := range map[string]string{
 			"payload":           "payload",
 			".herdr-sbx-config": strings.Repeat("a", 64),
 			".herdr-sbx-files":  fmt.Sprintf("%x  payload\n", sha256.Sum256([]byte("payload"))),
 		} {
-			if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0600); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0600))
 		}
 	}
 	link := filepath.Join(base, "example.plugin-link-out")
-	if err := os.Symlink(filepath.Join(outside, "child"), link); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Symlink(filepath.Join(outside, "child"), link))
 	// Kernel path lookup reaches outside; logical cd would reach a canonical private root.
 	client := guestInspectionShell(t, home, link+"/../example.plugin-owned", "")
 	state, err := client.InspectGuestPlugin(context.Background(), "test.sbx", "example.plugin")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state.Managed || state.AppliedConfigSHA != "" {
-		t.Fatalf("outside symlink traversal classified as managed: %#v", state)
-	}
+	require.NoError(t, err)
+	require.False(t, state.Managed)
+	require.EqualValues(t, "", state.AppliedConfigSHA)
 }
 
 // Run the generated guest shell in an isolated home with only protocol tools.
 func guestInspectionShell(t *testing.T, home, root, missing string) *Client {
 	t.Helper()
 	bin := filepath.Join(home, "bin")
-	if err := os.MkdirAll(bin, 0700); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(bin, 0700))
 	for _, tool := range []string{"tar", "sha256sum", "base64", "jq", "uname", "tr", "cat"} {
 		if tool == missing {
 			continue
 		}
 		path, err := exec.LookPath(tool)
-		if err != nil {
-			t.Fatalf("guest fixture needs %s: %v", tool, err)
-		}
-		if err := os.Symlink(path, filepath.Join(bin, tool)); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err, "guest fixture needs %s: %v", tool, err)
+		require.NoError(t, os.Symlink(path, filepath.Join(bin, tool)))
 	}
 	plugins := `{"result":{"plugins":[]}}`
 	if root != "" {
 		data, err := json.Marshal(map[string]any{"result": map[string]any{"plugins": []map[string]string{{"plugin_id": "example.plugin", "plugin_root": root}}}})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		plugins = string(data)
 	}
-	if err := os.WriteFile(filepath.Join(bin, "herdr"), []byte("#!/bin/sh\nprintf '%s\\n' "+quoteShell(plugins)+"\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "herdr"), []byte("#!/bin/sh\nprintf '%s\\n' "+quoteShell(plugins)+"\n"), 0700))
 	return New(process.Runner{Execute: func(ctx context.Context, command process.Command) (string, error) {
 		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command.Args[len(command.Args)-1])
 		cmd.Env = []string{"HOME=" + home, "PATH=" + bin}
@@ -248,18 +209,17 @@ func TestInspectGuestPluginIgnoresSSHStartupOutput(t *testing.T) {
 	plugins := base64.StdEncoding.EncodeToString([]byte(`{"result":{"plugins":[]}}`))
 	response := "Welcome to the sandbox\nHERDR_SBX_PLUGIN_V1_BEGIN\nLinux x86_64\n" + path + "\nabsent\n\n" + plugins + "\nexternal\n\nHERDR_SBX_PLUGIN_V1_END\nlogout message\n"
 	client := New(process.Runner{Execute: func(_ context.Context, cmd process.Command) (string, error) {
-		if cmd.Name != "ssh" || !strings.Contains(cmd.Args[len(cmd.Args)-1], guestPluginFrameStart) || !strings.Contains(cmd.Args[len(cmd.Args)-1], guestPluginFrameEnd) {
-			t.Fatalf("unexpected guest command: %s", cmd.Name)
-		}
+		require.EqualValues(t, "ssh", cmd.Name)
+		require.Contains(t, cmd.Args[len(cmd.Args)-1], guestPluginFrameStart)
+		require.Contains(t, cmd.Args[len(cmd.Args)-1], guestPluginFrameEnd)
 		return response, nil
 	}})
 	state, err := client.InspectGuestPlugin(context.Background(), "demo.sbx", "example.plugin")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state.Platform != "Linux x86_64" || state.ConfigPath != "/tmp/herdr/config.toml" || state.ConfigExists || state.Managed {
-		t.Fatalf("unexpected state: %#v", state)
-	}
+	require.NoError(t, err)
+	require.EqualValues(t, "Linux x86_64", state.Platform)
+	require.EqualValues(t, "/tmp/herdr/config.toml", state.ConfigPath)
+	require.False(t, state.ConfigExists)
+	require.False(t, state.Managed)
 }
 
 func TestInspectGuestPluginReportsMalformedFrameWithoutContent(t *testing.T) {
@@ -269,9 +229,9 @@ func TestInspectGuestPluginReportsMalformedFrameWithoutContent(t *testing.T) {
 		return response, nil
 	}})
 	_, err := client.InspectGuestPlugin(context.Background(), "demo.sbx", "example.plugin")
-	if !errors.Is(err, ErrGuestPluginResponse) || !strings.Contains(err.Error(), "expected 7 fields, got 5") || strings.Contains(err.Error(), secret) {
-		t.Fatalf("unsafe or unhelpful malformed response error: %v", err)
-	}
+	require.ErrorIs(t, err, ErrGuestPluginResponse)
+	require.Contains(t, err.Error(), "expected 7 fields, got 5")
+	require.NotContains(t, err.Error(), secret)
 }
 
 func TestInspectGuestPluginAcceptsTrailingChecksumNewline(t *testing.T) {
@@ -282,9 +242,9 @@ func TestInspectGuestPluginAcceptsTrailingChecksumNewline(t *testing.T) {
 		return response, nil
 	}})
 	state, err := client.InspectGuestPlugin(context.Background(), "demo.sbx", "example.plugin")
-	if err != nil || !state.Managed || state.AppliedConfigSHA != "checksum" {
-		t.Fatalf("checksum with trailing newline: state=%#v err=%v", state, err)
-	}
+	require.NoError(t, err)
+	require.True(t, state.Managed)
+	require.EqualValues(t, "checksum", state.AppliedConfigSHA)
 }
 
 func TestInspectGuestPluginClassifiesMalformedFields(t *testing.T) {
@@ -300,9 +260,8 @@ func TestInspectGuestPluginClassifiesMalformedFields(t *testing.T) {
 				return guestPluginFrameStart + "\n" + strings.Join(parts, "\n") + "\n" + guestPluginFrameEnd + "\n", nil
 			}})
 			_, err := client.InspectGuestPlugin(context.Background(), "demo.sbx", "example.plugin")
-			if !errors.Is(err, ErrGuestPluginResponse) || strings.Contains(err.Error(), "private-invalid") {
-				t.Fatalf("malformed response classification/content: %v", err)
-			}
+			require.ErrorIs(t, err, ErrGuestPluginResponse)
+			require.NotContains(t, err.Error(), "private-invalid")
 		})
 	}
 }
@@ -319,42 +278,27 @@ func TestInstallGuestPluginRequiresCanonicalDirectory(t *testing.T) {
 			} else if kind == "internal symlink" {
 				actual = filepath.Join(base, "other")
 			}
-			if err := os.MkdirAll(base, 0700); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.MkdirAll(base, 0700))
 			if kind != "dangling symlink" {
-				if err := os.MkdirAll(actual, 0700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(actual, "payload"), []byte("payload"), 0600); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, os.MkdirAll(actual, 0700))
+				require.NoError(t, os.WriteFile(filepath.Join(actual, "payload"), []byte("payload"), 0600))
 			}
 			if actual != root {
-				if err := os.Symlink(actual, root); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, os.Symlink(actual, root))
 			}
 			bin := filepath.Join(home, "bin")
-			if err := os.Mkdir(bin, 0700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(bin, "herdr"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/herdr-calls\"\n"), 0700); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.Mkdir(bin, 0700))
+			require.NoError(t, os.WriteFile(filepath.Join(bin, "herdr"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/herdr-calls\"\n"), 0700))
 			var bundle bytes.Buffer
 			writer := tar.NewWriter(&bundle)
 			for name, data := range map[string]string{"plugin/payload": "payload", "files.sha256": fmt.Sprintf("%x  payload\n", sha256.Sum256([]byte("payload"))), "config.toml": ""} {
-				if err := writer.WriteHeader(&tar.Header{Name: name, Mode: 0600, Size: int64(len(data))}); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := writer.Write([]byte(data)); err != nil {
-					t.Fatal(err)
+				require.NoError(t, writer.WriteHeader(&tar.Header{Name: name, Mode: 0600, Size: int64(len(data))}))
+				{
+					_, err := writer.Write([]byte(data))
+					require.NoError(t, err)
 				}
 			}
-			if err := writer.Close(); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, writer.Close())
 			client := New(process.Runner{Execute: func(ctx context.Context, command process.Command) (string, error) {
 				cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command.Args[len(command.Args)-1])
 				cmd.Env = []string{"HOME=" + home, "PATH=" + bin + ":" + os.Getenv("PATH"), "HERDR_CONFIG_PATH=" + filepath.Join(home, "config.toml")}
@@ -365,26 +309,23 @@ func TestInstallGuestPluginRequiresCanonicalDirectory(t *testing.T) {
 			digest := fmt.Sprintf("%x", sha256.Sum256(bundle.Bytes()))
 			err := client.InstallGuestPlugin(context.Background(), "test.sbx", "example.plugin", &bundle, digest, "", "revision", false)
 			if kind == "directory" {
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := os.Stat(filepath.Join(root, ".herdr-sbx-config")); err != nil {
-					t.Fatal(err)
+				require.NoError(t, err)
+				{
+					_, err := os.Stat(filepath.Join(root, ".herdr-sbx-config"))
+					require.NoError(t, err)
 				}
 				return
 			}
-			if err == nil {
-				t.Fatal("accepted a symlink as the managed revision directory")
-			}
+			require.Error(t, err, "accepted a symlink as the managed revision directory")
 			for _, marker := range []string{".herdr-sbx-files", ".herdr-sbx-config"} {
-				if _, err := os.Stat(filepath.Join(actual, marker)); !os.IsNotExist(err) {
-					t.Fatalf("wrote marker outside revision directory: %s, %v", marker, err)
+				{
+					_, err := os.Stat(filepath.Join(actual, marker))
+					require.True(t, os.IsNotExist(err), "wrote marker outside revision directory: %s, %v", marker, err)
 				}
 			}
 			calls, _ := os.ReadFile(filepath.Join(home, "herdr-calls"))
-			if strings.Contains(string(calls), "plugin link") || strings.Contains(string(calls), "plugin enable") {
-				t.Fatalf("linked plugin from symlink: %s", calls)
-			}
+			require.NotContains(t, string(calls), "plugin link")
+			require.NotContains(t, string(calls), "plugin enable")
 		})
 	}
 }
@@ -425,22 +366,23 @@ func TestGuestBuildRunsOnceAndKeepsFailedSource(t *testing.T) {
 			err := invoke(false)
 			root := filepath.Join(home, ".local/share/herdr-sbx/plugins/example.plugin-revision")
 			if fail {
-				if err == nil || !strings.Contains(err.Error(), "build step 1 failed") || !strings.Contains(err.Error(), "network denied") || strings.Contains(err.Error(), "secret-value") {
-					t.Fatalf("diagnostic: %v", err)
-				}
-				if data, err := os.ReadFile(filepath.Join(root, "source")); err != nil || string(data) != "source" {
-					t.Fatalf("failed build source lost: %q %v", data, err)
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "build step 1 failed")
+				require.Contains(t, err.Error(), "network denied")
+				require.NotContains(t, err.Error(), "secret-value")
+				{
+					data, err := os.ReadFile(filepath.Join(root, "source"))
+					require.NoError(t, err)
+					require.EqualValues(t, "source", string(data))
 				}
 				return
 			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := invoke(true); err != nil {
-				t.Fatal(err)
-			}
-			if data, err := os.ReadFile(filepath.Join(root, "count")); err != nil || string(data) != "x" {
-				t.Fatalf("built more than once: %q %v", data, err)
+			require.NoError(t, err)
+			require.NoError(t, invoke(true))
+			{
+				data, err := os.ReadFile(filepath.Join(root, "count"))
+				require.NoError(t, err)
+				require.EqualValues(t, "x", string(data))
 			}
 		})
 	}
@@ -456,12 +398,10 @@ func TestGuestPluginAvailabilityChecksRetainedRegistryPaths(t *testing.T) {
 	plugins, _ := json.Marshal(map[string]any{"result": map[string]any{"plugins": []map[string]any{{"plugin_id": "example.plugin", "plugin_root": root, "manifest_path": manifest, "warnings": []string{}}}}})
 	os.WriteFile(filepath.Join(home, "bin", "herdr"), []byte("#!/bin/sh\nprintf '%s\\n' "+quoteShell(string(plugins))+"\n"), 0700)
 	state, err := client.InspectGuestPlugin(context.Background(), "fixture.sbx", "example.plugin")
-	if err != nil || !state.Plugin.Available {
-		t.Fatalf("available=%v err=%v", state.Plugin.Available, err)
-	}
+	require.NoError(t, err)
+	require.True(t, state.Plugin.Available)
 	os.Remove(manifest)
 	state, err = client.InspectGuestPlugin(context.Background(), "fixture.sbx", "example.plugin")
-	if err != nil || state.Plugin.Available {
-		t.Fatalf("stale registry accepted: available=%v err=%v", state.Plugin.Available, err)
-	}
+	require.NoError(t, err)
+	require.False(t, state.Plugin.Available)
 }

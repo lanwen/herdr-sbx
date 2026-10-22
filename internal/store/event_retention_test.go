@@ -5,64 +5,56 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestPreparationOutcomeRetainsUnderlyingFailure(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
-	if err := SetRegistrationError(CodeRegistration, "sandbox", "machine registration failed"); err != nil {
-		t.Fatal(err)
-	}
-	if err := RecordError(CodePreparation, "sandbox", "Re-sync did not finish: machine registration failed"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, SetRegistrationError(CodeRegistration, "sandbox", "machine registration failed"))
+	require.NoError(t, RecordError(CodePreparation, "sandbox", "Re-sync did not finish: machine registration failed"))
 	saved, err := ReadStatusStore()
-	if err != nil || len(saved.Errors) != 1 || len(saved.Events) != 1 {
-		t.Fatalf("outcomes: %+v, %v", saved, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, saved.Errors, 1)
+	require.Len(t, saved.Events, 1)
 	for _, entry := range saved.Errors {
-		if entry.Code != CodeRegistration {
-			t.Fatalf("underlying registration diagnostic replaced: %+v", entry)
-		}
+		require.Equal(t, CodeRegistration, entry.Code, "underlying registration diagnostic replaced: %+v", entry)
 	}
-	if event := saved.Events[0]; event.Code != CodePreparation || SeverityForCode(event.Code) != SeverityInfo || event.Resolved {
-		t.Fatalf("re-sync outcome is not informational: %+v", event)
-	}
+
+	event := saved.Events[0]
+	require.False(t, event.Code != CodePreparation)
+	require.False(t, SeverityForCode(event.Code) != SeverityInfo)
+	require.False(t, event.Resolved)
 }
 
 func TestReadStatusNormalizesInformationalOutcomesAndExpiresHistory(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	now := time.Now()
-	if err := UpdateStatusStore(func(s *StatusStore) {
+	require.NoError(t, UpdateStatusStore(func(s *StatusStore) {
 		s.Errors["legacy"] = ErrorRecord{Ref: "abc123", Code: CodePreparation, Scope: "sandbox", Detail: "Re-sync did not finish", LastSeen: now}
 		s.Errors["plugin"] = ErrorRecord{Code: CodeGuestPluginSync, Scope: "sandbox", Detail: "build failed", LastSeen: now}
 		s.PreparationErrors["sandbox"] = "build failed"
 		s.Preparation["sandbox"] = now.Add(time.Minute)
 		s.Events = []EventRecord{{Code: CodeGuestPluginSync, Detail: "expired", At: now.Add(-2 * time.Hour)}, {Code: CodePolicyCleanup, Detail: "recent", At: now.Add(-time.Minute)}}
-	}); err != nil {
-		t.Fatal(err)
-	}
+	}))
 	path, err := statusPath()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	before, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	saved, err := ReadStatusStore()
-	if err != nil || len(saved.Errors) != 1 || len(saved.Events) != 2 {
-		t.Fatalf("normalized history: %+v, %v", saved, err)
-	}
-	if event := saved.Events[1]; event.Code != CodePreparation || event.Ref != "abc123" {
-		t.Fatalf("legacy outcome was not preserved: %+v", event)
-	}
-	if saved.PreparationErrors["sandbox"] != "build failed" || saved.Preparation["sandbox"].IsZero() {
-		t.Fatal("normalization changed the retry cooldown")
-	}
+	require.NoError(t, err)
+	require.Len(t, saved.Errors, 1)
+	require.Len(t, saved.Events, 2)
+
+	event := saved.Events[1]
+	require.False(t, event.Code != CodePreparation)
+	require.EqualValues(t, "abc123", event.Ref)
+
+	require.EqualValues(t, "build failed", saved.PreparationErrors["sandbox"])
+	require.False(t, saved.Preparation["sandbox"].IsZero())
 	after, err := os.ReadFile(path)
-	if err != nil || string(before) != string(after) {
-		t.Fatal("reading event history wrote the journal")
-	}
+	require.NoError(t, err)
+	require.False(t, string(before) != string(after))
 }
 
 func TestEventRetentionKeepsNewestFiftyWithinOneHour(t *testing.T) {
@@ -77,9 +69,7 @@ func TestEventRetentionKeepsNewestFiftyWithinOneHour(t *testing.T) {
 		t.Fatalf("wrong retained history: %s", data)
 	}
 	retainEvents(&s, now.Add(time.Hour))
-	if len(s.Events) != 0 {
-		t.Fatalf("events remained after one hour: %+v", s.Events)
-	}
+	require.Len(t, s.Events, 0, "events remained after one hour: %+v", s.Events)
 }
 
 func TestOlderMigratedOutcomeDoesNotEvictNewerEvents(t *testing.T) {
@@ -90,13 +80,10 @@ func TestOlderMigratedOutcomeDoesNotEvictNewerEvents(t *testing.T) {
 	}
 	s.Errors["legacy"] = ErrorRecord{Code: CodePreparation, Scope: "sandbox", Detail: "older outcome", LastSeen: now.Add(-30 * time.Minute)}
 	normalizeEvents(&s)
-	if len(s.Errors) != 0 || len(s.Events) != 50 {
-		t.Fatalf("migration: errors=%+v events=%+v", s.Errors, s.Events)
-	}
+	require.Len(t, s.Errors, 0)
+	require.Len(t, s.Events, 50)
 	for _, event := range s.Events {
-		if event.Detail != "recent" {
-			t.Fatalf("older migrated event displaced newer history: %+v", event)
-		}
+		require.Equal(t, "recent", event.Detail, "older migrated event displaced newer history: %+v", event)
 	}
 }
 
@@ -111,12 +98,9 @@ func TestEventCapRanksMixedTimestampsWithStableTies(t *testing.T) {
 	}
 	s.Events = append(s.Events, EventRecord{Detail: "keep tied", At: now.Add(-time.Minute)}, EventRecord{Detail: "discard old", At: now.Add(-30 * time.Minute)})
 	retainEvents(&s, now)
-	if len(s.Events) != 50 || s.Events[49].Detail != "keep tied" {
-		t.Fatalf("retention changed ordering or tied cutoff: %+v", s.Events)
-	}
+	require.Len(t, s.Events, 50)
+	require.EqualValues(t, "keep tied", s.Events[49].Detail)
 	for _, event := range s.Events {
-		if event.Detail != "recent" && event.Detail != "keep tied" {
-			t.Fatalf("retained older event: %+v", event)
-		}
+		require.False(t, event.Detail != "recent" && event.Detail != "keep tied", "retained older event: %+v", event)
 	}
 }

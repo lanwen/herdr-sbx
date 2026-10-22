@@ -9,6 +9,7 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/guestplugins"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGuestObservationRefreshesAfterLifecycleChanges(t *testing.T) {
@@ -20,9 +21,7 @@ func TestGuestObservationRefreshesAfterLifecycleChanges(t *testing.T) {
 			}
 			item := ownedRegistration()
 			fingerprint, err := guestplugins.DesiredFingerprint(context.Background(), f.service.herdr, f.scope, item.SandboxID)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			checked := time.Now().Add(-time.Minute)
 			item.GuestSync = &store.GuestSyncObservation{Fingerprint: item.Target + "\x00" + item.SandboxID + "\x00" + fingerprint, CheckedAt: checked, Status: "ready", Detail: "saved observation"}
 			f.save(item)
@@ -43,16 +42,10 @@ func TestGuestObservationRefreshesAfterLifecycleChanges(t *testing.T) {
 				scheduler.processCatchup(false)
 			}
 			saved, err := store.LoadState()
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			got := saved.Scopes[f.scope][0].GuestSync.CheckedAt
-			if trigger == "periodic" && !got.Equal(checked) {
-				t.Fatal("ordinary catch-up repeated guest observation")
-			}
-			if trigger != "periodic" && !got.After(checked) {
-				t.Fatalf("%s did not refresh saved observation", trigger)
-			}
+			require.False(t, trigger == "periodic" && !got.Equal(checked), "ordinary catch-up repeated guest observation")
+			require.False(t, trigger != "periodic" && !got.After(checked), "%s did not refresh saved observation", trigger)
 		})
 	}
 }

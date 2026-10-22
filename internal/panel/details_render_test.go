@@ -2,7 +2,6 @@ package panel
 
 import (
 	"io"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lanwen/herdr-sbx/internal/guestplugins"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestExpandedCardReplacesRowAndKeepsIdentityActionsAndVersion(t *testing.T) {
@@ -29,23 +29,18 @@ func TestExpandedCardReplacesRowAndKeepsIdentityActionsAndVersion(t *testing.T) 
 		text.WriteByte('\n')
 	}
 	content := text.String()
-	if strings.Count(content, "alpha") != 1 {
-		t.Fatalf("expanded row duplicated sandbox identity: %s", content)
-	}
+	require.Equal(t, 1, strings.Count(content, "alpha"), "expanded row duplicated sandbox identity: %s", content)
 	header := lines[3]
-	if !strings.Contains(ansi.Strip(header.text), "✓ alpha (running) → API desk (ready)") || !strings.HasSuffix(ansi.Strip(header.text), " herdr 0.9.3 ╮") {
-		t.Fatalf("identity/version missing from title: %q", header.text)
-	}
-	if !strings.Contains(header.text, colorAccent) || !strings.Contains(header.text, colorSand) || !strings.Contains(header.text, colorSuccess) {
-		t.Fatalf("semantic title colors missing: %q", header.text)
-	}
+	require.Contains(t, ansi.Strip(header.text), "✓ alpha (running) → API desk (ready)")
+	require.True(t, strings.HasSuffix(ansi.Strip(header.text), " herdr 0.9.3 ╮"))
+	require.Contains(t, header.text, colorAccent)
+	require.Contains(t, header.text, colorSand)
+	require.Contains(t, header.text, colorSuccess)
 	action, identity, plugins := strings.Index(content, "Disable (space)"), strings.Index(content, "a → machine-id"), strings.Index(content, "╭─ Plugins")
-	if action < 0 || identity < action || plugins < identity {
-		t.Fatalf("actions/identity/plugins order: %s", content)
-	}
-	if strings.Contains(m.paintLine(header), backgroundSelected) {
-		t.Fatal("preview fill erased semantic header colors")
-	}
+	require.False(t, action < 0)
+	require.False(t, identity < action)
+	require.False(t, plugins < identity)
+	require.NotContains(t, m.paintLine(header), backgroundSelected, "preview fill erased semantic header colors")
 	for _, focus := range []string{"table", "actions", "plugins"} {
 		m.focus = focus
 		details := m.sandboxDetails(*r)
@@ -53,9 +48,8 @@ func TestExpandedCardReplacesRowAndKeepsIdentityActionsAndVersion(t *testing.T) 
 		if focus != "table" {
 			want = colorText
 		}
-		if !strings.HasPrefix(details[0].text, want+"  ╭") || !strings.HasPrefix(details[len(details)-1].text, want+"  ╰") {
-			t.Fatalf("focus %s: wrong outline emphasis", focus)
-		}
+		require.True(t, strings.HasPrefix(details[0].text, want+"  ╭"))
+		require.True(t, strings.HasPrefix(details[len(details)-1].text, want+"  ╰"))
 	}
 }
 
@@ -67,20 +61,33 @@ func TestExpandedCardTitleKeepsCheckboxAndRenameHits(t *testing.T) {
 		m.input = &inputState{kind: "rename", target: "a", text: "New label", cursor: 9}
 		details := m.sandboxDetails(m.rows[0])
 		var all strings.Builder
+		var checkbox, rename []hit
 		for _, l := range details {
 			all.WriteString(ansi.Strip(l.text))
 			for _, h := range l.hits {
-				if h.x < 0 || h.x+h.w > width-4 {
-					t.Fatalf("out of bounds hit: %+v", h)
+				if h.action == "enabled" {
+					checkbox = append(checkbox, h)
+				}
+				if h.action == "action" && h.id == "rename" {
+					rename = append(rename, h)
 				}
 			}
 		}
-		if !strings.Contains(all.String(), "New label█") {
-			t.Fatalf("inline rename lost at width %d: %s", width, all.String())
-		}
-		for _, h := range details[0].hits {
-			if h.action == "enabled" && ansi.Cut(ansi.Strip(details[0].text), h.x, h.x+h.w) != "✓" {
-				t.Fatalf("checkbox hit shifted: %+v %q", h, details[0].text)
+		require.Len(t, checkbox, 1, "checkbox target missing at width %d", width)
+		require.Equal(t, "a", checkbox[0].id)
+		require.Len(t, rename, 1, "rename target missing at width %d", width)
+		require.Contains(t, all.String(), "New label█", "inline rename lost at width %d", width)
+		for _, l := range details {
+			for _, h := range l.hits {
+				require.GreaterOrEqual(t, h.x, 0)
+				require.LessOrEqual(t, h.x+h.w, width-4)
+				cell := ansi.Cut(ansi.Strip(l.text), h.x, h.x+h.w)
+				if h.action == "enabled" {
+					require.Equal(t, "✓", cell)
+				}
+				if h.action == "action" && h.id == "rename" {
+					require.Equal(t, "Rename ↵", strings.TrimSpace(cell))
+				}
 			}
 		}
 	}
@@ -97,9 +104,7 @@ func TestDetailFocusMutesPrimaryAndShowsRenameSaveState(t *testing.T) {
 			for _, l := range m.sandboxDetails(m.rows[0]) {
 				for _, h := range l.hits {
 					if h.action == "action" && h.id == id {
-						if h.x+h.w > width-4 {
-							t.Fatalf("action hit outside card: %+v", h)
-						}
+						require.False(t, h.x+h.w > width-4, "action hit outside card: %+v", h)
 						return ansi.Cut(l.text, h.x, h.x+h.w)
 					}
 				}
@@ -121,25 +126,18 @@ func TestDetailFocusMutesPrimaryAndShowsRenameSaveState(t *testing.T) {
 		} {
 			m.focus, m.button = state.focus, state.button
 			primary := actionText("disable")
-			if isBlue(primary) != state.blue {
-				t.Fatalf("width %d focus %s button %d: primary emphasis %q", width, state.focus, state.button, primary)
-			}
-			if !strings.Contains(primary, "\x1b[22m(space)\x1b[1m") {
-				t.Fatalf("hotkey weight changed: %q", primary)
-			}
+			require.Equal(t, state.blue, isBlue(primary), "width %d focus %s button %d: primary emphasis %q", width, state.focus, state.button, primary)
+			require.Contains(t, primary, "\x1b[22m(space)\x1b[1m", "hotkey weight changed: %q", primary)
 		}
 		m.focus, m.button = "table", 0
 		m.input = &inputState{kind: "rename", target: "a", text: "New label", cursor: 3}
 		rename := actionText("rename")
-		if !strings.Contains(rename, strings.Replace(colorSand, "[38;", "[48;", 1)) || !strings.Contains(ansi.Strip(rename), "Rename ↵") {
-			t.Fatalf("rename save state missing: %q", rename)
-		}
-		if isBlue(actionText("disable")) {
-			t.Fatal("primary stayed emphasized during rename")
-		}
-		if got := m.renderedInput(40); got != "New█ label" {
-			t.Fatalf("block cursor at wrong position: %q", got)
-		}
+		require.Contains(t, rename, strings.Replace(colorSand, "[38;", "[48;", 1))
+		require.Contains(t, ansi.Strip(rename), "Rename ↵")
+		require.False(t, isBlue(actionText("disable")), "primary stayed emphasized during rename")
+
+		got := m.renderedInput(40)
+		require.Equal(t, "New█ label", got, "block cursor at wrong position: %q", got)
 	}
 }
 
@@ -165,15 +163,11 @@ func TestCompactDetailsPreserveWrappedLabelAndIdentityStyles(t *testing.T) {
 				_, _ = expected.Write([]byte(want))
 				color := expected.Style().Fg
 				_ = expected.Close()
-				if !reflect.DeepEqual(got, color) {
-					t.Fatalf("%q continuation lost style: got=%v want=%v line=%q", fragment, got, color, line.text)
-				}
+				require.Equal(t, color, got, "%q continuation lost style: got=%v want=%v line=%q", fragment, got, color, line.text)
 				found = true
 			}
 		}
-		if !found {
-			t.Fatalf("fixture continuation %q not rendered", fragment)
-		}
+		require.True(t, found, "fixture continuation %q not rendered", fragment)
 	}
 }
 
@@ -195,9 +189,7 @@ func TestWrappedDetailTitleKeepsPanelBackgroundBeforeVersionBadge(t *testing.T) 
 				continue
 			}
 			fill := strings.LastIndex(row[:badge], "─")
-			if fill < 0 {
-				t.Fatal("fixture has no title-border filler")
-			}
+			require.False(t, fill < 0, "fixture has no title-border filler")
 			pen := lipgloss.NewWrapWriter(io.Discard)
 			_, _ = pen.Write([]byte(row[:fill]))
 			got := pen.Style().Bg
@@ -206,14 +198,10 @@ func TestWrappedDetailTitleKeepsPanelBackgroundBeforeVersionBadge(t *testing.T) 
 			_, _ = expected.Write([]byte(background))
 			want := expected.Style().Bg
 			_ = expected.Close()
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("focus %s filler background=%v want=%v row=%q", focus, got, want, row)
-			}
+			require.Equal(t, want, got, "focus %s filler background=%v want=%v row=%q", focus, got, want, row)
 			found = true
 		}
-		if !found {
-			t.Fatal("fixture header/version missing")
-		}
+		require.True(t, found, "fixture header/version missing")
 	}
 }
 
@@ -229,8 +217,6 @@ func TestFilledRestoresSurfaceAfterFullResetAndClearsTextAttributes(t *testing.T
 		_, _ = expected.Write([]byte(colorText + background))
 		want := expected.Style()
 		_ = expected.Close()
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("reset %q: got=%v want=%v", reset, got, want)
-		}
+		require.Equal(t, want, got, "reset %q: got=%v want=%v", reset, got, want)
 	}
 }

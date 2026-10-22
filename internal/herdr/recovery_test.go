@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/lanwen/herdr-sbx/internal/process"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGuestHandoffRequiresVerifiedServerWithoutRestartFallback(t *testing.T) {
@@ -16,14 +17,11 @@ func TestGuestHandoffRequiresVerifiedServerWithoutRestartFallback(t *testing.T) 
 			client := New(process.Runner{Execute: func(_ context.Context, command process.Command) (string, error) {
 				calls++
 				script := command.Args[len(command.Args)-1]
-				if command.Name != "ssh" || command.Args[4] != "fixture.sbx" {
-					t.Fatalf("wrong target: %+v", command)
-				}
+				require.EqualValues(t, "ssh", command.Name)
+				require.EqualValues(t, "fixture.sbx", command.Args[4])
 				switch {
 				case strings.Contains(script, "server live-handoff"):
-					if !strings.Contains(script, `--import-exe "$h" --expected-version '0.9.3'`) {
-						t.Fatal(script)
-					}
+					require.Contains(t, script, `--import-exe "$h" --expected-version '0.9.3'`, script)
 					if scenario == "rejected" {
 						return "unsupported", errors.New("exit 1")
 					}
@@ -42,12 +40,8 @@ func TestGuestHandoffRequiresVerifiedServerWithoutRestartFallback(t *testing.T) 
 				}
 			}})
 			err := client.HandoffGuest(context.Background(), "fixture.sbx", "0.9.3")
-			if (err == nil) != (scenario == "success") {
-				t.Fatalf("error=%v", err)
-			}
-			if scenario == "rejected" && calls != 1 {
-				t.Fatalf("calls=%d", calls)
-			}
+			require.Equal(t, (scenario == "success"), (err == nil), "error=%v", err)
+			require.False(t, scenario == "rejected" && calls != 1, "calls=%d", calls)
 		})
 	}
 }

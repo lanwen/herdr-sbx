@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/lanwen/herdr-sbx/internal/process"
+	"github.com/stretchr/testify/require"
 )
 
 // A signal during a real download must close the response and remove the
@@ -39,14 +40,10 @@ func TestManualPreparationInterrupt(t *testing.T) {
 			}
 			command.Env = append(env, "HERDR_TEST_INTERRUPT_HELPER="+action, "HOME="+root, "TMPDIR="+root, "HERDR_PLUGIN_STATE_DIR="+filepath.Join(root, "state"))
 			stdout, err := command.StdoutPipe()
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			var stderr strings.Builder
 			command.Stderr = &stderr
-			if err := command.Start(); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, command.Start())
 			scanner := bufio.NewScanner(stdout)
 			ready := false
 			for scanner.Scan() {
@@ -59,17 +56,14 @@ func TestManualPreparationInterrupt(t *testing.T) {
 				_ = command.Wait()
 				t.Fatalf("helper failed before download: %s", stderr.String())
 			}
-			if err := command.Process.Signal(os.Interrupt); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, command.Process.Signal(os.Interrupt))
 			_, _ = io.Copy(io.Discard, stdout)
-			if err := command.Wait(); err != nil {
-				t.Fatalf("signal did not unwind cleanly: %v %s", err, stderr.String())
+			{
+				err := command.Wait()
+				require.NoError(t, err, "signal did not unwind cleanly: %v %s", err, stderr.String())
 			}
 			leftovers, _ := filepath.Glob(filepath.Join(root, "herdr-sbx-download-*"))
-			if len(leftovers) != 0 {
-				t.Fatalf("download leaked: %v", leftovers)
-			}
+			require.Len(t, leftovers, 0, "download leaked: %v", leftovers)
 		})
 	}
 }
@@ -100,9 +94,7 @@ func runPreparationInterruptHelper(t *testing.T, action string) {
 		case "herdr machine list --json":
 			return "[]", nil
 		}
-		if strings.Contains(joined, "machine add") {
-			t.Fatal("canceled preparation registered a machine")
-		}
+		require.NotContains(t, joined, "machine add", "canceled preparation registered a machine")
 		return "", fmt.Errorf("unexpected command %s", joined)
 	}
 	fixture.rebuildClients()

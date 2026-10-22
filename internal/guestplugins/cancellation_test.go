@@ -2,14 +2,13 @@ package guestplugins
 
 import (
 	"context"
-	"encoding/base64"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/lanwen/herdr-sbx/internal/herdr"
 	"github.com/lanwen/herdr-sbx/internal/process"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPreparationStopsBeforeEachGuestConnection(t *testing.T) {
@@ -19,9 +18,7 @@ func TestPreparationStopsBeforeEachGuestConnection(t *testing.T) {
 			t.Setenv("HERDR_CONFIG_PATH", filepath.Join(t.TempDir(), "absent"))
 			root := t.TempDir()
 			manifest := filepath.Join(root, "herdr-plugin.toml")
-			if err := os.WriteFile(manifest, []byte("id='example.cancel'\nversion='1.0.0'\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.WriteFile(manifest, []byte("id='example.cancel'\nversion='1.0.0'\n"), 0600))
 			local := herdr.PluginInstall{ID: "example.cancel", Version: "1.0.0", Root: root, ManifestPath: manifest}
 			allowed := phase != "before inspection"
 			ctx, cancel := context.WithCancel(context.Background())
@@ -32,9 +29,9 @@ func TestPreparationStopsBeforeEachGuestConnection(t *testing.T) {
 			calls := 0
 			client := herdr.New(process.Runner{Execute: func(_ context.Context, cmd process.Command) (string, error) {
 				calls++
-				if cmd.Name != "ssh" || !allowed || ctx.Err() != nil {
-					t.Fatalf("guest connection after permission ended: %#v", cmd)
-				}
+				require.EqualValues(t, "ssh", cmd.Name)
+				require.True(t, allowed)
+				require.NoError(t, ctx.Err())
 				if cmd.Stdin != nil {
 					allowed = false
 					return "", nil
@@ -42,14 +39,12 @@ func TestPreparationStopsBeforeEachGuestConnection(t *testing.T) {
 				if phase == "after inspection" {
 					allowed = false
 				}
-				catalog := base64.StdEncoding.EncodeToString([]byte(`{"result":{"plugins":[]}}`))
-				return "HERDR_SBX_PLUGIN_V1_BEGIN\nLinux aarch64\n" + base64.StdEncoding.EncodeToString([]byte("/home/guest/config.toml")) + "\nabsent\n\n" + catalog + "\nexternal\n\nHERDR_SBX_PLUGIN_V1_END\n", nil
+				return guestInspectionResponse(t, []herdr.PluginInstall{}, "external", ""), nil
 			}})
 			err := prepare(ctx, client, "fixture.sbx", "scope", "sandbox", local, func() bool { return allowed })
 			wantCalls := map[string]int{"before inspection": 0, "after inspection": 1, "after transfer": 2, "cancelled context": 0}[phase]
-			if !errors.Is(err, context.Canceled) || calls != wantCalls {
-				t.Fatalf("calls=%d want=%d err=%v", calls, wantCalls, err)
-			}
+			require.ErrorIs(t, err, context.Canceled)
+			require.False(t, calls != wantCalls)
 		})
 	}
 }

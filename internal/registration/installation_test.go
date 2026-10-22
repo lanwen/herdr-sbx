@@ -3,7 +3,6 @@ package registration
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +17,7 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTemporaryInstallationOwnershipAndRecovery(t *testing.T) {
@@ -80,87 +80,75 @@ func TestTemporaryInstallationOwnershipAndRecovery(t *testing.T) {
 			}
 			version, err := fixture.service.installHerdr(ctx, request)
 			if scenario == "success" || scenario == "concurrent user rule" || scenario == "existing access" {
-				if err != nil || version != "herdr 0.9.3" {
-					t.Fatalf("version=%q err=%v", version, err)
-				}
+				require.NoError(t, err)
+				require.EqualValues(t, "herdr 0.9.3", version)
 				expectedRules := 1
 				if scenario == "concurrent user rule" || scenario == "existing access" {
 					expectedRules = 2
 				}
-				if len(policy.rules) != expectedRules || policy.rules[0].ID != "user-rule" {
-					t.Fatalf("temporary install changed policy: %#v", policy.rules)
-				}
+				require.Len(t, policy.rules, expectedRules)
+				require.EqualValues(t, "user-rule", policy.rules[0].ID)
 				status, err := store.ReadStatusStore()
-				if err != nil || len(status.Installations) != 0 {
-					t.Fatalf("cleanup journal=%#v err=%v", status.Installations, err)
-				}
+				require.NoError(t, err)
+				require.Len(t, status.Installations, 0)
 				expectedCreates, expectedRemovals := 4, 4
 				if scenario == "existing access" {
 					expectedCreates, expectedRemovals = 3, 3
 				}
-				if policy.created != expectedCreates || policy.removed != expectedRemovals || statusChecks != 1 {
-					t.Fatalf("created=%d removed=%d status checks=%d", policy.created, policy.removed, statusChecks)
-				}
+				require.False(t, policy.created != expectedCreates)
+				require.False(t, policy.removed != expectedRemovals)
+				require.EqualValues(t, 1, statusChecks)
 				return
 			}
-			if err == nil || version != "" {
-				t.Fatalf("expected pending cleanup, got version=%q err=%v", version, err)
-			}
+			require.Error(t, err)
+			require.EqualValues(t, "", version)
 			status, readErr := store.ReadStatusStore()
 			pending := scenario == "cleanup failure" || scenario == "ambiguous acknowledgement" || scenario == "modified rule"
 			wantPending := 0
 			if pending {
 				wantPending = 1
 			}
-			if readErr != nil || len(status.Installations) != wantPending {
-				t.Fatalf("cleanup intent=%#v err=%v", status.Installations, readErr)
-			}
+			require.NoError(t, readErr)
+			require.Len(t, status.Installations, wantPending)
 			if scenario == "ambiguous acknowledgement" {
-				if policy.created != 0 || len(policy.rules) != 2 || policy.rules[1].ID != "ambiguous-rule" {
-					t.Fatalf("ambiguous outcome changed: created=%d rules=%#v", policy.created, policy.rules)
+				require.EqualValues(t, 0, policy.created)
+				require.Len(t, policy.rules, 2)
+				require.EqualValues(t, "ambiguous-rule", policy.rules[1].ID)
+				{
+					err := fixture.service.RecoverPendingPolicy("scope", "/tmp/policy.sock")
+					require.Error(t, err, "ambiguous rule was treated as owned")
 				}
-				if err := fixture.service.RecoverPendingPolicy("scope", "/tmp/policy.sock"); err == nil {
-					t.Fatal("ambiguous rule was treated as owned")
-				}
-				if policy.rules[1].ID != "ambiguous-rule" {
-					t.Fatal("recovery removed a rule without an acknowledged ID")
-				}
+				require.Equal(t, "ambiguous-rule", policy.rules[1].ID, "recovery removed a rule without an acknowledged ID")
 				return
 			}
 			if scenario == "modified rule" {
-				if policy.created != 4 || len(policy.rules) != 2 || policy.rules[1].ID != "owned-1" || policy.rules[1].Targets[0].Path != "/user-change/**" {
-					t.Fatalf("modified rule was removed or changed: %#v", policy.rules)
+				require.EqualValues(t, 4, policy.created)
+				require.Len(t, policy.rules, 2)
+				require.EqualValues(t, "owned-1", policy.rules[1].ID)
+				require.EqualValues(t, "/user-change/**", policy.rules[1].Targets[0].Path)
+				{
+					err := fixture.service.RecoverPendingPolicy("scope", "/tmp/policy.sock")
+					require.Error(t, err, "modified rule was treated as safe to remove")
 				}
-				if err := fixture.service.RecoverPendingPolicy("scope", "/tmp/policy.sock"); err == nil {
-					t.Fatal("modified rule was treated as safe to remove")
-				}
-				if policy.rules[1].Targets[0].Path != "/user-change/**" {
-					t.Fatal("recovery removed a modified policy rule")
-				}
+				require.Equal(t, "/user-change/**", policy.rules[1].Targets[0].Path, "recovery removed a modified policy rule")
 				return
 			}
-			if scenario == "cleanup failure" && len(policy.rules) != 5 {
-				t.Fatalf("failed cleanup should retain its rules: %#v", policy.rules)
-			}
+			require.False(t, scenario == "cleanup failure" && len(policy.rules) != 5, "failed cleanup should retain its rules: %#v", policy.rules)
 			if scenario == "cleanup failure" {
 				policy.failRemovals = false
 				fixture.rebuildClients() // A new service resumes the saved cleanup journal.
-				if err := fixture.service.RecoverPendingPolicy("scope", "/tmp/policy.sock"); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, fixture.service.RecoverPendingPolicy("scope", "/tmp/policy.sock"))
 			}
 			expectedRules := 1
 			if scenario == "concurrent user rule" {
 				expectedRules = 2
 			}
-			if len(policy.rules) != expectedRules || policy.rules[0].ID != "user-rule" {
-				t.Fatalf("recovery changed user policy: %#v", policy.rules)
-			}
+			require.Len(t, policy.rules, expectedRules)
+			require.EqualValues(t, "user-rule", policy.rules[0].ID)
 			if scenario != "modified rule" {
 				status, err = store.ReadStatusStore()
-				if err != nil || len(status.Installations) != 0 {
-					t.Fatalf("recovered journal=%#v err=%v", status.Installations, err)
-				}
+				require.NoError(t, err)
+				require.Len(t, status.Installations, 0)
 			}
 		})
 	}
@@ -184,12 +172,9 @@ func TestOrdinaryPreparationNeverTouchesSandboxPolicy(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusForbidden, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("forbidden")), Request: request}, nil
 	})
 	_, err := fixture.service.installHerdr(context.Background(), installationRequest{Sandbox: sbx.Sandbox{ID: "sandbox-1", Name: "demo"}, Current: func() bool { return true }})
-	if err == nil || !strings.Contains(err.Error(), "HTTP 403") {
-		t.Fatalf("expected ordinary host-download failure, got %v", err)
-	}
-	if policy.requests != 0 {
-		t.Fatalf("ordinary preparation made %d policy requests", policy.requests)
-	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "HTTP 403")
+	require.Equal(t, 0, policy.requests, "ordinary preparation made %d policy requests", policy.requests)
 }
 
 func TestTemporaryInstallationCrashRecovery(t *testing.T) {
@@ -202,9 +187,7 @@ func TestTemporaryInstallationCrashRecovery(t *testing.T) {
 	t.Setenv("HERDR_BIN_PATH", "herdr")
 	rulesPath := filepath.Join(root, "rules.json")
 	initial := []sbx.PolicyRule{{ID: "user-rule", SandboxID: "demo", Scope: "sandbox:demo", Decision: "allow", ResourceType: "http", Targets: []sbx.PolicyAccess{{Host: "updates.example:443", Path: "/manual"}}, Methods: []string{"GET"}, Editable: true, Status: "active"}}
-	if err := writePolicyRules(rulesPath, initial); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, writePolicyRules(rulesPath, initial))
 	command := exec.Command(os.Args[0], "-test.run=^TestTemporaryInstallationCrashRecovery$")
 	var env []string
 	for _, item := range os.Environ() {
@@ -215,37 +198,31 @@ func TestTemporaryInstallationCrashRecovery(t *testing.T) {
 	command.Env = append(env, "HERDR_POLICY_CRASH_HELPER=1", "HERDR_POLICY_RULES="+rulesPath, "HERDR_PLUGIN_STATE_DIR="+root, "HERDR_BIN_PATH=herdr", "HOME="+root, "TMPDIR="+root)
 	output, err := command.CombinedOutput()
 	var exited *exec.ExitError
-	if !errors.As(err, &exited) || exited.ExitCode() != 77 {
-		t.Fatalf("child did not stop during installation: %v %s", err, output)
-	}
+	require.ErrorAs(t, err, &exited, "crash helper output: %s", output)
+	require.EqualValues(t, 77, exited.ExitCode())
 	status, err := store.ReadStatusStore()
-	if err != nil || len(status.Installations) != 1 {
-		t.Fatalf("crash lost cleanup journal: %#v err=%v", status.Installations, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, status.Installations, 1)
 	var attempt store.PolicyAttempt
 	for _, attempt = range status.Installations {
 		break
 	}
-	if len(attempt.Owned) != len(installerAccess) || attempt.Intent != nil {
-		t.Fatalf("crash journal did not retain confirmed IDs: %#v", attempt)
-	}
+	require.Len(t, attempt.Owned, len(installerAccess))
+	require.Nil(t, attempt.Intent)
 
 	runner := process.Runner{}
 	transport := &filePolicyFixture{path: rulesPath}
 	sandboxClient := sbx.NewWithTransport(runner, transport)
 	herdrClient := herdr.New(runner)
 	service := New(sandboxClient, herdrClient, precheck.New(sandboxClient, herdrClient, runner), runner)
-	if err := service.RecoverPendingPolicy("scope", "/tmp/policy.sock"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, service.RecoverPendingPolicy("scope", "/tmp/policy.sock"))
 	rules, err := readPolicyRules(rulesPath)
-	if err != nil || len(rules) != 1 || rules[0].ID != "user-rule" {
-		t.Fatalf("restart changed user rules: %#v err=%v", rules, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, rules, 1)
+	require.EqualValues(t, "user-rule", rules[0].ID)
 	status, err = store.ReadStatusStore()
-	if err != nil || len(status.Installations) != 0 {
-		t.Fatalf("restart left cleanup journal: %#v err=%v", status.Installations, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, status.Installations, 0)
 }
 
 func runPolicyCrashHelper(t *testing.T) {
@@ -446,24 +423,21 @@ func TestPolicyCleanupRequiresSavedSelector(t *testing.T) {
 	attempt := store.PolicyAttempt{Scope: "scope", Sandbox: sbx.Sandbox{ID: "sandbox-id", Name: "human-name"}}
 	err := service.cleanupPolicy("/tmp/policy.sock", attempt)
 	var pending *installationError
-	if !errors.As(err, &pending) || pending.State != "cleanup pending" || !strings.Contains(pending.Detail, "saved sandbox selector is missing") {
-		t.Fatalf("missing selector result: %v", err)
-	}
+	require.ErrorAs(t, err, &pending)
+	require.EqualValues(t, "cleanup pending", pending.State)
+	require.Contains(t, pending.Detail, "saved sandbox selector is missing")
 }
 
 func TestPolicyAttemptRetainsOriginalSelectorAndLowercaseAccessSchema(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	attempt := store.PolicyAttempt{Scope: "scope", Sandbox: sbx.Sandbox{ID: "sandbox-id", Name: "human-name"}, PolicySandbox: "human-name", Intent: &sbx.PolicyAccess{Host: "herdr.dev:443", Path: "/install.sh"}}
-	if err := store.UpdateStatusStore(func(status *store.StatusStore) {
+	require.NoError(t, store.UpdateStatusStore(func(status *store.StatusStore) {
 		status.Installations[store.StatusKey("scope", "sandbox-id")] = attempt
-	}); err != nil {
-		t.Fatal(err)
-	}
+	}))
 	data, err := os.ReadFile(filepath.Join(os.Getenv("HERDR_PLUGIN_STATE_DIR"), "state.json.status"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), `"host":"herdr.dev:443"`) || !strings.Contains(string(data), `"path":"/install.sh"`) || strings.Contains(string(data), `"Host"`) || strings.Contains(string(data), `"Path"`) {
-		t.Fatalf("unexpected policy access schema: %s", data)
-	}
+	require.NoError(t, err)
+	require.Contains(t, string(data), `"host":"herdr.dev:443"`)
+	require.Contains(t, string(data), `"path":"/install.sh"`)
+	require.NotContains(t, string(data), `"Host"`)
+	require.NotContains(t, string(data), `"Path"`)
 }

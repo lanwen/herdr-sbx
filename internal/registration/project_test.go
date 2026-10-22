@@ -12,6 +12,7 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestProjectWorkspaceRegistration(t *testing.T) {
@@ -98,17 +99,11 @@ func TestProjectWorkspaceRegistration(t *testing.T) {
 				}
 				if command.Name == "herdr" && len(command.Args) >= 7 && strings.Join(command.Args[:4], " ") == "--machine machine-1 workspace create" {
 					expected := []string{"--machine", "machine-1", "workspace", "create", "--cwd", cwd, "--label", "demo", "--no-focus"}
-					if strings.Join(command.Args, "\x00") != strings.Join(expected, "\x00") {
-						t.Fatalf("unsafe create argv: %#v", command.Args)
-					}
+					require.Equal(t, strings.Join(expected, "\x00"), strings.Join(command.Args, "\x00"), "unsafe create argv: %#v", command.Args)
 					creates++
 					saved, err := store.LoadState()
-					if err != nil {
-						t.Fatal(err)
-					}
-					if saved.Scopes[store.ScopeID("/tmp/project-test.sock")][0].ProjectWorkspacePending != cwd {
-						t.Fatal("missing persisted creation intent")
-					}
+					require.NoError(t, err)
+					require.Equal(t, cwd, saved.Scopes[store.ScopeID("/tmp/project-test.sock")][0].ProjectWorkspacePending, "missing persisted creation intent")
 					if scenario == "ambiguous absent" {
 						return "", errors.New("lost response")
 					}
@@ -132,88 +127,59 @@ func TestProjectWorkspaceRegistration(t *testing.T) {
 			fixture.rebuildClients()
 			if scenario == "upgrade" {
 				adds = 1
-				if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{store.ScopeID("/tmp/project-test.sock"): {{SandboxID: sandbox.ID, Label: label, Target: "demo.sbx", ProfileID: "machine-1"}}}}); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{store.ScopeID("/tmp/project-test.sock"): {{SandboxID: sandbox.ID, Label: label, Target: "demo.sbx", ProfileID: "machine-1"}}}}))
 			}
 			var output strings.Builder
-			if err := fixture.service.ReconcileContext(ctx, &output); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, fixture.service.ReconcileContext(ctx, &output))
 			saved, err := store.LoadState()
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			item := saved.Scopes[store.ScopeID("/tmp/project-test.sock")][0]
-			if adds != 1 || item.ProfileID != "machine-1" {
-				t.Fatalf("ownership lost: adds=%d item=%#v", adds, item)
-			}
+			require.EqualValues(t, 1, adds)
+			require.EqualValues(t, "machine-1", item.ProfileID)
 			expectedResolves := 0
 			if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 				expectedResolves = 1
 			}
 			switch scenario {
 			case "fresh server":
-				if bootstrapWorkspaces+creates != 1 || resolves != expectedResolves {
-					t.Fatalf("new machine opened %d workspaces: %d bootstrap and %d project, probes=%d", bootstrapWorkspaces+creates, bootstrapWorkspaces, creates, resolves)
-				}
+				require.EqualValues(t, 1, bootstrapWorkspaces+creates)
+				require.False(t, resolves != expectedResolves)
 			case "new", "existing pane":
-				if !item.ProjectWorkspaceDone {
-					t.Fatalf("not completed: %s", output.String())
-				}
+				require.True(t, item.ProjectWorkspaceDone, "not completed: %s", output.String())
 				paneExists = false
 				for range 2 {
-					if err := fixture.service.ReconcileContext(ctx, &output); err != nil {
-						t.Fatal(err)
-					}
+					require.NoError(t, fixture.service.ReconcileContext(ctx, &output))
 				}
 				expected := 1
 				if scenario == "existing pane" {
 					expected = 0
 				}
-				if creates != expected || resolves != expectedResolves || adds != 1 {
-					t.Fatalf("repeated setup: creates=%d resolves=%d adds=%d", creates, resolves, adds)
-				}
+				require.False(t, creates != expected)
+				require.False(t, resolves != expectedResolves)
+				require.EqualValues(t, 1, adds)
 			case "ambiguous created":
-				if item.ProjectWorkspacePending != cwd || item.ProjectWorkspaceDone {
-					t.Fatalf("intent lost: %#v", item)
-				}
-				if err := fixture.service.ReconcileContext(ctx, &output); err != nil {
-					t.Fatal(err)
-				}
+				require.False(t, item.ProjectWorkspacePending != cwd)
+				require.False(t, item.ProjectWorkspaceDone)
+				require.NoError(t, fixture.service.ReconcileContext(ctx, &output))
 				saved, _ = store.LoadState()
-				if !saved.Scopes[store.ScopeID("/tmp/project-test.sock")][0].ProjectWorkspaceDone || creates != 1 {
-					t.Fatalf("recovery failed: %s", output.String())
-				}
+				require.True(t, saved.Scopes[store.ScopeID("/tmp/project-test.sock")][0].ProjectWorkspaceDone)
+				require.EqualValues(t, 1, creates)
 			case "ambiguous absent":
-				if err := fixture.service.ReconcileContext(ctx, &output); err != nil {
-					t.Fatal(err)
-				}
-				if creates != 1 || !strings.Contains(output.String(), "previous creation is unresolved") {
-					t.Fatalf("unsafe retry: %s", output.String())
-				}
+				require.NoError(t, fixture.service.ReconcileContext(ctx, &output))
+				require.EqualValues(t, 1, creates)
+				require.Contains(t, output.String(), "previous creation is unresolved")
 			case "rejected":
-				if item.ProjectWorkspacePending != "" {
-					t.Fatal("explicit rejection left uncertain intent")
-				}
-				if err := fixture.service.ReconcileContext(ctx, &output); err != nil {
-					t.Fatal(err)
-				}
-				if creates != 2 {
-					t.Fatal("explicit rejection was not retryable")
-				}
+				require.Equal(t, "", item.ProjectWorkspacePending, "explicit rejection left uncertain intent")
+				require.NoError(t, fixture.service.ReconcileContext(ctx, &output))
+				require.Equal(t, 2, creates, "explicit rejection was not retryable")
 			case "no project":
-				if creates != 0 || resolves != 0 {
-					t.Fatal("created without project")
-				}
+				require.EqualValues(t, 0, creates)
+				require.EqualValues(t, 0, resolves)
 			case "replacement during create":
-				if item.ProjectWorkspaceDone || item.ProjectWorkspacePending != cwd {
-					t.Fatal("replacement completed stale setup")
-				}
+				require.False(t, item.ProjectWorkspaceDone)
+				require.False(t, item.ProjectWorkspacePending != cwd)
 			case "replacement during resolve", "cancel during resolve":
-				if creates != 0 {
-					t.Fatal("created workspace after identity changed")
-				}
+				require.Equal(t, 0, creates, "created workspace after identity changed")
 			}
 		})
 	}
@@ -245,12 +211,9 @@ func TestInitialProjectStartupRetriesSavedIntent(t *testing.T) {
 		case command.Name == "ssh" && strings.Contains(joined, "HERDR_STARTUP_CWD="):
 			starts++
 			saved, err := store.LoadState()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(saved.Scopes["scope"]) != 1 || saved.Scopes["scope"][0].ProjectWorkspacePending != cwd {
-				t.Fatal("startup intent was not saved before server launch")
-			}
+			require.NoError(t, err)
+			require.Len(t, saved.Scopes["scope"], 1)
+			require.False(t, saved.Scopes["scope"][0].ProjectWorkspacePending != cwd)
 			if starts == 1 {
 				return "", errors.New("SSH disconnected after server start")
 			}
@@ -262,13 +225,12 @@ func TestInitialProjectStartupRetriesSavedIntent(t *testing.T) {
 	f.rebuildClients()
 	st := store.State{Version: 1, Scopes: map[string][]store.Tracked{}}
 	current := func() bool { return true }
-	if _, err := f.service.prepareInitialProjectWorkspace(context.Background(), "scope", &st, sb, current); err == nil {
-		t.Fatal("startup failure ignored")
+	{
+		_, err := f.service.prepareInitialProjectWorkspace(context.Background(), "scope", &st, sb, current)
+		require.Error(t, err, "startup failure ignored")
 	}
 	st, err := store.LoadState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	// A saved startup intent wins over changed or uncertain inventory metadata.
 	sb.Workspace = "/different/project"
 	sb.WorkspaceNeedsProbe = true
@@ -277,9 +239,12 @@ func TestInitialProjectStartupRetriesSavedIntent(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		expectedResolves = 1
 	}
-	if err != nil || got != cwd || probes != 1 || resolves != expectedResolves || starts != 2 || len(st.Scopes["scope"]) != 1 {
-		t.Fatalf("cwd=%q err=%v probes=%d resolves=%d starts=%d state=%#v", got, err, probes, resolves, starts, st)
-	}
+	require.NoError(t, err)
+	require.False(t, got != cwd)
+	require.EqualValues(t, 1, probes)
+	require.False(t, resolves != expectedResolves)
+	require.EqualValues(t, 2, starts)
+	require.Len(t, st.Scopes["scope"], 1)
 }
 
 func TestProjectDirectoryUsesInventoryOrGuestFallback(t *testing.T) {
@@ -304,9 +269,8 @@ func TestProjectDirectoryUsesInventoryOrGuestFallback(t *testing.T) {
 			f := newRegistrationFixture(t, "[]")
 			calls := 0
 			f.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
-				if command.Name != "sbx" || strings.Join(command.Args, " ") != "exec demo -- pwd -P" {
-					t.Fatalf("unexpected command: %#v", command)
-				}
+				require.EqualValues(t, "sbx", command.Name)
+				require.EqualValues(t, "exec demo -- pwd -P", strings.Join(command.Args, " "))
 				calls++
 				return test.output, test.commandErr
 			}
@@ -316,9 +280,9 @@ func TestProjectDirectoryUsesInventoryOrGuestFallback(t *testing.T) {
 			if test.name == "inventory" && (runtime.GOOS == "darwin" || runtime.GOOS == "linux") {
 				want, wantCalls = "/project", 0
 			}
-			if (err != nil) != test.wantErr || (!test.wantErr && got != want) || calls != wantCalls {
-				t.Fatalf("cwd=%q err=%v probes=%d", got, err, calls)
-			}
+			require.False(t, (err != nil) != test.wantErr)
+			require.False(t, !test.wantErr && got != want)
+			require.False(t, calls != wantCalls)
 		})
 	}
 }

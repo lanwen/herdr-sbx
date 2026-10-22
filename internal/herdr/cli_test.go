@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/lanwen/herdr-sbx/internal/process"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCommandErrorDetails(t *testing.T) {
@@ -28,22 +30,19 @@ func TestCommandErrorDetails(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := parseCommandError(cause, tc.output)
-			if !errors.Is(err, cause) || MachineForwardingUnsupported(err) != tc.compatibility {
-				t.Fatalf("error=%v compatibility=%t", err, MachineForwardingUnsupported(err))
-			}
+			require.ErrorIs(t, err, cause)
+			require.False(t, MachineForwardingUnsupported(err) != tc.compatibility)
 			var upstream *CommandError
 			if tc.message == "" {
-				if errors.As(err, &upstream) || err != cause {
-					t.Fatalf("unknown output classified as herdr error: %v", err)
-				}
+				require.NotErrorAs(t, err, &upstream)
+				require.False(t, err != cause)
 				return
 			}
-			if !errors.As(err, &upstream) || upstream.Code != tc.code || upstream.Message != tc.message || !strings.HasPrefix(err.Error(), "herdr") {
-				t.Fatalf("upstream=%#v error=%v", upstream, err)
-			}
-			if tc.code != "" && !strings.Contains(err.Error(), "["+tc.code+"]") {
-				t.Fatalf("upstream code lost: %v", err)
-			}
+			require.ErrorAs(t, err, &upstream)
+			require.False(t, upstream.Code != tc.code)
+			require.False(t, upstream.Message != tc.message)
+			require.True(t, strings.HasPrefix(err.Error(), "herdr"))
+			require.False(t, tc.code != "" && !strings.Contains(err.Error(), "["+tc.code+"]"), "upstream code lost: %v", err)
 		})
 	}
 }
@@ -60,14 +59,11 @@ func TestWorkspaceCommandsPreserveHerdrErrors(t *testing.T) {
 			} else {
 				var response WorkspaceResult
 				response, _, err = client.CreateWorkspace(context.Background(), "machine-1", "/project", "demo")
-				if response.Rejected != "herdr [invalid_cwd]: workspace is missing" {
-					t.Fatalf("rejection=%q", response.Rejected)
-				}
+				require.Equal(t, "herdr [invalid_cwd]: workspace is missing", response.Rejected, "rejection=%q", response.Rejected)
 			}
 			var upstream *CommandError
-			if !errors.As(err, &upstream) || upstream.Code != "invalid_cwd" {
-				t.Fatalf("error=%v", err)
-			}
+			require.ErrorAs(t, err, &upstream)
+			require.EqualValues(t, "invalid_cwd", upstream.Code)
 		})
 	}
 }
@@ -79,14 +75,14 @@ func TestStatusPopupSizing(t *testing.T) {
 	client := New(process.Runner{Execute: func(_ context.Context, cmd process.Command) (string, error) {
 		calls++
 		want := "plugin pane open --plugin lanwen.herdr-sbx --entrypoint status --placement popup --focus --width 110 --height 32"
-		if cmd.Name != "herdr" || strings.Join(cmd.Args, " ") != want {
-			t.Fatalf("unexpected popup command: %#v", cmd)
-		}
+		require.EqualValues(t, "herdr", cmd.Name)
+		require.False(t, strings.Join(cmd.Args, " ") != want)
 		return "", nil
 	}})
-	if err := client.OpenPane(context.Background(), "status", "popup"); err != nil || calls != 1 {
-		t.Fatalf("calls=%d err=%v", calls, err)
-	}
+
+	err := client.OpenPane(context.Background(), "status", "popup")
+	require.NoError(t, err)
+	require.EqualValues(t, 1, calls)
 }
 
 func TestMachineAndPaneCatalogs(t *testing.T) {
@@ -97,57 +93,57 @@ func TestMachineAndPaneCatalogs(t *testing.T) {
 		return `{"result":{"panes":[{"workspace_id":"w1","cwd":"/project with space "}]}}`, nil
 	}})
 	machines, _, err := client.ListMachines(context.Background())
-	if err != nil || len(machines) != 1 || machines[0].ID != "m1" || machines[0].Target != "demo.sbx" || machines[0].Session != "default" {
-		t.Fatalf("machines=%#v err=%v", machines, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, machines, 1)
+	require.EqualValues(t, "m1", machines[0].ID)
+	require.EqualValues(t, "demo.sbx", machines[0].Target)
+	require.EqualValues(t, "default", machines[0].Session)
 	panes, _, err := client.Panes(context.Background(), "m1")
-	if err != nil || len(panes) != 1 || panes[0].CWD != "/project with space " {
-		t.Fatalf("panes=%#v err=%v", panes, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, panes, 1)
+	require.EqualValues(t, "/project with space ", panes[0].CWD)
 }
 
 func TestLocalPluginCatalog(t *testing.T) {
 	client := New(process.Runner{Execute: func(_ context.Context, cmd process.Command) (string, error) {
-		if strings.Join(cmd.Args, " ") != "plugin list --json" {
-			t.Fatalf("unexpected plugin command: %#v", cmd)
-		}
+		require.Equal(t, "plugin list --json", strings.Join(cmd.Args, " "), "unexpected plugin command: %#v", cmd)
 		return `{"result":{"plugins":[{"plugin_id":"example.alpha","plugin_root":"/plugins/alpha","manifest_path":"/plugins/alpha/custom.toml","version":"1.2.3","enabled":true},{"plugin_id":"example.beta","plugin_root":"/plugins/beta","manifest_path":"/plugins/beta/plugin.toml","version":"4.5.6","enabled":false}]}}`, nil
 	}})
 	plugins, err := client.LocalPlugins(context.Background())
-	if err != nil || len(plugins) != 2 {
-		t.Fatalf("plugins=%#v err=%v", plugins, err)
-	}
-	if plugins[0] != (PluginInstall{ID: "example.alpha", Root: "/plugins/alpha", ManifestPath: "/plugins/alpha/custom.toml", Version: "1.2.3", Enabled: true}) || plugins[1].ID != "example.beta" || plugins[1].Enabled {
-		t.Fatalf("plugins=%#v", plugins)
-	}
+	require.NoError(t, err)
+	require.Len(t, plugins, 2)
+	require.False(t, plugins[0] != (PluginInstall{ID: "example.alpha", Root: "/plugins/alpha", ManifestPath: "/plugins/alpha/custom.toml", Version: "1.2.3", Enabled: true}))
+	require.EqualValues(t, "example.beta", plugins[1].ID)
+	require.False(t, plugins[1].Enabled)
 }
 
 func TestCatalogRejectsMalformedResponses(t *testing.T) {
 	for _, output := range []string{`null`, `{}`, `[null]`, `[{}]`, `[1]`, `[{"id":42}]`} {
-		if _, err := parseMachines(output); err == nil {
-			t.Errorf("machine list accepted malformed response %s", output)
+		{
+			_, err := parseMachines(output)
+			assert.Error(t, err, "machine list accepted malformed response %s", output)
 		}
 	}
 	for _, output := range []string{`null`, `{}`, `{"result":{"plugins":null}}`, `{"result":{"plugins":[null]}}`, `{"result":{"plugins":[{}]}}`, `{"result":{"plugins":[1]}}`, `{"result":{"plugins":[{"enabled":"yes"}]}}`} {
-		if _, err := parsePlugins(output); err == nil {
-			t.Errorf("plugin list accepted malformed response %s", output)
+		{
+			_, err := parsePlugins(output)
+			assert.Error(t, err, "plugin list accepted malformed response %s", output)
 		}
 	}
 	for _, output := range []string{`null`, `{}`, `{"result":{"panes":null}}`, `{"result":{"panes":[null]}}`, `{"result":{"panes":[{}]}}`, `{"result":{"panes":[1]}}`, `{"result":{"panes":[{"cwd":42}]}}`} {
-		if _, err := parsePanes(output); err == nil {
-			t.Errorf("pane list accepted malformed response %s", output)
+		{
+			_, err := parsePanes(output)
+			assert.Error(t, err, "pane list accepted malformed response %s", output)
 		}
 	}
 }
 
 func TestSessionCountRejectsNullEntries(t *testing.T) {
 	client := New(process.Runner{Execute: func(_ context.Context, cmd process.Command) (string, error) {
-		if strings.Join(cmd.Args, " ") != "session list --json" {
-			t.Fatalf("unexpected session command: %#v", cmd)
-		}
+		require.Equal(t, "session list --json", strings.Join(cmd.Args, " "), "unexpected session command: %#v", cmd)
 		return `{"sessions":[null]}`, nil
 	}})
-	if _, err := client.RunningSessionCount(context.Background()); err == nil {
-		t.Fatal("null session was treated as no running session")
-	}
+
+	_, err := client.RunningSessionCount(context.Background())
+	require.Error(t, err, "null session was treated as no running session")
 }

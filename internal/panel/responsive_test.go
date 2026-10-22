@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lanwen/herdr-sbx/internal/guestplugins"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPhoneFramesFitAndControlsRemainReachable(t *testing.T) {
@@ -28,22 +29,18 @@ func TestPhoneFramesFitAndControlsRemainReachable(t *testing.T) {
 					t.Helper()
 					content := ansi.Strip(m.View().Content)
 					lines := strings.Split(content, "\n")
-					if len(lines) != m.height {
-						t.Fatalf("height %d want %d: %s", len(lines), m.height, content)
-					}
+					require.Len(t, lines, m.height, "height %d want %d: %s", len(lines), m.height, content)
 					for _, line := range lines {
-						if ansi.StringWidth(line) > width {
-							t.Fatalf("overflow: %q", line)
-						}
+						require.False(t, ansi.StringWidth(line) > width, "overflow: %q", line)
 					}
 					for _, h := range m.hits {
-						if h.x < 0 || h.w < 1 || h.x+h.w > width || h.y < 0 || h.y >= m.height {
-							t.Fatalf("bad hit: %+v", h)
-						}
+						require.False(t, h.x < 0)
+						require.False(t, h.w < 1)
+						require.False(t, h.x+h.w > width)
+						require.False(t, h.y < 0)
+						require.False(t, h.y >= m.height)
 					}
-					if strings.Contains(content, "Resize") {
-						t.Fatal("phone was rejected")
-					}
+					require.NotContains(t, content, "Resize", "phone was rejected")
 				}
 				check()
 				for _, page := range []string{"Status", "Plugins", "Sandboxes"} {
@@ -62,9 +59,7 @@ func TestPhoneFramesFitAndControlsRemainReachable(t *testing.T) {
 							found = true
 						}
 					}
-					if !found {
-						t.Fatalf("action %s unreachable", action.id)
-					}
+					require.True(t, found, "action %s unreachable", action.id)
 				}
 				m.focus = "plugins"
 				m.detailIndex = 0
@@ -76,9 +71,7 @@ func TestPhoneFramesFitAndControlsRemainReachable(t *testing.T) {
 						found = true
 					}
 				}
-				if !found {
-					t.Fatal("plugin choice unreachable")
-				}
+				require.True(t, found, "plugin choice unreachable")
 			})
 		}
 	}
@@ -89,12 +82,11 @@ func TestPhoneTablePreservesEnabledAndNames(t *testing.T) {
 		m := modelFixture(t)
 		m.width = width
 		c := m.sandboxColumns(m.rows)
-		if ansi.StringWidth(c.header()) != width-4 || (c.status == 0) != (width < 72) || c.name < 1 || c.label < 1 {
-			t.Fatalf("invalid columns at %d: %+v", width, c)
-		}
-		if width < 60 && c.enabled != 1 {
-			t.Fatal("enabled symbol column not compact")
-		}
+		require.False(t, ansi.StringWidth(c.header()) != width-4)
+		require.False(t, (c.status == 0) != (width < 72))
+		require.False(t, c.name < 1)
+		require.False(t, c.label < 1)
+		require.False(t, width < 60 && c.enabled != 1, "enabled symbol column not compact")
 	}
 }
 
@@ -108,28 +100,16 @@ func TestOverflowHintRemainsReadableByKeyboardScrolling(t *testing.T) {
 			for i := 0; i < 100; i++ {
 				frame := ansi.Strip(m.View().Content)
 				seen.WriteString(frame)
-				if len(strings.Split(frame, "\n")) != m.height {
-					t.Fatal("hint overflowed terminal")
-				}
-				if !m.hintInBody {
-					t.Fatal("long hint was not in viewport")
-				}
+				require.Len(t, strings.Split(frame, "\n"), m.height, "hint overflowed terminal")
+				require.True(t, m.hintInBody, "long hint was not in viewport")
 				m.key(keyMsg(tea.KeyPgDown, ""))
 			}
-			if !strings.Contains(seen.String(), "END_RECOVERY.") {
-				t.Fatal("long hint ending was lost")
-			}
-			if m.selected != "a" {
-				t.Fatal("page scrolling changed sandbox selection")
-			}
-			if !strings.Contains(seen.String(), "alpha") {
-				t.Fatal("hint hid table")
-			}
+			require.Contains(t, seen.String(), "END_RECOVERY.", "long hint ending was lost")
+			require.Equal(t, "a", m.selected, "page scrolling changed sandbox selection")
+			require.Contains(t, seen.String(), "alpha", "hint hid table")
 			m.rows[0].Status.Detail = "Short hint"
 			m.View()
-			if m.hintInBody {
-				t.Fatal("stale hint scroll state")
-			}
+			require.False(t, m.hintInBody, "stale hint scroll state")
 		})
 	}
 }
@@ -142,32 +122,23 @@ func TestNarrowDiagnosticsSwitchRemainsVisibleAndClickable(t *testing.T) {
 			m.errors = []uiError{{code: store.CodeGuestPluginSync, scope: "a", detail: "new failure", count: 2}, {code: store.CodeOwnershipConflict, scope: "b", detail: "dismissed warning", count: 3, dismissed: true}}
 			m.focus, m.reveal = "diagnostics", true
 			frame := ansi.Strip(m.View().Content)
-			if !strings.Contains(frame, "New (2) | All (5)") {
-				t.Fatalf("selector clipped: %s", frame)
-			}
+			require.Contains(t, frame, "New (2) | All (5)", "selector clipped: %s", frame)
 			selected := false
 			lines := strings.Split(frame, "\n")
 			for _, h := range m.hits {
 				if h.action == "diagnostic-toggle" && strings.Contains(ansi.Cut(lines[h.y], h.x, h.x+h.w), "New (2) | All (5)") {
-					m.click(h.x, h.y)
+					clickAt(m, h.x, h.y)
 					selected = true
 					break
 				}
 			}
-			if !selected || !m.showAllErrors {
-				t.Fatal("selector mouse hit missing")
-			}
+			require.True(t, selected)
+			require.True(t, m.showAllErrors)
 			m.key(keyMsg(tea.KeyLeft, ""))
-			if m.showAllErrors {
-				t.Fatal("left did not select New")
-			}
+			require.False(t, m.showAllErrors, "left did not select New")
 			m.key(keyMsg(tea.KeyRight, ""))
-			if !m.showAllErrors {
-				t.Fatal("right did not select All")
-			}
-			if !strings.Contains(ansi.Strip(m.View().Content), "New (2) | All (5)") {
-				t.Fatal("selector lost after keyboard switch")
-			}
+			require.True(t, m.showAllErrors, "right did not select All")
+			require.Contains(t, ansi.Strip(m.View().Content), "New (2) | All (5)", "selector lost after keyboard switch")
 		})
 	}
 }
@@ -187,16 +158,15 @@ func TestNarrowPluginHintIdentifiesSamePrefixPlugins(t *testing.T) {
 				for index, plugin := range m.plugins {
 					if index > 0 {
 						m.key(keyMsg(tea.KeyDown, ""))
-						if hint, _ := m.contextHint(); !strings.Contains(hint, plugin.ID) {
-							t.Fatalf("keyboard focus ID missing: %q", hint)
+						{
+							hint, _ := m.contextHint()
+							require.Contains(t, hint, plugin.ID, "keyboard focus ID missing: %q", hint)
 						}
 					}
 					m.pluginIndex, m.detailIndex = index, index
 					m.pluginSelected = plugin.ID
 					hint, _ := m.contextHint()
-					if !strings.Contains(hint, plugin.ID) {
-						t.Fatalf("focused ID missing: %q", hint)
-					}
+					require.Contains(t, hint, plugin.ID, "focused ID missing: %q", hint)
 					found := false
 					for attempt := 0; attempt < 30; attempt++ {
 						if strings.Contains(ansi.Strip(m.View().Content), plugin.ID) {
@@ -208,24 +178,21 @@ func TestNarrowPluginHintIdentifiesSamePrefixPlugins(t *testing.T) {
 						}
 						m.key(keyMsg(tea.KeyPgDown, ""))
 					}
-					if !found {
-						t.Fatalf("full focused ID not reachable at %d/%s", width, page)
-					}
+					require.True(t, found, "full focused ID not reachable at %d/%s", width, page)
 					m.reveal = true
 					m.View()
 					clicked := false
 					for _, h := range m.hits {
 						if h.id == plugin.ID && (h.action == "plugin" || h.action == "override") {
-							m.click(h.x, h.y)
+							clickAt(m, h.x, h.y)
 							clicked = true
 							break
 						}
 					}
-					if !clicked {
-						t.Fatal("focused plugin missing mouse hit")
-					}
-					if hint, _ := m.contextHint(); !strings.Contains(hint, plugin.ID) {
-						t.Fatalf("mouse focus ID missing: %q", hint)
+					require.True(t, clicked, "focused plugin missing mouse hit")
+					{
+						hint, _ := m.contextHint()
+						require.Contains(t, hint, plugin.ID, "mouse focus ID missing: %q", hint)
 					}
 				}
 			})

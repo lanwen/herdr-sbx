@@ -2,43 +2,35 @@ package store
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestGuestPluginAttemptRequiresExplicitRetryForSameRevision(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	const scope, sandbox, plugin = "scope", "sandbox", "example.plugin"
 	allowed, err := BeginGuestPluginAttempt(scope, sandbox, plugin, "revision-a", false)
-	if err != nil || !allowed {
-		t.Fatalf("first attempt: allowed=%t err=%v", allowed, err)
-	}
-	if err := FinishGuestPluginAttempt(scope, sandbox, plugin, "revision-a", "build failed"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.True(t, allowed)
+	require.NoError(t, FinishGuestPluginAttempt(scope, sandbox, plugin, "revision-a", "build failed"))
 	allowed, err = BeginGuestPluginAttempt(scope, sandbox, plugin, "revision-a", false)
-	if err != nil || allowed {
-		t.Fatalf("automatic retry: allowed=%t err=%v", allowed, err)
-	}
+	require.NoError(t, err)
+	require.False(t, allowed)
 	attempt, found, err := GuestPluginAttemptFor(scope, sandbox, plugin, "revision-a")
-	if err != nil || !found || attempt.Detail != "build failed" {
-		t.Fatalf("durable failure: attempt=%+v found=%t err=%v", attempt, found, err)
-	}
+	require.NoError(t, err)
+	require.True(t, found)
+	require.EqualValues(t, "build failed", attempt.Detail)
 	allowed, err = BeginGuestPluginAttempt(scope, sandbox, plugin, "revision-b", false)
-	if err != nil || !allowed {
-		t.Fatalf("new revision: allowed=%t err=%v", allowed, err)
-	}
+	require.NoError(t, err)
+	require.True(t, allowed)
 	allowed, err = BeginGuestPluginAttempt(scope, sandbox, plugin, "revision-a", true)
-	if err != nil || !allowed {
-		t.Fatalf("explicit retry: allowed=%t err=%v", allowed, err)
-	}
-	if err := FinishGuestPluginAttempt(scope, sandbox, plugin, "revision-a", ""); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.True(t, allowed)
+	require.NoError(t, FinishGuestPluginAttempt(scope, sandbox, plugin, "revision-a", ""))
 	_, found, err = GuestPluginAttemptFor(scope, sandbox, plugin, "revision-a")
-	if err != nil || found {
-		t.Fatalf("confirmed recovery retained attempt: found=%t err=%v", found, err)
-	}
+	require.NoError(t, err)
+	require.False(t, found)
 	_, found, err = GuestPluginAttemptFor(scope, sandbox, plugin, "revision-b")
-	if err != nil || !found {
-		t.Fatalf("cleared another revision: found=%t err=%v", found, err)
-	}
+	require.NoError(t, err)
+	require.True(t, found)
 }

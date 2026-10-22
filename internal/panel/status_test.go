@@ -9,27 +9,26 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lanwen/herdr-sbx/internal/precheck"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestStatusManagementSpaceAndLiveHint(t *testing.T) {
 	m := modelFixture(t)
 	m.openTab("Status")
 	m.worker.State, m.worker.Detail = "running", "Following sandbox lifecycle events."
-	if hint, _ := m.contextHint(); hint != m.worker.Detail {
-		t.Fatalf("live hint=%q", hint)
+	{
+		hint, _ := m.contextHint()
+		require.Equal(t, m.worker.Detail, hint, "live hint=%q", hint)
 	}
 	m.pending["worker"] = true
 	m.workerEnabled = true
-	if !strings.Contains(ansi.Strip(m.renderHelp(110, true)), "disable Management") {
-		t.Fatal("pending Management reversal must remain advertised")
-	}
+	require.Contains(t, ansi.Strip(m.renderHelp(110, true)), "disable Management", "pending Management reversal must remain advertised")
 	m.key(keyMsg(tea.KeySpace, " "))
-	if m.workerEnabled {
-		t.Fatal("Space did not reverse Management intent")
-	}
+	require.False(t, m.workerEnabled, "Space did not reverse Management intent")
 	m.stopRequestedAt = time.Now()
-	if hint, _ := m.contextHint(); !strings.Contains(hint, "Cancelling") {
-		t.Fatalf("cancellation hint=%q", hint)
+	{
+		hint, _ := m.contextHint()
+		require.Contains(t, hint, "Cancelling", "cancellation hint=%q", hint)
 	}
 }
 
@@ -41,9 +40,9 @@ func TestStatusCompletedStopRefreshesLiveFeedback(t *testing.T) {
 	m.notice, m.noticeTarget = "Management stop requested", "worker"
 	m.Update(operationMsg{target: "worker", code: store.CodeDaemonStop, notice: "Management stop requested"})
 	hint, _ := m.contextHint()
-	if m.notice != "" || strings.Contains(hint, "Following") || !strings.Contains(hint, "stopped") {
-		t.Fatalf("notice=%q hint=%q", m.notice, hint)
-	}
+	require.EqualValues(t, "", m.notice)
+	require.NotContains(t, hint, "Following")
+	require.Contains(t, hint, "stopped")
 }
 
 func TestStatusPrerequisitesRetainIndependentCauses(t *testing.T) {
@@ -62,9 +61,7 @@ func TestStatusPrerequisitesRetainIndependentCauses(t *testing.T) {
 		text.WriteString(ansi.Strip(l.text) + "\n")
 	}
 	for _, want := range []string{"Sandbox service", "Docker sign-in", "Not checked", "requires JSON commands", "Update sbx", "Cannot read /CaseSensitive", "Inspect inventory", "Ambiguous association", "Resolve association"} {
-		if !strings.Contains(text.String(), want) {
-			t.Fatalf("missing %q:\n%s", want, text.String())
-		}
+		require.Contains(t, text.String(), want, "missing %q:\n%s", want, text.String())
 	}
 }
 
@@ -78,26 +75,20 @@ func TestStatusPrerequisiteGroupingAndUnstyledResults(t *testing.T) {
 		{Name: "Sandbox inventory", Level: precheck.Ready, Detail: "local sandbox inventory is readable"},
 	}
 	rows := statusPrerequisites(m.checks.Checks)
-	if len(rows) != 2 || rows[1].Detail != "Running · Inventory readable" || rows[0].Level != precheck.Ready {
-		t.Fatalf("grouped checks: %#v", rows)
-	}
+	require.Len(t, rows, 2)
+	require.EqualValues(t, "Running · Inventory readable", rows[1].Detail)
+	require.False(t, rows[0].Level != precheck.Ready)
 	t.Setenv("NO_COLOR", "")
 	t.Setenv("CLICOLOR_FORCE", "1")
 	focused := m.statusLines()[0].text
 	m.button = 1
 	unfocused := m.statusLines()[0].text
-	if colorsEnabled() && focused == unfocused {
-		t.Fatal("Management focus must brighten its outline")
-	}
+	require.False(t, colorsEnabled() && focused == unfocused, "Management focus must brighten its outline")
 	t.Setenv("NO_COLOR", "1")
 	m.button = 0
-	if !strings.Contains(m.statusLines()[0].text, "Management ›") {
-		t.Fatal("Management focus must remain visible without color")
-	}
+	require.Contains(t, m.statusLines()[0].text, "Management ›", "Management focus must remain visible without color")
 	for _, l := range m.statusLines() {
-		if strings.Contains(l.text, "\x1b[") {
-			t.Fatal("NO_COLOR status contains styling")
-		}
+		require.NotContains(t, l.text, "\x1b[", "NO_COLOR status contains styling")
 	}
 }
 
@@ -111,23 +102,18 @@ func TestManagementBordersSeparateStateAndObservationActivity(t *testing.T) {
 		m.refreshing = true
 		lines := m.statusLines()
 		top, body, bottom := lines[0].text, lines[1].text, lines[2].text
-		if !strings.HasSuffix(ansi.Strip(top), " Running ╮") || !strings.Contains(ansi.Strip(body), "ON | OFF") || !strings.Contains(ansi.Strip(bottom), "last at "+m.worker.LastSync.Local().Format("15:04")+"*") {
-			t.Fatalf("width %d card:\n%s\n%s\n%s", width, top, body, bottom)
-		}
+		require.True(t, strings.HasSuffix(ansi.Strip(top), " Running ╮"))
+		require.Contains(t, ansi.Strip(body), "ON | OFF")
+		require.Contains(t, ansi.Strip(bottom), "last at "+m.worker.LastSync.Local().Format("15:04")+"*")
 		for _, l := range lines[:3] {
-			if ansi.StringWidth(l.text) != width-4 {
-				t.Fatalf("card width %d: %q", width, l.text)
-			}
+			require.Equal(t, width-4, ansi.StringWidth(l.text), "card width %d: %q", width, l.text)
 		}
 		m.worker.State = "cancelling"
 		m.workerControlError = true
 		t.Setenv("NO_COLOR", "1")
 		lines = m.statusLines()
-		if ansi.StringWidth(lines[0].text) > width-4 {
-			t.Fatalf("failure badge overflow: %q", lines[0].text)
-		}
-		if !strings.Contains(lines[0].text, "Cancelling") || !strings.Contains(lines[0].text, "›") {
-			t.Fatalf("narrow cancellation/focus lost: %q", lines[0].text)
-		}
+		require.False(t, ansi.StringWidth(lines[0].text) > width-4, "failure badge overflow: %q", lines[0].text)
+		require.Contains(t, lines[0].text, "Cancelling")
+		require.Contains(t, lines[0].text, "›")
 	}
 }

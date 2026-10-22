@@ -16,6 +16,7 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestReconcilePersistsOnlyVerifiedMachineAndDoesNotAddTwice(t *testing.T) {
@@ -59,21 +60,17 @@ func TestReconcilePersistsOnlyVerifiedMachineAndDoesNotAddTwice(t *testing.T) {
 	fixture.rebuildClients()
 
 	for range 2 {
-		if err := fixture.service.Reconcile(io.Discard); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, fixture.service.Reconcile(io.Discard))
 	}
-	if readinessChecks != 0 {
-		t.Fatalf("machine add already confirmed readiness; post-add checks=%d", readinessChecks)
-	}
+	require.Equal(t, 0, readinessChecks, "machine add already confirmed readiness; post-add checks=%d", readinessChecks)
 	state, err := store.LoadState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	items := state.Scopes[store.ScopeID("/tmp/test-sandboxd.sock")]
-	if adds != 1 || lists < 3 || len(items) != 1 || items[0].ProfileID != "machine-1" || items[0].Pending {
-		t.Fatalf("adds=%d lists=%d state=%#v", adds, lists, items)
-	}
+	require.EqualValues(t, 1, adds)
+	require.False(t, lists < 3)
+	require.Len(t, items, 1)
+	require.EqualValues(t, "machine-1", items[0].ProfileID)
+	require.False(t, items[0].Pending)
 }
 
 func TestManualMachineIsNotAdopted(t *testing.T) {
@@ -82,15 +79,15 @@ func TestManualMachineIsNotAdopted(t *testing.T) {
 	outcome, saved := fixture.service.registerPrepared("scope", &state,
 		[]herdr.Machine{{ID: "manual", Label: "demo", Target: "demo.sbx", Session: "default"}},
 		sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"})
-	if outcome.Status != "association warning" || outcome.Detail != "A herdr entry already exists for this sandbox; refresh its association before creating an entry." || saved != nil {
-		t.Fatalf("outcome=%#v saved=%#v", outcome, saved)
-	}
+	require.EqualValues(t, "association warning", outcome.Status)
+	require.EqualValues(t, "A herdr entry already exists for this sandbox; refresh its association before creating an entry.", outcome.Detail)
+	require.Nil(t, saved)
 	outcome, saved = fixture.service.registerPrepared("scope", &state,
 		[]herdr.Machine{{ID: "other", Label: sandboxMachineLabel("demo"), Target: "other.sbx", Session: "default"}},
 		sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"})
-	if outcome.Status != "association warning" || outcome.Detail != "Another herdr entry already uses this label. Rename that entry before creating one for this sandbox." || saved != nil {
-		t.Fatalf("name collision outcome=%#v saved=%#v", outcome, saved)
-	}
+	require.EqualValues(t, "association warning", outcome.Status)
+	require.EqualValues(t, "Another herdr entry already uses this label. Rename that entry before creating one for this sandbox.", outcome.Detail)
+	require.Nil(t, saved)
 }
 
 func TestUncertainMachineAddRemainsPendingForManualInspection(t *testing.T) {
@@ -124,17 +121,13 @@ func TestUncertainMachineAddRemainsPendingForManualInspection(t *testing.T) {
 	}
 	fixture.rebuildClients()
 	var output strings.Builder
-	if err := fixture.service.Reconcile(&output); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, fixture.service.Reconcile(&output))
 	state, err := store.LoadState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	items := state.Scopes[store.ScopeID("/tmp/test-sandboxd.sock")]
-	if len(items) != 1 || !items[0].Pending || !strings.Contains(output.String(), "outcome is uncertain") {
-		t.Fatalf("state=%#v output=%s", items, output.String())
-	}
+	require.Len(t, items, 1)
+	require.True(t, items[0].Pending)
+	require.Contains(t, output.String(), "outcome is uncertain")
 }
 
 type registrationFixture struct {
@@ -150,9 +143,7 @@ func newRegistrationFixture(t *testing.T, inventory string) *registrationFixture
 	bin := t.TempDir()
 	for _, name := range []string{"herdr", "sbx", "ssh"} {
 		path := filepath.Join(bin, name)
-		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0700))
 	}
 	t.Setenv("PATH", bin)
 	t.Setenv("HERDR_BIN_PATH", "herdr")
@@ -196,9 +187,7 @@ func remoteHerdrStatusShell() string {
 func TestReconcileRetriesPendingRegistrationWhenCatalogIsEmpty(t *testing.T) {
 	fixture := newRegistrationFixture(t, `[{"uuid":"sandbox-1","name":"demo","status":"running"}]`)
 	scope := store.ScopeID("/tmp/test-sandboxd.sock")
-	if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {{SandboxID: "sandbox-1", Label: "sbx · demo", Target: "demo.sbx", Pending: true, ProjectWorkspacePending: "/workspace/demo"}}}}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {{SandboxID: "sandbox-1", Label: "sbx · demo", Target: "demo.sbx", Pending: true, ProjectWorkspacePending: "/workspace/demo"}}}}))
 	adds, lists := 0, 0
 	handedOff := false
 	fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
@@ -245,9 +234,7 @@ func TestReconcileRetriesPendingRegistrationWhenCatalogIsEmpty(t *testing.T) {
 				return "done", nil
 			}
 			if command.Name == "ssh" && strings.Contains(joined, "HERDR_STARTUP_CWD=") {
-				if !handedOff {
-					t.Fatal("queried project panes before version alignment")
-				}
+				require.True(t, handedOff, "queried project panes before version alignment")
 				return `{"result":{"panes":[{"workspace_id":"w1","cwd":"/workspace/demo"}]}}`, nil
 			}
 			return "", fmt.Errorf("unexpected command: %s %s", command.Name, joined)
@@ -256,16 +243,14 @@ func TestReconcileRetriesPendingRegistrationWhenCatalogIsEmpty(t *testing.T) {
 	fixture.rebuildClients()
 
 	for range 2 {
-		if err := fixture.service.Reconcile(io.Discard); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, fixture.service.Reconcile(io.Discard))
 	}
 	state, err := store.LoadState()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	items := state.Scopes[store.ScopeID("/tmp/test-sandboxd.sock")]
-	if adds != 1 || lists < 3 || len(items) != 1 || items[0].ProfileID != "machine-1" || items[0].Pending {
-		t.Fatalf("adds=%d lists=%d state=%#v", adds, lists, items)
-	}
+	require.EqualValues(t, 1, adds)
+	require.False(t, lists < 3)
+	require.Len(t, items, 1)
+	require.EqualValues(t, "machine-1", items[0].ProfileID)
+	require.False(t, items[0].Pending)
 }

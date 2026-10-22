@@ -11,6 +11,7 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPendingLabelOwnershipAndRecovery(t *testing.T) {
@@ -30,9 +31,7 @@ func TestPendingLabelOwnershipAndRecovery(t *testing.T) {
 				machines = append(machines, herdr.Machine{ID: "manual", Label: "Release desk", Target: "elsewhere"})
 			}
 			state := store.State{Version: 1, Scopes: map[string][]store.Tracked{"scope": {item}}}
-			if err := store.SaveState(state); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, store.SaveState(state))
 			renames := 0
 			fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
 				call := command.Name + " " + strings.Join(command.Args, " ")
@@ -56,28 +55,20 @@ func TestPendingLabelOwnershipAndRecovery(t *testing.T) {
 			current := func() bool { return scenario != "stale" }
 			sandbox := sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"}
 			err := fixture.service.recoverMachineLabel(context.Background(), "scope", &state, machines, sandbox, &item, current)
-			if err == nil {
-				t.Fatal("expected rename refusal or failure")
-			}
+			require.Error(t, err, "expected rename refusal or failure")
 			if scenario == "lost acknowledgement" {
 				saved, err := store.LoadState()
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				item = saved.Scopes["scope"][0]
-				if item.PendingLabel != "Release desk" {
-					t.Fatal("rename intent lost")
-				}
-				if err := fixture.service.recoverMachineLabel(context.Background(), "scope", &saved, machines, sandbox, &item, current); err != nil {
-					t.Fatal(err)
-				}
-				if item.Label != "Release desk" || item.PendingLabel != "" || renames != 1 {
-					t.Fatalf("unsafe recovery: %#v renames=%d", item, renames)
-				}
+				require.Equal(t, "Release desk", item.PendingLabel, "rename intent lost")
+				require.NoError(t, fixture.service.recoverMachineLabel(context.Background(), "scope", &saved, machines, sandbox, &item, current))
+				require.EqualValues(t, "Release desk", item.Label)
+				require.EqualValues(t, "", item.PendingLabel)
+				require.EqualValues(t, 1, renames)
 			} else if scenario == "no-op rename" {
-				if item.Label != "original" || item.PendingLabel != "Release desk" || renames != 1 {
-					t.Fatalf("unconfirmed rename saved: %+v renames=%d", item, renames)
-				}
+				require.EqualValues(t, "original", item.Label)
+				require.EqualValues(t, "Release desk", item.PendingLabel)
+				require.EqualValues(t, 1, renames)
 			} else if renames != 0 {
 				t.Fatal("changed unowned or stale machine")
 			}

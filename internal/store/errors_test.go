@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/lanwen/herdr-sbx/internal/sbx"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSeverityForCode(t *testing.T) {
@@ -13,42 +15,27 @@ func TestSeverityForCode(t *testing.T) {
 		if code == CodeOwnershipConflict {
 			want = SeverityWarning
 		}
-		if got := SeverityForCode(code); got != want {
-			t.Errorf("%q severity = %s, want %s", code, got, want)
-		}
+
+		got := SeverityForCode(code)
+		assert.Equal(t, want, got, "%q severity = %s, want %s", code, got, want)
 	}
 }
 
 func TestGuestPluginFailureHistoryTracksTransitions(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	scope := StatusKey("daemon", "sandbox")
-	if err := ObserveSandbox("daemon", sbx.Sandbox{ID: "sandbox", Name: "demo"}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, ObserveSandbox("daemon", sbx.Sandbox{ID: "sandbox", Name: "demo"}))
 	for range 2 {
-		if err := RecordGuestPluginFailure(scope, "guest.plugin: missing dependency"); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, RecordGuestPluginFailure(scope, "guest.plugin: missing dependency"))
 	}
-	if err := RecordGuestPluginFailure(scope, "guest.plugin: install rejected"); err != nil {
-		t.Fatal(err)
-	}
-	if err := ClearGuestPluginFailure(scope); err != nil {
-		t.Fatal(err)
-	}
-	if err := ClearGuestPluginFailure(scope); err != nil {
-		t.Fatal(err)
-	}
-	if err := RecordGuestPluginFailure(scope, "guest.plugin: missing dependency"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, RecordGuestPluginFailure(scope, "guest.plugin: install rejected"))
+	require.NoError(t, ClearGuestPluginFailure(scope))
+	require.NoError(t, ClearGuestPluginFailure(scope))
+	require.NoError(t, RecordGuestPluginFailure(scope, "guest.plugin: missing dependency"))
 	status, err := ReadStatusStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(status.Events) != 4 || len(status.Errors) != 1 {
-		t.Fatalf("events=%+v errors=%+v", status.Events, status.Errors)
-	}
+	require.NoError(t, err)
+	require.Len(t, status.Events, 4)
+	require.Len(t, status.Errors, 1)
 	for i, want := range []struct {
 		detail   string
 		resolved bool
@@ -59,68 +46,53 @@ func TestGuestPluginFailureHistoryTracksTransitions(t *testing.T) {
 		{"guest.plugin: missing dependency", false},
 	} {
 		got := status.Events[i]
-		if got.Code != CodeGuestPluginSync || got.Scope != scope || got.Name != "demo" || got.Detail != want.detail || got.Resolved != want.resolved || got.At.IsZero() {
-			t.Fatalf("event %d: %+v", i, got)
-		}
+		require.False(t, got.Code != CodeGuestPluginSync)
+		require.False(t, got.Scope != scope)
+		require.EqualValues(t, "demo", got.Name)
+		require.False(t, got.Detail != want.detail)
+		require.False(t, got.Resolved != want.resolved)
+		require.False(t, got.At.IsZero())
 	}
 }
 
 func TestGuestPluginFailureCodeTracksCauseChange(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	scope := StatusKey("daemon", "sandbox")
-	if err := RecordGuestPluginFailureCode(CodeGuestPluginResponse, scope, "bad frame"); err != nil {
-		t.Fatal(err)
-	}
-	if err := RecordGuestPluginFailureCode(CodeGuestPluginSync, scope, "install failed"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, RecordGuestPluginFailureCode(CodeGuestPluginResponse, scope, "bad frame"))
+	require.NoError(t, RecordGuestPluginFailureCode(CodeGuestPluginSync, scope, "install failed"))
 	status, err := ReadStatusStore()
-	if err != nil || len(status.Events) != 2 || len(status.Errors) != 1 || status.Events[0].Code != CodeGuestPluginResponse || status.Events[1].Code != CodeGuestPluginSync {
-		t.Fatalf("cause transition: status=%+v err=%v", status, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, status.Events, 2)
+	require.Len(t, status.Errors, 1)
+	require.False(t, status.Events[0].Code != CodeGuestPluginResponse)
+	require.False(t, status.Events[1].Code != CodeGuestPluginSync)
 }
 
 func TestRegistrationFailureReplacesPreviousOutcome(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	scope := StatusKey("daemon", "sandbox")
-	if err := SetRegistrationError(CodeOwnershipConflict, scope, "manual machine exists"); err != nil {
-		t.Fatal(err)
-	}
-	if err := SetRegistrationError(CodeWorkspaceSetup, scope, "workspace failed"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, SetRegistrationError(CodeOwnershipConflict, scope, "manual machine exists"))
+	require.NoError(t, SetRegistrationError(CodeWorkspaceSetup, scope, "workspace failed"))
 	status, err := ReadStatusStore()
-	if err != nil || len(status.Errors) != 1 {
-		t.Fatalf("current outcome: status=%+v err=%v", status, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, status.Errors, 1)
 	for _, record := range status.Errors {
-		if record.Code != CodeWorkspaceSetup {
-			t.Fatalf("stale outcome retained: %+v", record)
-		}
+		require.Equal(t, CodeWorkspaceSetup, record.Code, "stale outcome retained: %+v", record)
 	}
-	if err := SetRegistrationError("", scope, ""); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, SetRegistrationError("", scope, ""))
 	status, err = ReadStatusStore()
-	if err != nil || len(status.Errors) != 0 {
-		t.Fatalf("ready outcome: status=%+v err=%v", status, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, status.Errors, 0)
 }
 
 func TestGuestPluginFailureHistoryIsBounded(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	for i := range 60 {
-		if err := RecordGuestPluginFailure(StatusKey("daemon", string(rune(i+65))), "failure"); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, RecordGuestPluginFailure(StatusKey("daemon", string(rune(i+65))), "failure"))
 	}
 	status, err := ReadStatusStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(status.Events) != 50 {
-		t.Fatalf("event count = %d", len(status.Events))
-	}
+	require.NoError(t, err)
+	require.Len(t, status.Events, 50, "event count = %d", len(status.Events))
 }
 
 func TestPluginFailuresHaveIndependentAttemptsAndRecovery(t *testing.T) {
@@ -129,147 +101,91 @@ func TestPluginFailuresHaveIndependentAttemptsAndRecovery(t *testing.T) {
 	first := PluginFailure{PluginID: "example.first", Code: CodeGuestPluginSync, Detail: "Build failed", Output: "missing compiler", Recovery: "Install in the sandbox.", Command: "herdr plugin install owner/repo --ref abc --yes", OccurredAt: time.Now().Add(-time.Minute)}
 	second := PluginFailure{PluginID: "example.second", Code: CodeGuestPluginResponse, Detail: "Invalid guest response", OccurredAt: first.OccurredAt.Add(time.Second)}
 	for range 3 {
-		if err := SetGuestPluginFailures(scope, []PluginFailure{first, second}); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, SetGuestPluginFailures(scope, []PluginFailure{first, second}))
 	}
 	status, err := ReadStatusStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(status.Errors) != 2 || len(status.Events) != 2 {
-		t.Fatalf("independent failures: %+v", status)
-	}
+	require.NoError(t, err)
+	require.Len(t, status.Errors, 2)
+	require.Len(t, status.Events, 2)
 	for _, entry := range status.Errors {
-		if entry.Count != 1 {
-			t.Fatalf("observation counted as an attempt: %+v", entry)
-		}
-		if entry.PluginID == first.PluginID && (entry.Output != first.Output || entry.Command != first.Command || !entry.LastSeen.Equal(first.OccurredAt)) {
-			t.Fatalf("metadata lost: %+v", entry)
-		}
+		require.Equal(t, 1, entry.Count, "observation counted as an attempt: %+v", entry)
+		require.False(t, entry.PluginID == first.PluginID && (entry.Output != first.Output || entry.Command != first.Command || !entry.LastSeen.Equal(first.OccurredAt)), "metadata lost: %+v", entry)
 	}
 	first.OccurredAt = first.OccurredAt.Add(30 * time.Second)
-	if err := SetGuestPluginFailures(scope, []PluginFailure{first}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, SetGuestPluginFailures(scope, []PluginFailure{first}))
 	status, _ = ReadStatusStore()
-	if len(status.Errors) != 1 || len(status.Events) != 3 {
-		t.Fatalf("independent recovery: %+v", status)
-	}
+	require.Len(t, status.Errors, 1)
+	require.Len(t, status.Events, 3)
 	for _, entry := range status.Errors {
-		if entry.PluginID != first.PluginID || entry.Count != 2 {
-			t.Fatalf("retry count: %+v", entry)
-		}
+		require.False(t, entry.PluginID != first.PluginID)
+		require.EqualValues(t, 2, entry.Count)
 	}
 	recovered := status.Events[2]
-	if !recovered.Resolved || recovered.PluginID != second.PluginID || recovered.Scope != scope {
-		t.Fatalf("recovery identity: %+v", recovered)
-	}
-	if err := SetGuestPluginFailures(scope, nil); err != nil {
-		t.Fatal(err)
-	}
+	require.True(t, recovered.Resolved)
+	require.False(t, recovered.PluginID != second.PluginID)
+	require.False(t, recovered.Scope != scope)
+	require.NoError(t, SetGuestPluginFailures(scope, nil))
 	status, _ = ReadStatusStore()
-	if len(status.Errors) != 0 || len(status.Events) != 4 || status.Events[3].PluginID != first.PluginID {
-		t.Fatalf("last recovery: %+v", status)
-	}
+	require.Len(t, status.Errors, 0)
+	require.Len(t, status.Events, 4)
+	require.False(t, status.Events[3].PluginID != first.PluginID)
 }
 
 func TestPluginDiscoveryFailureDoesNotResolveIndividualFailures(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	scope := StatusKey("daemon", "sandbox")
 	first := PluginFailure{PluginID: "example.first", Code: CodeGuestPluginSync, Detail: "Build failed"}
-	if err := SetGuestPluginFailures(scope, []PluginFailure{first}); err != nil {
-		t.Fatal(err)
-	}
-	if err := RecordGuestPluginFailureCode(CodeGuestPluginSync, scope, "Local catalog unavailable"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, SetGuestPluginFailures(scope, []PluginFailure{first}))
+	require.NoError(t, RecordGuestPluginFailureCode(CodeGuestPluginSync, scope, "Local catalog unavailable"))
 	status, _ := ReadStatusStore()
-	if len(status.Errors) != 2 || len(status.Events) != 2 {
-		t.Fatalf("discovery erased known failure: %+v", status)
-	}
+	require.Len(t, status.Errors, 2)
+	require.Len(t, status.Events, 2)
 	first.Code = CodeSandboxNetwork
 	first.Detail = "Policy blocked download"
-	if err := SetGuestPluginFailures(scope, []PluginFailure{first}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, SetGuestPluginFailures(scope, []PluginFailure{first}))
 	status, _ = ReadStatusStore()
-	if len(status.Errors) != 1 {
-		t.Fatalf("stale cause retained: %+v", status.Errors)
-	}
+	require.Len(t, status.Errors, 1, "stale cause retained: %+v", status.Errors)
 	for _, event := range status.Events {
-		if event.PluginID == first.PluginID && event.Resolved {
-			t.Fatalf("still-failed plugin marked recovered: %+v", event)
-		}
+		require.False(t, event.PluginID == first.PluginID && event.Resolved, "still-failed plugin marked recovered: %+v", event)
 	}
 }
 
 func TestClearOperationErrorKeepsPluginSiblings(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	scope := StatusKey("daemon", "sandbox")
-	if err := SetGuestPluginFailures(scope, []PluginFailure{{PluginID: "example.first", Code: CodeGuestPluginSync, Detail: "Build failed"}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := RecordError(CodeGuestPluginSync, scope, "Operation failed"); err != nil {
-		t.Fatal(err)
-	}
-	if err := ClearError(CodeGuestPluginSync, scope); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, SetGuestPluginFailures(scope, []PluginFailure{{PluginID: "example.first", Code: CodeGuestPluginSync, Detail: "Build failed"}}))
+	require.NoError(t, RecordError(CodeGuestPluginSync, scope, "Operation failed"))
+	require.NoError(t, ClearError(CodeGuestPluginSync, scope))
 	status, err := ReadStatusStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(status.Errors) != 1 {
-		t.Fatalf("plugin siblings cleared: %+v", status.Errors)
-	}
+	require.NoError(t, err)
+	require.Len(t, status.Errors, 1, "plugin siblings cleared: %+v", status.Errors)
 	for _, entry := range status.Errors {
-		if entry.PluginID != "example.first" {
-			t.Fatalf("wrong error retained: %+v", entry)
-		}
+		require.Equal(t, "example.first", entry.PluginID, "wrong error retained: %+v", entry)
 	}
 }
 
 func TestDismissedOperationRemainsActiveAcrossRepeatedObservations(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
-	if err := RecordError(CodeManagement, "sandbox", "request rejected"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, RecordError(CodeManagement, "sandbox", "request rejected"))
 	status, _ := ReadStatusStore()
 	for _, entry := range status.Errors {
-		if err := DismissError(entry); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, DismissError(entry))
 	}
-	if err := RecordError(CodeManagement, "sandbox", "request rejected"); err != nil {
-		t.Fatal(err)
-	}
-	if err := RecordError(CodeManagement, "sandbox", "connection lost"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, RecordError(CodeManagement, "sandbox", "request rejected"))
+	require.NoError(t, RecordError(CodeManagement, "sandbox", "connection lost"))
 	status, err := ReadStatusStore()
-	if err != nil || len(status.Errors) != 2 {
-		t.Fatalf("active errors=%+v err=%v", status.Errors, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, status.Errors, 2)
 	for _, entry := range status.Errors {
-		if entry.Detail == "request rejected" && (!entry.Dismissed || entry.Count != 2) {
-			t.Fatalf("dismissal lost: %+v", entry)
-		}
-		if entry.Detail == "connection lost" && !entry.Dismissed {
-			t.Fatalf("changed cause lost group dismissal: %+v", entry)
-		}
+		require.False(t, entry.Detail == "request rejected" && (!entry.Dismissed || entry.Count != 2), "dismissal lost: %+v", entry)
+		require.False(t, entry.Detail == "connection lost" && !entry.Dismissed, "changed cause lost group dismissal: %+v", entry)
 	}
-	if err := ClearError(CodeManagement, "sandbox"); err != nil {
-		t.Fatal(err)
-	}
-	if err := RecordError(CodeManagement, "sandbox", "request rejected"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, ClearError(CodeManagement, "sandbox"))
+	require.NoError(t, RecordError(CodeManagement, "sandbox", "request rejected"))
 	status, _ = ReadStatusStore()
 	for _, entry := range status.Errors {
-		if entry.Dismissed || entry.Count != 1 {
-			t.Fatalf("new failure inherited resolved acknowledgement: %+v", entry)
-		}
+		require.False(t, entry.Dismissed)
+		require.EqualValues(t, 1, entry.Count)
 	}
 }
 
@@ -278,9 +194,7 @@ func TestPluginDismissalPreservesIdentityAndRejectsStaleCause(t *testing.T) {
 	failure := PluginFailure{PluginID: "example.first", Code: CodeGuestPluginSync, Detail: "Build failed", Output: "missing compiler", OccurredAt: time.Now()}
 	sibling := failure
 	sibling.PluginID = "example.second"
-	if err := SetGuestPluginFailures("sandbox", []PluginFailure{failure, sibling}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, SetGuestPluginFailures("sandbox", []PluginFailure{failure, sibling}))
 	status, _ := ReadStatusStore()
 	var selected ErrorRecord
 	for _, entry := range status.Errors {
@@ -288,66 +202,41 @@ func TestPluginDismissalPreservesIdentityAndRejectsStaleCause(t *testing.T) {
 			selected = entry
 		}
 	}
-	if err := DismissError(selected); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, DismissError(selected))
 	failure.OccurredAt = failure.OccurredAt.Add(time.Minute)
-	if err := SetGuestPluginFailures("sandbox", []PluginFailure{failure, sibling}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, SetGuestPluginFailures("sandbox", []PluginFailure{failure, sibling}))
 	status, _ = ReadStatusStore()
 	for _, entry := range status.Errors {
-		if entry.PluginID == failure.PluginID && (!entry.Dismissed || entry.Count != 2) {
-			t.Fatalf("repeat lost dismissal: %+v", entry)
-		}
-		if entry.PluginID == sibling.PluginID && !entry.Dismissed {
-			t.Fatalf("sibling not dismissed with group: %+v", entry)
-		}
+		require.False(t, entry.PluginID == failure.PluginID && (!entry.Dismissed || entry.Count != 2), "repeat lost dismissal: %+v", entry)
+		require.False(t, entry.PluginID == sibling.PluginID && !entry.Dismissed, "sibling not dismissed with group: %+v", entry)
 	}
 	failure.Output = "new build failure"
-	if err := SetGuestPluginFailures("sandbox", []PluginFailure{failure, sibling}); err != nil {
-		t.Fatal(err)
-	}
-	if err := DismissError(selected); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, SetGuestPluginFailures("sandbox", []PluginFailure{failure, sibling}))
+	require.NoError(t, DismissError(selected))
 	status, _ = ReadStatusStore()
 	for _, entry := range status.Errors {
-		if !entry.Dismissed {
-			t.Fatalf("changed cause lost group dismissal: %+v", entry)
-		}
+		require.True(t, entry.Dismissed, "changed cause lost group dismissal: %+v", entry)
 	}
 }
 
 func TestDismissErrorDoesNotAcknowledgeReappearingIdenticalFailure(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	failure := PluginFailure{PluginID: "example.plugin", Code: CodeGuestPluginSync, Detail: "Build failed", OccurredAt: time.Now().Add(-time.Minute)}
-	if err := SetGuestPluginFailures("sandbox", []PluginFailure{failure}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, SetGuestPluginFailures("sandbox", []PluginFailure{failure}))
 	status, _ := ReadStatusStore()
 	var selected ErrorRecord
 	for _, entry := range status.Errors {
 		selected = entry
 	}
-	if err := ClearGuestPluginFailure("sandbox"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, ClearGuestPluginFailure("sandbox"))
 	failure.OccurredAt = failure.OccurredAt.Add(time.Minute)
-	if err := SetGuestPluginFailures("sandbox", []PluginFailure{failure}); err != nil {
-		t.Fatal(err)
-	}
-	if err := DismissError(selected); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, SetGuestPluginFailures("sandbox", []PluginFailure{failure}))
+	require.NoError(t, DismissError(selected))
 	status, err := ReadStatusStore()
-	if err != nil || len(status.Errors) != 1 {
-		t.Fatalf("reappeared failure: %+v, err=%v", status.Errors, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, status.Errors, 1)
 	for _, entry := range status.Errors {
-		if entry.Dismissed {
-			t.Fatalf("stale selection acknowledged new lifecycle: %+v", entry)
-		}
+		require.False(t, entry.Dismissed, "stale selection acknowledged new lifecycle: %+v", entry)
 	}
 }
 
@@ -355,17 +244,18 @@ func TestPolicyCleanupCheckedIsNamedBoundedEvent(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	scope := "daemon-scope-hash"
 	for range 51 {
-		if err := RecordPolicyCleanupChecked(scope); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, RecordPolicyCleanupChecked(scope))
 	}
 	status, err := ReadStatusStore()
-	if err != nil || len(status.Events) != 50 || len(status.Errors) != 0 {
-		t.Fatalf("cleanup history=%+v err=%v", status, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, status.Events, 50)
+	require.Len(t, status.Errors, 0)
 	for _, event := range status.Events {
-		if event.Code != CodePolicyCleanup || event.Scope != scope || event.Name != "All sandboxes" || !event.Resolved || event.At.IsZero() || event.Detail != "Temporary access cleanup checked" {
-			t.Fatalf("cleanup event: %+v", event)
-		}
+		require.False(t, event.Code != CodePolicyCleanup)
+		require.False(t, event.Scope != scope)
+		require.EqualValues(t, "All sandboxes", event.Name)
+		require.True(t, event.Resolved)
+		require.False(t, event.At.IsZero())
+		require.EqualValues(t, "Temporary access cleanup checked", event.Detail)
 	}
 }

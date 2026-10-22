@@ -3,13 +3,13 @@ package panel
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lanwen/herdr-sbx/internal/lifecycle"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestOnWaitsForSuccessfulCancellation(t *testing.T) {
@@ -29,45 +29,41 @@ func TestOnWaitsForSuccessfulCancellation(t *testing.T) {
 		}
 		m.startWorkerFn = func() error { starts++; return nil }
 		stop := m.setWorkerEnabled(false)
-		if stop == nil {
-			t.Fatal("OFF did not request cancellation")
-		}
+		require.NotNil(t, stop, "OFF did not request cancellation")
 		control, _ := store.ReadStatusStore()
-		if control.WorkerControl == nil || !control.WorkerControl.Stopped {
-			t.Fatal("OFF was not persisted on acceptance")
-		}
-		if command := m.setWorkerEnabled(true); command != nil || !m.workerEnabled || !m.managementCancelling() {
-			t.Fatal("ON bypassed cancellation")
-		}
-		if got := ansi.Strip(m.managementStatus()); got != "Cancelling" {
-			t.Fatal(got)
-		}
+		require.NotNil(t, control.WorkerControl)
+		require.True(t, control.WorkerControl.Stopped)
+
+		command := m.setWorkerEnabled(true)
+		require.Nil(t, command)
+		require.True(t, m.workerEnabled)
+		require.True(t, m.managementCancelling())
+
+		got := ansi.Strip(m.managementStatus())
+		require.Equal(t, "Cancelling", got, got)
+
 		m.key(keyMsg('p', "p"))
-		if m.page != "Plugins" {
-			t.Fatal("navigation blocked")
-		}
+		require.Equal(t, "Plugins", m.page, "navigation blocked")
 		_, next := m.Update(stop())
 		if stopFailure {
-			if starts != 0 || m.pending["worker"] || !m.workerControlError || !m.managementCancelling() {
-				t.Fatal("failed cancellation claimed settled or started worker")
-			}
-			if len(m.errors) != 1 || m.errors[0].code != store.CodeDaemonUnreachable {
-				t.Fatal(m.errors)
-			}
+			require.EqualValues(t, 0, starts)
+			require.False(t, m.pending["worker"])
+			require.True(t, m.workerControlError)
+			require.True(t, m.managementCancelling())
+			require.Len(t, m.errors, 1)
+			require.False(t, m.errors[0].code != store.CodeDaemonUnreachable)
 			stopFailure = false
 			retry := m.setWorkerEnabled(true)
-			if retry == nil || m.workerCommandEnabled {
-				t.Fatal("retry must confirm stop first")
-			}
+			require.NotNil(t, retry)
+			require.False(t, m.workerCommandEnabled)
 			_, next = m.Update(retry())
 		}
-		if next == nil || !m.pending["worker"] || !m.workerEnabled {
-			t.Fatal("confirmed stop lost queued ON")
-		}
+		require.NotNil(t, next)
+		require.True(t, m.pending["worker"])
+		require.True(t, m.workerEnabled)
 		m.Update(next())
-		if starts != 1 || m.pending["worker"] {
-			t.Fatal("queued ON must start once")
-		}
+		require.EqualValues(t, 1, starts)
+		require.False(t, m.pending["worker"])
 		_ = stops
 	}
 }
@@ -90,18 +86,17 @@ func TestOffInvalidatesDelayedStartAtAcceptance(t *testing.T) {
 	}
 	m.stopWorkerFn = func(context.Context) error { stops++; return nil }
 	start := m.setWorkerEnabled(true)
-	if m.setWorkerEnabled(false) != nil || m.workerEnabled || !m.managementCancelling() {
-		t.Fatal("OFF not accepted while start queued")
-	}
+	require.Nil(t, m.setWorkerEnabled(false))
+	require.False(t, m.workerEnabled)
+	require.True(t, m.managementCancelling())
 	_, stop := m.Update(start())
-	if stop == nil || len(m.errors) != 0 {
-		t.Fatal("superseded start reported failure or dropped OFF")
-	}
+	require.NotNil(t, stop)
+	require.Len(t, m.errors, 0)
 	m.Update(stop())
 	saved, _ := store.ReadStatusStore()
-	if stops != 1 || !saved.WorkerControl.Stopped || m.workerEnabled {
-		t.Fatal("delayed start overwrote OFF")
-	}
+	require.EqualValues(t, 1, stops)
+	require.True(t, saved.WorkerControl.Stopped)
+	require.False(t, m.workerEnabled)
 }
 
 func TestRepeatedChoicesKeepLatestIntent(t *testing.T) {
@@ -116,9 +111,9 @@ func TestRepeatedChoicesKeepLatestIntent(t *testing.T) {
 	m.setWorkerEnabled(true)
 	m.setWorkerEnabled(false)
 	m.Update(stop())
-	if starts != 0 || m.workerEnabled || m.pending["worker"] {
-		t.Fatal("cancelled ON started worker")
-	}
+	require.EqualValues(t, 0, starts)
+	require.False(t, m.workerEnabled)
+	require.False(t, m.pending["worker"])
 }
 
 func TestStopConfirmationReadFailureHasUnreachableCode(t *testing.T) {
@@ -128,9 +123,11 @@ func TestStopConfirmationReadFailureHasUnreachableCode(t *testing.T) {
 	m.stopRequestedAt = time.Now()
 	failure := fmt.Errorf("%w: permission denied reading daemon lock", lifecycle.ErrDaemonStopUnconfirmed)
 	m.Update(operationMsg{target: "worker", code: store.CodeDaemonStop, err: failure})
-	if !m.workerControlError || !m.managementCancelling() || len(m.errors) != 1 || m.errors[0].code != store.CodeDaemonUnreachable || !strings.Contains(m.errors[0].detail, "permission denied") {
-		t.Fatal(m.errors)
-	}
+	require.True(t, m.workerControlError)
+	require.True(t, m.managementCancelling())
+	require.Len(t, m.errors, 1)
+	require.False(t, m.errors[0].code != store.CodeDaemonUnreachable)
+	require.Contains(t, m.errors[0].detail, "permission denied")
 }
 
 func TestDelayedFirstPollPreservesQueuedOff(t *testing.T) {
@@ -142,13 +139,13 @@ func TestDelayedFirstPollPreservesQueuedOff(t *testing.T) {
 		start := m.setWorkerEnabled(true)
 		m.setWorkerEnabled(false)
 		_, cmd := m.Update(workerMsg{status: store.WorkerStatus{State: "stopped"}, initialized: initialized})
-		if cmd != nil || m.workerEnabled || m.dialog != "" || !m.pending["worker"] || !m.managementCancelling() {
-			t.Fatal("poll overwrote accepted OFF")
-		}
+		require.Nil(t, cmd)
+		require.False(t, m.workerEnabled)
+		require.EqualValues(t, "", m.dialog)
+		require.True(t, m.pending["worker"])
+		require.True(t, m.managementCancelling())
 		_, stop := m.Update(start())
-		if stop == nil {
-			t.Fatal("queued OFF lost")
-		}
+		require.NotNil(t, stop, "queued OFF lost")
 		m.Update(stop())
 	}
 }
@@ -158,9 +155,11 @@ func TestExplicitUnchangedOffPersistsBeforeFirstPoll(t *testing.T) {
 	m.setWorkerEnabled(false)
 	_, cmd := m.Update(workerMsg{status: store.WorkerStatus{State: "stopped"}})
 	saved, _ := store.ReadStatusStore()
-	if cmd != nil || m.workerEnabled || m.dialog != "" || saved.WorkerControl == nil || !saved.WorkerControl.Stopped {
-		t.Fatal("first-use startup ignored explicit OFF")
-	}
+	require.Nil(t, cmd)
+	require.False(t, m.workerEnabled)
+	require.EqualValues(t, "", m.dialog)
+	require.NotNil(t, saved.WorkerControl)
+	require.True(t, saved.WorkerControl.Stopped)
 }
 
 func TestOnOffOnBeforeStartRunsConfirmsCancellationFirst(t *testing.T) {
@@ -174,16 +173,16 @@ func TestOnOffOnBeforeStartRunsConfirmsCancellationFirst(t *testing.T) {
 	m.setWorkerEnabled(false)
 	m.setWorkerEnabled(true)
 	_, stop := m.Update(first())
-	if stop == nil || m.workerCommandEnabled || !m.workerEnabled || !m.managementCancelling() {
-		t.Fatal("new ON bypassed cancelled start")
-	}
+	require.NotNil(t, stop)
+	require.False(t, m.workerCommandEnabled)
+	require.True(t, m.workerEnabled)
+	require.True(t, m.managementCancelling())
 	m.startWorkerFn = func() error { starts++; return nil }
 	_, restart := m.Update(stop())
-	if restart == nil {
-		t.Fatal("settled cancellation lost queued ON")
-	}
+	require.NotNil(t, restart, "settled cancellation lost queued ON")
 	m.Update(restart())
-	if stops != 1 || starts != 2 || m.pending["worker"] || !m.workerEnabled {
-		t.Fatal("unexpected worker overlap")
-	}
+	require.EqualValues(t, 1, stops)
+	require.EqualValues(t, 2, starts)
+	require.False(t, m.pending["worker"])
+	require.True(t, m.workerEnabled)
 }

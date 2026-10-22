@@ -1,36 +1,26 @@
 package store
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestHerdrFixFailureNeedsExplicitRecovery(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	scope := StatusKey("daemon", "sandbox")
-	if SeverityForCode(CodeHerdrFix) != SeverityError {
-		t.Fatal("repair failure is not an error")
-	}
-	if err := RecordError(CodeHerdrFix, scope, "handoff unsupported"); err != nil {
-		t.Fatal(err)
-	}
-	if err := SetRegistrationError(CodeHerdrCompatibility, scope, "forwarding unavailable"); err != nil {
-		t.Fatal(err)
-	}
-	if err := SetRegistrationError("", scope, ""); err != nil {
-		t.Fatal(err)
-	}
+	require.Equal(t, Severity(SeverityError), SeverityForCode(CodeHerdrFix), "repair failure is not an error")
+	require.NoError(t, RecordError(CodeHerdrFix, scope, "handoff unsupported"))
+	require.NoError(t, SetRegistrationError(CodeHerdrCompatibility, scope, "forwarding unavailable"))
+	require.NoError(t, SetRegistrationError("", scope, ""))
 	status, err := ReadStatusStore()
-	if err != nil || len(status.Errors) != 1 {
-		t.Fatalf("registration cleared repair failure: %+v %v", status, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, status.Errors, 1)
 	for _, entry := range status.Errors {
-		if entry.Code != CodeHerdrFix {
-			t.Fatalf("wrong remaining failure: %+v", entry)
-		}
+		require.Equal(t, CodeHerdrFix, entry.Code, "wrong remaining failure: %+v", entry)
 	}
-	if err := ClearError(CodeHerdrFix, scope); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, ClearError(CodeHerdrFix, scope))
 	status, err = ReadStatusStore()
-	if err != nil || len(status.Errors) != 0 {
-		t.Fatalf("explicit repair recovery not saved: %+v %v", status, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, status.Errors, 0)
 }

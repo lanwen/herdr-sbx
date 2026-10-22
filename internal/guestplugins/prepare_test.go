@@ -2,7 +2,6 @@ package guestplugins
 
 import (
 	"archive/tar"
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -16,7 +15,16 @@ import (
 
 	"github.com/lanwen/herdr-sbx/internal/herdr"
 	"github.com/lanwen/herdr-sbx/internal/process"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func guestInspectionResponse(t *testing.T, plugins []herdr.PluginInstall, ownership, checksum string) string {
+	t.Helper()
+	catalog, err := json.Marshal(map[string]any{"result": map[string]any{"plugins": plugins}})
+	require.NoError(t, err)
+	return "HERDR_SBX_PLUGIN_V1_BEGIN\nLinux aarch64\n" + base64.StdEncoding.EncodeToString([]byte("/home/guest/config.toml")) + "\nabsent\n\n" + base64.StdEncoding.EncodeToString(catalog) + "\n" + ownership + "\n" + checksum + "\nHERDR_SBX_PLUGIN_V1_END\n"
+}
 
 func TestManuallyLinkedRetainedRevisionDoesNotRebuild(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
@@ -31,9 +39,7 @@ func TestManuallyLinkedRetainedRevisionDoesNotRebuild(t *testing.T) {
 	transferred := false
 	client := herdr.New(process.Runner{Execute: func(_ context.Context, cmd process.Command) (string, error) {
 		if cmd.Stdin != nil {
-			if strings.Contains(cmd.Args[len(cmd.Args)-1], "&& 'sh' 'build.sh'") {
-				t.Fatal("manual repair rebuilt")
-			}
+			require.NotContains(t, cmd.Args[len(cmd.Args)-1], "&& 'sh' 'build.sh'", "manual repair rebuilt")
 			transferred = true
 			return "", nil
 		}
@@ -49,31 +55,27 @@ func TestManuallyLinkedRetainedRevisionDoesNotRebuild(t *testing.T) {
 		if linked {
 			rows = append(rows, plugin)
 		}
-		catalog, _ := json.Marshal(map[string]any{"result": map[string]any{"plugins": rows}})
 		ownership := "external"
 		if linked {
 			ownership = "managed"
 		}
-		return "HERDR_SBX_PLUGIN_V1_BEGIN\nLinux aarch64\n" + base64.StdEncoding.EncodeToString([]byte("/home/guest/config.toml")) + "\nabsent\n\n" + base64.StdEncoding.EncodeToString(catalog) + "\n" + ownership + "\n" + checksum + "\nHERDR_SBX_PLUGIN_V1_END\n", nil
+		return guestInspectionResponse(t, rows, ownership, checksum), nil
 	}})
 	block := func(id, rev string) (func(error) error, error) {
 		revision = rev
 		return nil, errors.New("failed previous build")
 	}
-	if err := prepare(context.Background(), client, "fixture.sbx", "scope", "sandbox", local, func() bool { return true }, block); err == nil {
-		t.Fatal("attempt unexpectedly allowed")
-	}
+
+	err := prepare(context.Background(), client, "fixture.sbx", "scope", "sandbox", local, func() bool { return true }, block)
+	require.Error(t, err, "attempt unexpectedly allowed")
+
 	linked = true
 	denied := func(string, string) (func(error) error, error) {
 		t.Fatal("manual repair retried build gate")
 		return nil, nil
 	}
-	if err := prepare(context.Background(), client, "fixture.sbx", "scope", "sandbox", local, func() bool { return true }, denied); err != nil {
-		t.Fatal(err)
-	}
-	if !transferred {
-		t.Fatal("config completion not performed")
-	}
+	require.NoError(t, prepare(context.Background(), client, "fixture.sbx", "scope", "sandbox", local, func() bool { return true }, denied))
+	require.True(t, transferred, "config completion not performed")
 }
 
 func TestExactExternalPluginRequiresAvailableWarningFreeInstallation(t *testing.T) {
@@ -82,18 +84,12 @@ func TestExactExternalPluginRequiresAvailableWarningFreeInstallation(t *testing.
 	guest := local
 	guest.Enabled = true
 	guest.Available = true
-	if !exactExternalPlugin(local, guest) {
-		t.Fatal("matching installation rejected")
-	}
+	require.True(t, exactExternalPlugin(local, guest), "matching installation rejected")
 	guest.Warnings = herdr.PluginWarnings(`["manifest missing"]`)
-	if exactExternalPlugin(local, guest) {
-		t.Fatal("warning accepted")
-	}
+	require.False(t, exactExternalPlugin(local, guest), "warning accepted")
 	guest.Warnings = ""
 	guest.Available = false
-	if exactExternalPlugin(local, guest) {
-		t.Fatal("missing installation accepted")
-	}
+	require.False(t, exactExternalPlugin(local, guest), "missing installation accepted")
 }
 
 // Build scripts can read the manifest as text. Copying it must preserve the
@@ -112,8 +108,7 @@ func TestPreparePreservesManifestForGuestBuild(t *testing.T) {
 	built := false
 	client := herdr.New(process.Runner{Execute: func(ctx context.Context, cmd process.Command) (string, error) {
 		if cmd.Stdin == nil {
-			catalog := base64.StdEncoding.EncodeToString([]byte(`{"result":{"plugins":[]}}`))
-			return "HERDR_SBX_PLUGIN_V1_BEGIN\nLinux aarch64\n" + base64.StdEncoding.EncodeToString([]byte("/home/guest/config.toml")) + "\nabsent\n\n" + catalog + "\nexternal\n\nHERDR_SBX_PLUGIN_V1_END\n", nil
+			return guestInspectionResponse(t, []herdr.PluginInstall{}, "external", ""), nil
 		}
 		guest := t.TempDir()
 		tr := tar.NewReader(cmd.Stdin)
@@ -122,39 +117,43 @@ func TestPreparePreservesManifestForGuestBuild(t *testing.T) {
 			if err == io.EOF {
 				break
 			}
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			if !strings.HasPrefix(h.Name, "plugin/") {
 				continue
 			}
 			path := filepath.Join(guest, strings.TrimPrefix(h.Name, "plugin/"))
 			os.MkdirAll(filepath.Dir(path), 0700)
 			data, _ := io.ReadAll(tr)
-			if err := os.WriteFile(path, data, os.FileMode(h.Mode)); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.WriteFile(path, data, os.FileMode(h.Mode)))
 		}
 		command := exec.CommandContext(ctx, "sh", "build.sh")
 		command.Dir = guest
 		output, err := command.CombinedOutput()
-		if err != nil {
-			t.Errorf("guest build: %s: %v", output, err)
-		}
+		assert.NoError(t, err, "guest build: %s: %v", output, err)
 		copied, _ := os.ReadFile(filepath.Join(guest, "herdr-plugin.toml"))
-		if !bytes.Equal(copied, manifest) {
-			t.Errorf("guest manifest was rewritten:\n%s", copied)
-		}
+		assert.Equal(t, manifest, copied, "guest manifest was rewritten")
 		built = true
 		return "", stop
 	}})
 	err := prepare(context.Background(), client, "fixture.sbx", "scope", "sandbox", local, func() bool { return true })
-	if !built || !errors.Is(err, stop) {
-		t.Fatalf("build boundary not exercised: built=%v err=%v", built, err)
-	}
+	require.True(t, built)
+	require.ErrorIs(t, err, stop)
 }
 
 func TestPrepareOnlySuggestsInstallBeforeGuestLink(t *testing.T) {
+	root := t.TempDir()
+	manifest := filepath.Join(root, "herdr-plugin.toml")
+	os.WriteFile(manifest, []byte("id=\"example.repair\"\nversion=\"1.0.0\"\n[[build]]\ncommand=[\"sh\",\"build.sh\"]\n"), 0600)
+	os.WriteFile(filepath.Join(root, "build.sh"), []byte("exit 1\n"), 0700)
+	for _, args := range [][]string{{"init", "--quiet"}, {"add", "."}, {"-c", "commit.gpgsign=false", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "source"}} {
+		command := exec.Command("git", append([]string{"-C", root}, args...)...)
+		output, err := command.CombinedOutput()
+		require.NoError(t, err, "git source: %s", output)
+	}
+	headCommand := exec.Command("git", "-C", root, "rev-parse", "HEAD")
+	head, err := headCommand.Output()
+	require.NoError(t, err)
+	local := herdr.PluginInstall{ID: "example.repair", Version: "1.0.0", Root: root, ManifestPath: manifest, Source: herdr.PluginSource{Kind: "github", Owner: "example", Repo: "repair", ResolvedCommit: strings.TrimSpace(string(head))}}
 	for _, test := range []struct {
 		name                          string
 		buildFailed, existing, verify bool
@@ -168,22 +167,7 @@ func TestPrepareOnlySuggestsInstallBeforeGuestLink(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 			t.Setenv("HERDR_CONFIG_PATH", filepath.Join(t.TempDir(), "absent"))
-			root := t.TempDir()
-			manifest := filepath.Join(root, "herdr-plugin.toml")
-			os.WriteFile(manifest, []byte("id=\"example.repair\"\nversion=\"1.0.0\"\n[[build]]\ncommand=[\"sh\",\"build.sh\"]\n"), 0600)
-			os.WriteFile(filepath.Join(root, "build.sh"), []byte("exit 1\n"), 0700)
-			for _, args := range [][]string{{"init", "--quiet"}, {"add", "."}, {"-c", "commit.gpgsign=false", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "source"}} {
-				command := exec.Command("git", append([]string{"-C", root}, args...)...)
-				if output, err := command.CombinedOutput(); err != nil {
-					t.Fatalf("git source: %s: %v", output, err)
-				}
-			}
-			headCommand := exec.Command("git", "-C", root, "rev-parse", "HEAD")
-			head, err := headCommand.Output()
-			if err != nil {
-				t.Fatal(err)
-			}
-			local := herdr.PluginInstall{ID: "example.repair", Version: "1.0.0", Root: root, ManifestPath: manifest, Source: herdr.PluginSource{Kind: "github", Owner: "example", Repo: "repair", ResolvedCommit: strings.TrimSpace(string(head))}}
+
 			transferred := false
 			client := herdr.New(process.Runner{Execute: func(_ context.Context, cmd process.Command) (string, error) {
 				if cmd.Stdin != nil {
@@ -206,23 +190,14 @@ func TestPrepareOnlySuggestsInstallBeforeGuestLink(t *testing.T) {
 					plugins = append(plugins, herdr.PluginInstall{ID: local.ID, Version: local.Version, Root: "/home/guest/.local/share/herdr-sbx/plugins/example.repair-old", Enabled: true, Available: true})
 					managed = "managed"
 				}
-				catalog, _ := json.Marshal(map[string]any{"result": map[string]any{"plugins": plugins}})
-				return "HERDR_SBX_PLUGIN_V1_BEGIN\nLinux aarch64\n" + base64.StdEncoding.EncodeToString([]byte("/home/guest/config.toml")) + "\nabsent\n\n" + base64.StdEncoding.EncodeToString(catalog) + "\n" + managed + "\n\nHERDR_SBX_PLUGIN_V1_END\n", nil
+				return guestInspectionResponse(t, plugins, managed, ""), nil
 			}})
-			err = prepare(context.Background(), client, "fixture.sbx", "scope", "id", local, func() bool { return true })
+			err := prepare(context.Background(), client, "fixture.sbx", "scope", "id", local, func() bool { return true })
 			var failure *FailureError
-			if !errors.As(err, &failure) {
-				t.Fatalf("missing structured failure: %v", err)
-			}
-			if (failure.Failure.Command != "") != test.wantCommand {
-				t.Fatalf("repair command validity: %+v", failure.Failure)
-			}
-			if test.wantCommand && !strings.Contains(failure.Failure.Command, strings.TrimSpace(string(head))) {
-				t.Fatalf("unpinned command: %+v", failure.Failure)
-			}
-			if !test.wantCommand && !strings.Contains(failure.Failure.Recovery, "~/.local/share/herdr-sbx/plugins/") {
-				t.Fatalf("missing retained root: %+v", failure.Failure)
-			}
+			require.True(t, errors.As(err, &failure), "missing structured failure: %v", err)
+			require.Equal(t, test.wantCommand, (failure.Failure.Command != ""), "repair command validity: %+v", failure.Failure)
+			require.False(t, test.wantCommand && !strings.Contains(failure.Failure.Command, strings.TrimSpace(string(head))), "unpinned command: %+v", failure.Failure)
+			require.False(t, !test.wantCommand && !strings.Contains(failure.Failure.Recovery, "~/.local/share/herdr-sbx/plugins/"), "missing retained root: %+v", failure.Failure)
 		})
 	}
 }

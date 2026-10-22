@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDetailsCachedServerVersionAndWidth(t *testing.T) {
@@ -22,24 +23,17 @@ func TestDetailsCachedServerVersionAndWidth(t *testing.T) {
 			r := m.rows[0]
 			now := time.Now().Add(-2 * time.Minute)
 			r.Status.GuestServer = &store.GuestServerObservation{Version: "0.9.2", ObservedAt: now, CheckedAt: now, Current: true}
-			if got := guestServerDescription(r); got != "herdr 0.9.2" {
-				t.Fatalf("current: %q", got)
+			{
+				got := guestServerDescription(r)
+				require.Equal(t, "herdr 0.9.2", got, "current: %q", got)
 			}
 			lines := m.sandboxDetails(r)
 			header := lines[0]
-			if width >= 60 && !strings.HasSuffix(ansi.Strip(header.text), " herdr 0.9.2 ╮") {
-				t.Fatalf("not in top-right badge: %q", header.text)
-			}
-			if !strings.Contains(ansi.Strip(header.text), "alpha") {
-				t.Fatalf("version displaced sandbox name: %q", header.text)
-			}
+			require.False(t, width >= 60 && !strings.HasSuffix(ansi.Strip(header.text), " herdr 0.9.2 ╮"), "not in top-right badge: %q", header.text)
+			require.Contains(t, ansi.Strip(header.text), "alpha", "version displaced sandbox name: %q", header.text)
 			for _, line := range lines {
-				if ansi.StringWidth(line.text) > width-4 {
-					t.Fatalf("overflow width %d: %q", width, line.text)
-				}
-				if noColor && strings.Contains(line.text, "\x1b[") {
-					t.Fatal("NO_COLOR contains styling")
-				}
+				require.False(t, ansi.StringWidth(line.text) > width-4, "overflow width %d: %q", width, line.text)
+				require.False(t, noColor && strings.Contains(line.text, "\x1b["), "NO_COLOR contains styling")
 			}
 			for _, state := range []string{"failed probe", "stopped", "stale", "old"} {
 				stale := r
@@ -55,22 +49,17 @@ func TestDetailsCachedServerVersionAndWidth(t *testing.T) {
 				case "old":
 					observed.CheckedAt = time.Now().Add(-16 * time.Minute)
 				}
-				if got := guestServerDescription(stale); got != "herdr 0.9.2" {
-					t.Fatalf("%s: %q", state, got)
+				{
+					got := guestServerDescription(stale)
+					require.Equal(t, "herdr 0.9.2", got, "%s: %q", state, got)
 				}
 			}
 			r.Status.GuestServer = nil
-			if guestServerDescription(r) != "" {
-				t.Fatal("invented version")
-			}
+			require.Equal(t, "", guestServerDescription(r), "invented version")
 			withoutVersion := m.sandboxDetails(r)
-			if strings.Contains(ansi.Strip(withoutVersion[0].text), "herdr") {
-				t.Fatal("unknown version has a border label")
-			}
+			require.NotContains(t, ansi.Strip(withoutVersion[0].text), "herdr", "unknown version has a border label")
 			r.Status.GuestServer = &store.GuestServerObservation{}
-			if guestServerDescription(r) != "" {
-				t.Fatal("empty cached version displayed")
-			}
+			require.Equal(t, "", guestServerDescription(r), "empty cached version displayed")
 		}
 	}
 }
@@ -82,9 +71,9 @@ func TestDetailsOverlongVersionKeepsBorderIntact(t *testing.T) {
 	r.Status.GuestServer = &store.GuestServerObservation{Version: strings.Repeat("1", 60)}
 	lines := m.sandboxDetails(r)
 	footer := ansi.Strip(lines[len(lines)-1].text)
-	if ansi.StringWidth(footer) != m.width-4 || !strings.HasSuffix(footer, "─╯") || strings.Contains(footer, "herdr") {
-		t.Fatalf("overlong version damaged footer: %q", footer)
-	}
+	require.False(t, ansi.StringWidth(footer) != m.width-4)
+	require.True(t, strings.HasSuffix(footer, "─╯"))
+	require.NotContains(t, footer, "herdr")
 }
 
 func TestDetailsObservationAgeStartsAfterTwoMinutes(t *testing.T) {
@@ -100,25 +89,19 @@ func TestDetailsObservationAgeStartsAfterTwoMinutes(t *testing.T) {
 		{2*time.Minute + time.Nanosecond, "2m ago"},
 		{5 * time.Minute, "5m ago"},
 	} {
-		if got := detailsObservationAge(now.Add(-tc.age), now); got != tc.want {
-			t.Fatalf("age %s: got %q, want %q", tc.age, got, tc.want)
-		}
+		got := detailsObservationAge(now.Add(-tc.age), now)
+		require.Equal(t, tc.want, got, "age %s: got %q, want %q", tc.age, got, tc.want)
 	}
-	if detailsObservationAge(time.Time{}, now) != "" {
-		t.Fatal("unknown observation age displayed")
-	}
+	require.Equal(t, "", detailsObservationAge(time.Time{}, now), "unknown observation age displayed")
 	// Keep relativeTime's other callers unchanged.
-	if relativeTime(now) != "just now" {
-		t.Fatal("shared relative time changed")
-	}
+	require.Equal(t, "just now", relativeTime(now), "shared relative time changed")
 	for _, width := range []int{36, 60, 110} {
 		m := modelFixture(t)
 		m.width = width
 		r := m.rows[0]
 		r.Status.ObservedAt = now
 		header := ansi.Strip(m.sandboxDetails(r)[0].text)
-		if strings.Contains(header, "just now") || !strings.Contains(header, "alpha (running)") {
-			t.Fatalf("width %d: header %q", width, header)
-		}
+		require.NotContains(t, header, "just now")
+		require.Contains(t, header, "alpha (running)")
 	}
 }

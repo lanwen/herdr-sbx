@@ -7,17 +7,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/lanwen/herdr-sbx/internal/guestplugins"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/lanwen/herdr-sbx/internal/guestplugins"
 	"github.com/lanwen/herdr-sbx/internal/herdr"
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 func boolPointer(v bool) *bool { return &v }
@@ -73,14 +74,13 @@ func TestNewDiscoveryDefaultsEnabledAndRemembersDisabledWithoutEntry(t *testing.
 	sb := sbx.Sandbox{ID: "one", Name: "demo", Status: "running"}
 	for _, choice := range []store.EnabledChoice{store.Enabled, store.Disabled} {
 		if choice == store.Disabled {
-			if err := store.SetEnabled("scope", "one", choice); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, store.SetEnabled("scope", "one", choice))
 		}
 		rows, err := observeManagement("scope", []sbx.Sandbox{sb}, nil, store.State{})
-		if err != nil || len(rows) != 1 || rows[0].Enabled != choice || rows[0].EntryPresent {
-			t.Fatalf("rows=%+v error=%v", rows, err)
-		}
+		require.NoError(t, err)
+		require.Len(t, rows, 1)
+		require.False(t, rows[0].Enabled != choice)
+		require.False(t, rows[0].EntryPresent)
 	}
 }
 
@@ -88,80 +88,70 @@ func TestAssociationUsesStableIdentityAndNotLabel(t *testing.T) {
 	sb := sbx.Sandbox{ID: "one", Name: "demo"}
 	state := store.State{Scopes: map[string][]store.Tracked{"scope": {{SandboxID: "one", ProfileID: "machine", Target: "demo.sbx", Label: "old"}}}}
 	m := herdr.Machine{ID: "machine", Label: "external label", Target: "demo.sbx", Session: "default"}
-	if found, issue := associatedMachine("scope", sb, []herdr.Machine{m}, state); found == nil || issue != "" {
-		t.Fatalf("rename broke association: %v %s", found, issue)
+	{
+		found, issue := associatedMachine("scope", sb, []herdr.Machine{m}, state)
+		require.NotNil(t, found)
+		require.EqualValues(t, "", issue)
 	}
 	for _, other := range []herdr.Machine{{ID: "new", Target: "demo.sbx", Session: "default"}, {ID: "machine", Target: "demo.sbx", Session: "other"}} {
-		if found, issue := associatedMachine("scope", sb, []herdr.Machine{other}, state); found != nil || issue == "" {
-			t.Fatalf("unsafe association: %v %s", found, issue)
+		{
+			found, issue := associatedMachine("scope", sb, []herdr.Machine{other}, state)
+			require.Nil(t, found)
+			require.NotEqualValues(t, "", issue)
 		}
 	}
-	if found, issue := associatedMachine("scope", sb, []herdr.Machine{m, m}, state); found != nil || issue == "" {
-		t.Fatal("duplicate target accepted")
+	{
+		found, issue := associatedMachine("scope", sb, []herdr.Machine{m, m}, state)
+		require.Nil(t, found)
+		require.NotEqualValues(t, "", issue)
 	}
 }
 
 func TestStoppedEnableWithoutEntryStaysDisabledQuietly(t *testing.T) {
 	f, scope, _, calls := newManagementFixture(t, "stopped")
-	if err := store.SetWorkerControl(true); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SetWorkerControl(true))
 	err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled)
-	if err != nil {
-		t.Fatalf("error=%v", err)
-	}
+	require.NoError(t, err, "error=%v", err)
 	choices, _ := store.ReadEnabled()
-	if choices[store.StatusKey(scope, "one")] != store.Disabled {
-		t.Fatal("unsupported enable was retained")
-	}
+	require.Equal(t, store.EnabledChoice(store.Disabled), choices[store.StatusKey(scope, "one")], "unsupported enable was retained")
 	for _, call := range *calls {
-		if strings.Contains(call, "machine add") || strings.HasPrefix(call, "ssh -o") || strings.Contains(call, "sbx exec") {
-			t.Fatalf("wake-capable command: %s", call)
-		}
+		require.NotContains(t, call, "machine add")
+		require.False(t, strings.HasPrefix(call, "ssh -o"))
+		require.NotContains(t, call, "sbx exec")
 	}
 	status, _ := store.ReadStatusStore()
-	if len(status.Errors) != 0 {
-		t.Fatalf("unexpected diagnostic: %+v", status.Errors)
-	}
-	if row := status.Sandboxes[store.StatusKey(scope, "one")]; row.Connection != "stopped" || row.Enabled != store.Disabled {
-		t.Fatalf("unsupported stopped state: %+v", row)
-	}
+	require.Len(t, status.Errors, 0, "unexpected diagnostic: %+v", status.Errors)
+
+	row := status.Sandboxes[store.StatusKey(scope, "one")]
+	require.EqualValues(t, "stopped", row.Connection)
+	require.False(t, row.Enabled != store.Disabled)
 }
 
 func TestDisableRemoveEnablePreservesDisabledAndObservedLabel(t *testing.T) {
 	f, scope, machines, _ := newManagementFixture(t, "stopped")
 	*machines = []herdr.Machine{{ID: "machine", Label: "Desk", Target: "demo.sbx", Session: "default", Enabled: boolPointer(true)}}
-	if err := store.SetWorkerControl(true); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.service.SetEnabled(context.Background(), scope, "one", store.Disabled); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SetWorkerControl(true))
+	require.NoError(t, f.service.SetEnabled(context.Background(), scope, "one", store.Disabled))
 	rows, err := f.service.SandboxRows(context.Background(), "/tmp/test-sandboxd.sock")
-	if err != nil || !rows[0].EntryPresent || rows[0].Label != "Desk" || rows[0].NativeEnabled == nil || *rows[0].NativeEnabled {
-		t.Fatalf("rows=%+v err=%v", rows, err)
-	}
-	if err := f.service.RemoveEntry(context.Background(), scope, "one"); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.service.CaptureBaseline(context.Background(), "/tmp/test-sandboxd.sock"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.True(t, rows[0].EntryPresent)
+	require.EqualValues(t, "Desk", rows[0].Label)
+	require.NotNil(t, rows[0].NativeEnabled)
+	require.False(t, *rows[0].NativeEnabled)
+	require.NoError(t, f.service.RemoveEntry(context.Background(), scope, "one"))
+	require.NoError(t, f.service.CaptureBaseline(context.Background(), "/tmp/test-sandboxd.sock"))
 	choices, _ := store.ReadEnabled()
-	if choices[store.StatusKey(scope, "one")] != store.Disabled {
-		t.Fatal("removed sandbox rediscovered as enabled")
-	}
-	if err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled); err != nil {
-		t.Fatalf("unsafe re-enable: %v", err)
+	require.Equal(t, store.EnabledChoice(store.Disabled), choices[store.StatusKey(scope, "one")], "removed sandbox rediscovered as enabled")
+	{
+		err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled)
+		require.NoError(t, err, "unsafe re-enable: %v", err)
 	}
 }
 
 func TestRemoveFailureKeepsEntryAndRetry(t *testing.T) {
 	f, scope, machines, _ := newManagementFixture(t, "running")
 	*machines = []herdr.Machine{{ID: "machine", Label: "Desk", Target: "demo.sbx", Session: "default", Enabled: boolPointer(false)}}
-	if err := store.SetEnabled(scope, "one", store.Disabled); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SetEnabled(scope, "one", store.Disabled))
 	execute := f.runner.Execute
 	f.runner.Execute = func(ctx context.Context, c process.Command) (string, error) {
 		if strings.Join(c.Args, " ") == "machine remove machine" {
@@ -170,43 +160,33 @@ func TestRemoveFailureKeepsEntryAndRetry(t *testing.T) {
 		return execute(ctx, c)
 	}
 	f.rebuildClients()
-	if err := f.service.RemoveEntry(context.Background(), scope, "one"); err == nil {
-		t.Fatal("hidden failure")
-	}
+
+	err := f.service.RemoveEntry(context.Background(), scope, "one")
+	require.Error(t, err, "hidden failure")
+
 	status, _ := store.ReadStatusStore()
 	row := status.Sandboxes[store.StatusKey(scope, "one")]
-	if row.Label != "Desk" || !row.EntryPresent {
-		t.Fatalf("lost actual entry: %+v", row)
-	}
+	require.EqualValues(t, "Desk", row.Label)
+	require.True(t, row.EntryPresent)
 }
 
 func TestBaselineAcceptsExternalNativeStateAndLabelWhileStopped(t *testing.T) {
 	f, scope, machines, _ := newManagementFixture(t, "stopped")
 	*machines = []herdr.Machine{{ID: "machine", Label: "External", Target: "demo.sbx", Session: "default", Enabled: boolPointer(false)}}
 	item := store.Tracked{SandboxID: "one", ProfileID: "machine", Target: "demo.sbx", Label: "Old", PendingLabel: "cancelled", LastObservedNativeEnabled: boolPointer(true)}
-	if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {item}}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SetEnabled(scope, "one", store.Enabled); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.service.CaptureBaseline(context.Background(), "/tmp/test-sandboxd.sock"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {item}}}))
+	require.NoError(t, store.SetEnabled(scope, "one", store.Enabled))
+	require.NoError(t, f.service.CaptureBaseline(context.Background(), "/tmp/test-sandboxd.sock"))
 	choices, _ := store.ReadEnabled()
 	state, _ := store.LoadState()
 	saved := state.Scopes[scope][0]
-	if choices[store.StatusKey(scope, "one")] != store.Disabled || saved.Label != "External" || saved.PendingLabel != "" {
-		t.Fatalf("baseline choice=%v state=%+v", choices, saved)
-	}
+	require.False(t, choices[store.StatusKey(scope, "one")] != store.Disabled)
+	require.EqualValues(t, "External", saved.Label)
+	require.EqualValues(t, "", saved.PendingLabel)
 	(*machines)[0].Enabled = boolPointer(true)
-	if err := f.service.CaptureBaseline(context.Background(), "/tmp/test-sandboxd.sock"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, f.service.CaptureBaseline(context.Background(), "/tmp/test-sandboxd.sock"))
 	choices, _ = store.ReadEnabled()
-	if choices[store.StatusKey(scope, "one")] != store.Enabled {
-		t.Fatal("external native enable was not accepted")
-	}
+	require.Equal(t, store.EnabledChoice(store.Enabled), choices[store.StatusKey(scope, "one")], "external native enable was not accepted")
 }
 
 func TestRenameWorksWhileDisabledAndManagementOff(t *testing.T) {
@@ -214,25 +194,18 @@ func TestRenameWorksWhileDisabledAndManagementOff(t *testing.T) {
 	*machines = []herdr.Machine{{ID: "machine", Label: "Old", Target: "demo.sbx", Session: "default", Enabled: boolPointer(false)}}
 	_ = store.SetEnabled(scope, "one", store.Disabled)
 	_ = store.SetWorkerControl(true)
-	if err := f.service.Rename(context.Background(), scope, "one", "New"); err != nil {
-		t.Fatal(err)
-	}
-	if (*machines)[0].Label != "New" {
-		t.Fatal("rename not applied")
-	}
+	require.NoError(t, f.service.Rename(context.Background(), scope, "one", "New"))
+	require.Equal(t, "New", (*machines)[0].Label, "rename not applied")
 }
 
 func TestManagementOffRejectsAutomaticWorkBeforeObservation(t *testing.T) {
 	f, _, _, calls := newManagementFixture(t, "running")
-	if err := store.SetWorkerControl(true); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.service.ReconcileContext(context.Background(), nil); !errors.Is(err, context.Canceled) {
-		t.Fatalf("automatic work was not cancelled: %v", err)
-	}
-	if len(*calls) != 0 {
-		t.Fatalf("OFF issued commands: %v", *calls)
-	}
+	require.NoError(t, store.SetWorkerControl(true))
+
+	err := f.service.ReconcileContext(context.Background(), nil)
+	require.ErrorIs(t, err, context.Canceled, "automatic work was not cancelled: %v", err)
+
+	require.Len(t, *calls, 0, "OFF issued commands: %v", *calls)
 }
 
 func TestUnconfirmedNativeDisableCannotAuthorizeRemoval(t *testing.T) {
@@ -241,23 +214,23 @@ func TestUnconfirmedNativeDisableCannotAuthorizeRemoval(t *testing.T) {
 			f, scope, machines, calls := newManagementFixture(t, "running")
 			*machines = []herdr.Machine{{ID: "machine", Label: "Desk", Target: "demo.sbx", Session: "default", Enabled: native}}
 			_ = store.SetEnabled(scope, "one", store.Disabled)
-			if err := f.service.RemoveEntry(context.Background(), scope, "one"); err == nil {
-				t.Fatal("unconfirmed disable accepted")
-			}
+
+			err := f.service.RemoveEntry(context.Background(), scope, "one")
+			require.Error(t, err, "unconfirmed disable accepted")
+
 			for _, call := range *calls {
-				if strings.Contains(call, "machine remove") {
-					t.Fatalf("unsafe remove: %s", call)
-				}
+				require.NotContains(t, call, "machine remove", "unsafe remove: %s", call)
 			}
 		})
 	}
 }
 
 func TestCatalogFailurePreservesLastKnownLabel(t *testing.T) {
-	f, scope, machines, _ := newManagementFixture(t, "running")
+	f, _, machines, _ := newManagementFixture(t, "running")
 	*machines = []herdr.Machine{{ID: "machine", Label: "Desk", Target: "demo.sbx", Session: "default", Enabled: boolPointer(true)}}
-	if _, err := f.service.SandboxRows(context.Background(), "/tmp/test-sandboxd.sock"); err != nil {
-		t.Fatal(err)
+	{
+		_, err := f.service.SandboxRows(context.Background(), "/tmp/test-sandboxd.sock")
+		require.NoError(t, err)
 	}
 	execute := f.runner.Execute
 	f.runner.Execute = func(ctx context.Context, c process.Command) (string, error) {
@@ -268,9 +241,12 @@ func TestCatalogFailurePreservesLastKnownLabel(t *testing.T) {
 	}
 	f.rebuildClients()
 	rows, err := f.service.SandboxRows(context.Background(), "/tmp/test-sandboxd.sock")
-	if err == nil || len(rows) != 1 || rows[0].Label != "Desk" || !rows[0].EntryPresent || !rows[0].Status.Stale || rows[0].AssociationIssue == "" {
-		t.Fatalf("rows=%+v err=%v scope=%s", rows, err, scope)
-	}
+	require.Error(t, err)
+	require.Len(t, rows, 1)
+	require.EqualValues(t, "Desk", rows[0].Label)
+	require.True(t, rows[0].EntryPresent)
+	require.True(t, rows[0].Status.Stale)
+	require.NotEqualValues(t, "", rows[0].AssociationIssue)
 }
 
 func TestPartialRenameAcknowledgementUsesActualResult(t *testing.T) {
@@ -285,37 +261,26 @@ func TestPartialRenameAcknowledgementUsesActualResult(t *testing.T) {
 		return out, err
 	}
 	f.rebuildClients()
-	if err := f.service.Rename(context.Background(), scope, "one", "New"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, f.service.Rename(context.Background(), scope, "one", "New"))
 	state, _ := store.LoadState()
-	if state.Scopes[scope][0].Label != "New" {
-		t.Fatal("actual rename not retained")
-	}
+	require.Equal(t, "New", state.Scopes[scope][0].Label, "actual rename not retained")
 }
 
 func TestVerifiedPartialAddRetainsCatalogIdentityOnResume(t *testing.T) {
 	f, scope, machines, calls := newManagementFixture(t, "running")
 	*machines = []herdr.Machine{{ID: "machine", Label: "Desk", Target: "demo.sbx", Session: "default", Enabled: boolPointer(true)}}
-	if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {{SandboxID: "one", Target: "demo.sbx", Label: "Intent", Pending: true}}}}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {{SandboxID: "one", Target: "demo.sbx", Label: "Intent", Pending: true}}}}))
 	_ = store.SetEnabled(scope, "one", store.Enabled)
-	if err := f.service.CaptureBaseline(context.Background(), "/tmp/test-sandboxd.sock"); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.service.ReconcileContext(context.Background(), io.Discard); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, f.service.CaptureBaseline(context.Background(), "/tmp/test-sandboxd.sock"))
+	require.NoError(t, f.service.ReconcileContext(context.Background(), io.Discard))
 	state, _ := store.LoadState()
 	item := state.Scopes[scope][0]
-	if item.ProfileID != "machine" || item.Target != "demo.sbx" || item.Pending || item.Label != "Desk" {
-		t.Fatalf("partial add identity lost: %+v", item)
-	}
+	require.EqualValues(t, "machine", item.ProfileID)
+	require.EqualValues(t, "demo.sbx", item.Target)
+	require.False(t, item.Pending)
+	require.EqualValues(t, "Desk", item.Label)
 	for _, call := range *calls {
-		if strings.Contains(call, "machine add") {
-			t.Fatalf("duplicate add: %s", call)
-		}
+		require.NotContains(t, call, "machine add", "duplicate add: %s", call)
 	}
 }
 
@@ -345,9 +310,9 @@ func TestCurrentStateReplacesStaleReady(t *testing.T) {
 				machines = []herdr.Machine{{ID: "machine", Target: "demo.sbx", Session: "default", Label: "Desk", Enabled: test.native}}
 			}
 			rows, err := observeManagement("scope", []sbx.Sandbox{sb}, machines, store.State{})
-			if err != nil || rows[0].Status.Connection != test.want || rows[0].Status.Detail == "old ready" {
-				t.Fatalf("row=%+v err=%v", rows, err)
-			}
+			require.NoError(t, err)
+			require.False(t, rows[0].Status.Connection != test.want)
+			require.NotEqualValues(t, "old ready", rows[0].Status.Detail)
 		})
 	}
 }
@@ -357,26 +322,21 @@ func TestDisableDuringMissingEntryEnablePreventsAdd(t *testing.T) {
 	execute := f.runner.Execute
 	f.runner.Execute = func(ctx context.Context, c process.Command) (string, error) {
 		if c.Name == "ssh" && strings.HasSuffix(strings.Join(c.Args, " "), remoteHerdrStatusShell()) {
-			if err := store.SetEnabled(scope, "one", store.Disabled); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, store.SetEnabled(scope, "one", store.Disabled))
 			return remoteHerdrOnPath + "\nherdr 0.9.3", nil
 		}
 		return execute(ctx, c)
 	}
 	f.rebuildClients()
-	if err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled); err == nil {
-		t.Fatal("cancelled Enable claimed success")
-	}
+
+	err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled)
+	require.Error(t, err, "cancelled Enable claimed success")
+
 	for _, call := range *calls {
-		if strings.Contains(call, "machine add") {
-			t.Fatalf("disabled sandbox added: %s", call)
-		}
+		require.NotContains(t, call, "machine add", "disabled sandbox added: %s", call)
 	}
 	choices, _ := store.ReadEnabled()
-	if choices[store.StatusKey(scope, "one")] != store.Disabled {
-		t.Fatal("later Disable lost")
-	}
+	require.Equal(t, store.EnabledChoice(store.Disabled), choices[store.StatusKey(scope, "one")], "later Disable lost")
 }
 
 func TestDisableDuringFixDownloadPreventsTransferAndHandoff(t *testing.T) {
@@ -408,16 +368,14 @@ func TestDisableDuringFixDownloadPreventsTransferAndHandoff(t *testing.T) {
 			raw, _ := json.Marshal(herdrRelease{Version: "0.9.3", Assets: map[string]string{"linux-x86_64": "https://github.com/herdrdev/herdr/releases/download/v0.9.3/herdr-linux-x86_64"}, SHA256: map[string]string{"linux-x86_64": hex.EncodeToString(digest[:])}})
 			body = string(raw)
 		} else {
-			if err := store.SetEnabled(scope, "sandbox-1", store.Disabled); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, store.SetEnabled(scope, "sandbox-1", store.Disabled))
 		}
 		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
 	})
 	err := f.service.FixGuestHerdr(context.Background(), io.Discard, scope, "/tmp/fix-herdr.sock", "sandbox-1", "demo", "herdr 0.9.3")
-	if !errors.Is(err, context.Canceled) || transfers != 0 || *handoffs != 0 {
-		t.Fatalf("fix=%v transfers=%d handoffs=%d", err, transfers, *handoffs)
-	}
+	require.ErrorIs(t, err, context.Canceled)
+	require.EqualValues(t, 0, transfers)
+	require.EqualValues(t, 0, *handoffs)
 }
 
 func TestBaselineCannotOverwriteNewerExplicitDisable(t *testing.T) {
@@ -427,24 +385,16 @@ func TestBaselineCannotOverwriteNewerExplicitDisable(t *testing.T) {
 	execute := f.runner.Execute
 	f.runner.Execute = func(ctx context.Context, c process.Command) (string, error) {
 		if strings.Join(c.Args, " ") == "machine list --json" {
-			if err := store.SetEnabled(scope, "one", store.Disabled); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, store.SetEnabled(scope, "one", store.Disabled))
 		}
 		return execute(ctx, c)
 	}
 	f.rebuildClients()
-	if err := f.service.CaptureBaseline(context.Background(), "/tmp/test-sandboxd.sock"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, f.service.CaptureBaseline(context.Background(), "/tmp/test-sandboxd.sock"))
 	choices, _ := store.ReadEnabled()
-	if choices[store.StatusKey(scope, "one")] != store.Disabled {
-		t.Fatal("baseline overwrote newer Disable")
-	}
+	require.Equal(t, store.EnabledChoice(store.Disabled), choices[store.StatusKey(scope, "one")], "baseline overwrote newer Disable")
 	state, _ := store.LoadState()
-	if state.Scopes[scope][0].Label != "External" {
-		t.Fatal("independent current label was lost")
-	}
+	require.Equal(t, "External", state.Scopes[scope][0].Label, "independent current label was lost")
 }
 
 func TestLatestEnabledCommandWinsDuringOlderHostObservation(t *testing.T) {
@@ -464,25 +414,20 @@ func TestLatestEnabledCommandWinsDuringOlderHostObservation(t *testing.T) {
 			f.runner.Execute = func(ctx context.Context, c process.Command) (string, error) {
 				if !injected && strings.Join(c.Args, " ") == "machine list --json" {
 					injected = true
-					if err := store.SetEnabled(scope, "one", test.newer); err != nil {
-						t.Fatal(err)
-					}
+					require.NoError(t, store.SetEnabled(scope, "one", test.newer))
 				}
 				return execute(ctx, c)
 			}
 			f.rebuildClients()
 			err := f.service.SetEnabled(context.Background(), scope, "one", test.older)
-			if !errors.Is(err, context.Canceled) {
-				t.Fatalf("superseded action=%v", err)
-			}
+			require.ErrorIs(t, err, context.Canceled, "superseded action=%v", err)
 			choices, _ := store.ReadEnabled()
-			if choices[store.StatusKey(scope, "one")] != test.newer {
-				t.Fatal("older action overwrote newer choice")
-			}
+			require.Equal(t, test.newer, choices[store.StatusKey(scope, "one")], "older action overwrote newer choice")
 			for _, call := range *calls {
-				if strings.Contains(call, "machine enable") || strings.Contains(call, "machine disable") || strings.Contains(call, "machine add") || strings.HasPrefix(call, "ssh -o") {
-					t.Fatalf("superseded mutation: %s", call)
-				}
+				require.NotContains(t, call, "machine enable")
+				require.NotContains(t, call, "machine disable")
+				require.NotContains(t, call, "machine add")
+				require.False(t, strings.HasPrefix(call, "ssh -o"))
 			}
 		})
 	}
@@ -499,17 +444,11 @@ func TestExplicitEnableKeepsNativeActionWhenRuntimeBecomesStopped(t *testing.T) 
 		return execute(ctx, c)
 	}
 	f.rebuildClients()
-	if err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, f.service.SetEnabled(context.Background(), scope, "one", store.Enabled))
 	for _, call := range *calls {
-		if strings.HasPrefix(call, "ssh -o") {
-			t.Fatalf("direct guest connection to stopped sandbox: %s", call)
-		}
+		require.False(t, strings.HasPrefix(call, "ssh -o"), "direct guest connection to stopped sandbox: %s", call)
 	}
-	if !*(*machines)[0].Enabled {
-		t.Fatal("explicit Enable did not enable the native connection")
-	}
+	require.True(t, *(*machines)[0].Enabled, "explicit Enable did not enable the native connection")
 }
 
 func TestSyntheticStatusClearsAfterEnabledRunningObservation(t *testing.T) {
@@ -519,11 +458,11 @@ func TestSyntheticStatusClearsAfterEnabledRunningObservation(t *testing.T) {
 			row := SandboxRow{Enabled: store.Enabled, EntryPresent: true, NativeEnabled: boolPointer(true), Sandbox: sbx.Sandbox{Status: "running"}}
 			applyObservedStatus(&status, row)
 			if previous == "workspace setup required" {
-				if status.Connection != previous || status.Detail != "old detail" {
-					t.Fatal("genuine setup failure erased")
-				}
-			} else if status.Connection != "registered" || status.Detail == "old detail" {
-				t.Fatalf("stale synthetic status: %+v", status)
+				require.False(t, status.Connection != previous)
+				require.EqualValues(t, "old detail", status.Detail)
+			} else {
+				require.EqualValues(t, "registered", status.Connection)
+				require.NotEqualValues(t, "old detail", status.Detail)
 			}
 		})
 	}
@@ -534,24 +473,22 @@ func TestUnknownRuntimeIsNeverReportedStopped(t *testing.T) {
 		t.Run(runtime, func(t *testing.T) {
 			f, scope, _, calls := newManagementFixture(t, runtime)
 			var out strings.Builder
-			if err := f.service.ReconcileContext(context.Background(), &out); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, f.service.ReconcileContext(context.Background(), &out))
 			status, _ := store.ReadStatusStore()
 			row := status.Sandboxes[store.StatusKey(scope, "one")]
-			if strings.Contains(strings.ToLower(row.Detail), "stopped") || strings.Contains(out.String(), "cannot add a stopped") {
-				t.Fatalf("invented stopped state: %+v\n%s", row, out.String())
-			}
-			if row.Connection == "ready" || row.Connection == "waiting for start" {
-				t.Fatalf("invented confirmed runtime: %+v", row)
-			}
-			if err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled); err == nil || strings.Contains(err.Error(), "R0008") || strings.Contains(strings.ToLower(err.Error()), "stopped") {
-				t.Fatalf("explicit Enable misreported runtime: %v", err)
-			}
+			require.NotContains(t, strings.ToLower(row.Detail), "stopped")
+			require.NotContains(t, out.String(), "cannot add a stopped")
+			require.NotEqualValues(t, "ready", row.Connection)
+			require.NotEqualValues(t, "waiting for start", row.Connection)
+
+			err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled)
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), "R0008")
+			require.NotContains(t, strings.ToLower(err.Error()), "stopped")
+
 			for _, call := range *calls {
-				if strings.Contains(call, "machine add") || strings.HasPrefix(call, "ssh -o") {
-					t.Fatalf("unknown runtime connected: %s", call)
-				}
+				require.NotContains(t, call, "machine add")
+				require.False(t, strings.HasPrefix(call, "ssh -o"))
 			}
 		})
 	}
@@ -562,25 +499,19 @@ func TestRemoveEnablePreservesCompletedGuestSetup(t *testing.T) {
 	f.inventory = `[{"uuid":"one","name":"demo","status":"running","workspace":"/workspace/demo"}]`
 	*machines = []herdr.Machine{{ID: "machine", Label: "Desk", Target: "demo.sbx", Session: "default", Enabled: boolPointer(false)}}
 	fingerprint, err := guestplugins.DesiredFingerprint(context.Background(), f.service.herdr, scope, "one")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	checked := time.Now()
 	sync := &store.GuestSyncObservation{Fingerprint: "demo.sbx\x00one\x00" + fingerprint, CheckedAt: checked, Status: "ready", Detail: "already registered"}
 	item := store.Tracked{SandboxID: "one", ProfileID: "machine", Target: "demo.sbx", Label: "Desk", ProjectWorkspaceDone: true, GuestSync: sync}
-	if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {item}}}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {item}}}))
 	_ = store.SetEnabled(scope, "one", store.Disabled)
 	_ = store.RecordGuestServerObservation(scope, sbx.Sandbox{ID: "one", Name: "demo", Status: "running"}, true, "0.9.3")
-	if err := f.service.RemoveEntry(context.Background(), scope, "one"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, f.service.RemoveEntry(context.Background(), scope, "one"))
 	removed, _ := store.LoadState()
 	kept := removed.Scopes[scope][0]
-	if kept.ProfileID != "" || !kept.ProjectWorkspaceDone || kept.GuestSync == nil {
-		t.Fatalf("guest completion lost on removal: %+v", kept)
-	}
+	require.EqualValues(t, "", kept.ProfileID)
+	require.True(t, kept.ProjectWorkspaceDone)
+	require.NotNil(t, kept.GuestSync)
 	execute := f.runner.Execute
 	f.runner.Execute = func(ctx context.Context, c process.Command) (string, error) {
 		call := c.Name + " " + strings.Join(c.Args, " ")
@@ -596,18 +527,17 @@ func TestRemoveEnablePreservesCompletedGuestSetup(t *testing.T) {
 		return execute(ctx, c)
 	}
 	f.rebuildClients()
-	if err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, f.service.SetEnabled(context.Background(), scope, "one", store.Enabled))
 	state, _ := store.LoadState()
 	restored := state.Scopes[scope][0]
-	if !restored.ProjectWorkspaceDone || restored.GuestSync == nil || !restored.GuestSync.CheckedAt.Equal(checked) {
-		t.Fatalf("completed guest setup repeated: %+v", restored)
-	}
+	require.True(t, restored.ProjectWorkspaceDone)
+	require.NotNil(t, restored.GuestSync)
+	require.True(t, restored.GuestSync.CheckedAt.Equal(checked))
 	for _, call := range *calls {
-		if strings.Contains(call, "pane list") || strings.Contains(call, "workspace create") || strings.Contains(call, "server start") || strings.Contains(call, "status server --json") {
-			t.Fatalf("completed workspace or audit repeated: %s", call)
-		}
+		require.NotContains(t, call, "pane list")
+		require.NotContains(t, call, "workspace create")
+		require.NotContains(t, call, "server start")
+		require.NotContains(t, call, "status server --json")
 	}
 }
 
@@ -620,21 +550,18 @@ func TestVerifiedAssociationClearsObsoleteConflict(t *testing.T) {
 			_ = store.SetRegistrationError(store.CodeOwnershipConflict, store.StatusKey("scope", "one"), "old association warning")
 			machines := []herdr.Machine{{ID: "machine", Target: "demo.sbx", Session: "default", Label: "Desk", Enabled: boolPointer(true)}}
 			rows, err := observeManagement("scope", []sbx.Sandbox{sb}, machines, store.State{})
-			if err != nil || rows[0].Status.Connection != "registered" || rows[0].AssociationIssue != "" {
-				t.Fatalf("row=%+v err=%v", rows, err)
-			}
+			require.NoError(t, err)
+			require.EqualValues(t, "registered", rows[0].Status.Connection)
+			require.EqualValues(t, "", rows[0].AssociationIssue)
 			status, _ := store.ReadStatusStore()
-			if len(status.Errors) != 0 {
-				t.Fatalf("stale conflict: %+v", status.Errors)
-			}
+			require.Len(t, status.Errors, 0, "stale conflict: %+v", status.Errors)
 			rows, err = observeManagement("scope", []sbx.Sandbox{sb}, append(machines, machines[0]), store.State{})
-			if err != nil || rows[0].AssociationIssue != "More than one herdr entry uses this sandbox target." {
-				t.Fatalf("real conflict hidden: %+v %v", rows, err)
-			}
+			require.NoError(t, err)
+			require.EqualValues(t, "More than one herdr entry uses this sandbox target.", rows[0].AssociationIssue)
 			rows, err = observeManagement("scope", []sbx.Sandbox{sb}, nil, store.State{})
-			if err != nil || rows[0].Status.Connection != "not registered" || rows[0].AssociationIssue != "" {
-				t.Fatalf("resolved absent-entry conflict: %+v %v", rows, err)
-			}
+			require.NoError(t, err)
+			require.EqualValues(t, "not registered", rows[0].Status.Connection)
+			require.EqualValues(t, "", rows[0].AssociationIssue)
 		})
 	}
 }
@@ -645,22 +572,17 @@ func TestStoppedDiscoveryDoesNotEnableOnLaterStart(t *testing.T) {
 	for _, runtime := range []string{"stopped", "stopped", "running"} {
 		f.inventory = fmt.Sprintf(`[{"uuid":"one","name":"demo","status":%q}]`, runtime)
 		var out strings.Builder
-		if err := f.service.ReconcileContext(context.Background(), &out); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, f.service.ReconcileContext(context.Background(), &out))
 		status, _ := store.ReadStatusStore()
 		row := status.Sandboxes[store.StatusKey(scope, "one")]
-		if row.Enabled != store.Disabled || len(status.Errors) != 0 {
-			t.Fatalf("row=%+v errors=%+v", row, status.Errors)
-		}
-		if runtime == "stopped" && row.Connection != "stopped" {
-			t.Fatalf("row=%+v", row)
-		}
+		require.False(t, row.Enabled != store.Disabled)
+		require.Len(t, status.Errors, 0)
+		require.False(t, runtime == "stopped" && row.Connection != "stopped", "row=%+v", row)
 	}
 	for _, call := range *calls {
-		if strings.Contains(call, "machine add") || strings.HasPrefix(call, "ssh -o") || strings.Contains(call, "sbx exec") {
-			t.Fatalf("unexpected automatic work: %s", call)
-		}
+		require.NotContains(t, call, "machine add")
+		require.False(t, strings.HasPrefix(call, "ssh -o"))
+		require.NotContains(t, call, "sbx exec")
 	}
 }
 
@@ -669,36 +591,29 @@ func TestObservationRetainsCurrentCreationLabelCollision(t *testing.T) {
 	sb := sbx.Sandbox{ID: "one", Name: "demo", Status: "running"}
 	key := store.StatusKey("scope", "one")
 	detail := "Another herdr entry already uses this label. Rename that entry before creating one for this sandbox."
-	if err := store.RecordSandboxStatus("scope", sb, "association warning", detail, false); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SetRegistrationError(store.CodeOwnershipConflict, key, detail); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.RecordSandboxStatus("scope", sb, "association warning", detail, false))
+	require.NoError(t, store.SetRegistrationError(store.CodeOwnershipConflict, key, detail))
 	machines := []herdr.Machine{{ID: "other", Label: sandboxMachineLabel(sb.Name), Target: "other.sbx", Session: "default", Enabled: boolPointer(true)}}
 	rows, err := observeManagement("scope", []sbx.Sandbox{sb}, machines, store.State{})
-	if err != nil || rows[0].Status.Connection != "label already in use" || rows[0].EntryPresent {
-		t.Fatalf("rows=%+v err=%v", rows, err)
-	}
+	require.NoError(t, err)
+	require.EqualValues(t, "label already in use", rows[0].Status.Connection)
+	require.False(t, rows[0].EntryPresent)
 	status, err := store.ReadStatusStore()
-	if err != nil || len(status.Errors) != 1 {
-		t.Fatalf("current creation conflict cleared: %+v %v", status.Errors, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, status.Errors, 1)
 	machines = append(machines, herdr.Machine{ID: "machine", Label: "external label", Target: "demo.sbx", Session: "default", Enabled: boolPointer(true)})
 	rows, err = observeManagement("scope", []sbx.Sandbox{sb}, machines, store.State{})
-	if err != nil || rows[0].Status.Connection != "registered" || !rows[0].EntryPresent {
-		t.Fatalf("new entry did not resolve collision: %+v %v", rows, err)
-	}
+	require.NoError(t, err)
+	require.EqualValues(t, "registered", rows[0].Status.Connection)
+	require.True(t, rows[0].EntryPresent)
 	machines = machines[:1]
 	machines[0].Label = "renamed"
 	rows, err = observeManagement("scope", []sbx.Sandbox{sb}, machines, store.State{})
-	if err != nil || rows[0].Status.Connection != "not registered" {
-		t.Fatalf("resolved collision retained: %+v %v", rows, err)
-	}
+	require.NoError(t, err)
+	require.EqualValues(t, "not registered", rows[0].Status.Connection)
 	status, err = store.ReadStatusStore()
-	if err != nil || len(status.Errors) != 0 {
-		t.Fatalf("resolved diagnostic retained: %+v %v", status.Errors, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, status.Errors, 0)
 }
 
 func TestExplicitEnableStoppedExistingEntryEnablesNativeConnection(t *testing.T) {
@@ -706,32 +621,19 @@ func TestExplicitEnableStoppedExistingEntryEnablesNativeConnection(t *testing.T)
 		t.Run(fmt.Sprintf("management_off_%t", managementOff), func(t *testing.T) {
 			f, scope, machines, calls := newManagementFixture(t, "stopped")
 			*machines = []herdr.Machine{{ID: "machine", Label: "External", Target: "demo.sbx", Session: "default", Enabled: boolPointer(false)}}
-			if err := store.SetWorkerControl(managementOff); err != nil {
-				t.Fatal(err)
-			}
-			if err := store.SetEnabled(scope, "one", store.Disabled); err != nil {
-				t.Fatal(err)
-			}
-			if err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled); err != nil {
-				t.Fatal(err)
-			}
-			if !*(*machines)[0].Enabled {
-				t.Fatal("explicit Enable left the native herdr entry disabled")
-			}
-			if err := store.SetWorkerControl(false); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, store.SetWorkerControl(managementOff))
+			require.NoError(t, store.SetEnabled(scope, "one", store.Disabled))
+			require.NoError(t, f.service.SetEnabled(context.Background(), scope, "one", store.Enabled))
+			require.True(t, *(*machines)[0].Enabled, "explicit Enable left the native herdr entry disabled")
+			require.NoError(t, store.SetWorkerControl(false))
 			var output strings.Builder
-			if err := f.service.ReconcileContext(context.Background(), &output); err != nil {
-				t.Fatal(err)
-			}
-			if !*(*machines)[0].Enabled {
-				t.Fatal("reconciliation undid explicit Enable while sandbox stayed stopped")
-			}
+			require.NoError(t, f.service.ReconcileContext(context.Background(), &output))
+			require.True(t, *(*machines)[0].Enabled, "reconciliation undid explicit Enable while sandbox stayed stopped")
 			for _, call := range *calls {
-				if strings.Contains(call, "machine disable") || strings.Contains(call, "machine add") || strings.HasPrefix(call, "ssh -o") || strings.Contains(call, "sbx exec") {
-					t.Fatalf("unexpected stopped-sandbox operation: %s", call)
-				}
+				require.NotContains(t, call, "machine disable")
+				require.NotContains(t, call, "machine add")
+				require.False(t, strings.HasPrefix(call, "ssh -o"))
+				require.NotContains(t, call, "sbx exec")
 			}
 		})
 	}
@@ -750,22 +652,15 @@ func TestStoppedReconciliationPreservesEnabledAndRetriesDisabled(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f, scope, machines, calls := newManagementFixture(t, "stopped")
 			*machines = []herdr.Machine{{ID: "machine", Label: "External", Target: "demo.sbx", Session: "default", Enabled: boolPointer(test.native)}}
-			if err := store.SetEnabled(scope, "one", test.choice); err != nil {
-				t.Fatal(err)
-			}
-			if err := f.service.ReconcileContext(context.Background(), io.Discard); err != nil {
-				t.Fatal(err)
-			}
-			if *(*machines)[0].Enabled != test.want {
-				t.Fatalf("native enabled=%t, want %t", *(*machines)[0].Enabled, test.want)
-			}
+			require.NoError(t, store.SetEnabled(scope, "one", test.choice))
+			require.NoError(t, f.service.ReconcileContext(context.Background(), io.Discard))
+			require.Equal(t, test.want, *(*machines)[0].Enabled, "native enabled=%t, want %t", *(*machines)[0].Enabled, test.want)
 			for _, call := range *calls {
-				if strings.Contains(call, "machine enable") || strings.Contains(call, "machine add") || strings.HasPrefix(call, "ssh -o") || strings.Contains(call, "sbx exec") {
-					t.Fatalf("unexpected stopped operation: %s", call)
-				}
-				if test.choice == store.Enabled && strings.Contains(call, "machine disable") {
-					t.Fatalf("Enabled choice was disabled: %s", call)
-				}
+				require.NotContains(t, call, "machine enable")
+				require.NotContains(t, call, "machine add")
+				require.False(t, strings.HasPrefix(call, "ssh -o"))
+				require.NotContains(t, call, "sbx exec")
+				require.False(t, test.choice == store.Enabled && strings.Contains(call, "machine disable"), "Enabled choice was disabled: %s", call)
 			}
 		})
 	}
@@ -802,29 +697,22 @@ func TestStoppedExplicitEnableVerifiesNativeOutcome(t *testing.T) {
 			}
 			f.rebuildClients()
 			err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled)
-			if (err == nil) != test.applied {
-				t.Fatalf("applied=%t error=%v", test.applied, err)
-			}
+			require.Equal(t, test.applied, (err == nil), "applied=%t error=%v", test.applied, err)
 			rows, err := f.service.SandboxRows(context.Background(), "/tmp/test-sandboxd.sock")
-			if err != nil || (rows[0].NativeEnabled == nil) != test.unknown || rows[0].NativeEnabled != nil && *rows[0].NativeEnabled != test.applied {
-				t.Fatalf("actual native outcome lost: %+v %v", rows, err)
-			}
-			if err := f.service.ReconcileContext(context.Background(), io.Discard); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+			require.False(t, (rows[0].NativeEnabled == nil) != test.unknown)
+			require.False(t, rows[0].NativeEnabled != nil && *rows[0].NativeEnabled != test.applied)
+			require.NoError(t, f.service.ReconcileContext(context.Background(), io.Discard))
 			status, err := store.ReadStatusStore()
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			want := "disabled"
 			if test.applied {
 				want = "waiting for start"
 			} else if test.unknown {
 				want = "observation unavailable"
 			}
-			if rows[0].Status.Connection != want || status.Sandboxes[store.StatusKey(scope, "one")].Connection != want {
-				t.Fatalf("native outcome masked: observed=%+v reconciled=%+v", rows[0].Status, status.Sandboxes[store.StatusKey(scope, "one")])
-			}
+			require.False(t, rows[0].Status.Connection != want)
+			require.False(t, status.Sandboxes[store.StatusKey(scope, "one")].Connection != want)
 		})
 	}
 }
@@ -862,17 +750,13 @@ func TestNativeToggleSettlesToObservedChoice(t *testing.T) {
 			}
 			f.rebuildClients()
 			err := f.service.SetEnabled(context.Background(), scope, "one", requested)
-			if (err == nil) != test.applied {
-				t.Fatalf("applied=%t err=%v", test.applied, err)
-			}
+			require.Equal(t, test.applied, (err == nil), "applied=%t err=%v", test.applied, err)
 			want := oldChoice
 			if test.applied {
 				want = requested
 			}
 			choices, _ := store.ReadEnabled()
-			if choices[store.StatusKey(scope, "one")] != want {
-				t.Fatalf("requested choice retained: choices=%v want=%s", choices, want)
-			}
+			require.Equal(t, want, choices[store.StatusKey(scope, "one")], "requested choice retained: choices=%v want=%s", choices, want)
 		})
 	}
 }
@@ -883,8 +767,9 @@ func TestUnverifiedNativeToggleWaitsForObservationWithoutReplay(t *testing.T) {
 			f, scope, machines, calls := newManagementFixture(t, "stopped")
 			*machines = []herdr.Machine{{ID: "machine", Label: "External", Target: "demo.sbx", Session: "default", Enabled: boolPointer(false)}}
 			_ = store.SetEnabled(scope, "one", store.Disabled)
-			if _, err := f.service.SandboxRows(context.Background(), "/tmp/test-sandboxd.sock"); err != nil {
-				t.Fatal(err)
+			{
+				_, err := f.service.SandboxRows(context.Background(), "/tmp/test-sandboxd.sock")
+				require.NoError(t, err)
 			}
 			mutated := false
 			execute := f.runner.Execute
@@ -903,14 +788,14 @@ func TestUnverifiedNativeToggleWaitsForObservationWithoutReplay(t *testing.T) {
 				return execute(ctx, c)
 			}
 			f.rebuildClients()
-			if err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled); err == nil {
-				t.Fatal("unverified change reported success")
+			{
+				err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled)
+				require.Error(t, err, "unverified change reported success")
 			}
 			status, _ := store.ReadStatusStore()
 			key := store.StatusKey(scope, "one")
-			if status.EnabledChoices[key] != store.Disabled || !status.Sandboxes[key].Stale {
-				t.Fatalf("unverified request retained: %+v", status.Sandboxes[key])
-			}
+			require.False(t, status.EnabledChoices[key] != store.Disabled)
+			require.True(t, status.Sandboxes[key].Stale)
 			_ = f.service.ReconcileContext(context.Background(), io.Discard)
 			enables := 0
 			for _, call := range *calls {
@@ -918,18 +803,16 @@ func TestUnverifiedNativeToggleWaitsForObservationWithoutReplay(t *testing.T) {
 					enables++
 				}
 			}
-			if enables != 1 {
-				t.Fatalf("unverified action replayed: %d", enables)
-			}
+			require.Equal(t, 1, enables, "unverified action replayed: %d", enables)
 			catalogUnavailable = false
 			(*machines)[0].Enabled = boolPointer(true)
-			if _, err := f.service.SandboxRows(context.Background(), "/tmp/test-sandboxd.sock"); err != nil {
-				t.Fatal(err)
+			{
+				_, err := f.service.SandboxRows(context.Background(), "/tmp/test-sandboxd.sock")
+				require.NoError(t, err)
 			}
 			status, _ = store.ReadStatusStore()
-			if status.EnabledChoices[key] != store.Enabled || status.Sandboxes[key].Stale {
-				t.Fatalf("fresh native state was not adopted: %+v", status.Sandboxes[key])
-			}
+			require.False(t, status.EnabledChoices[key] != store.Enabled)
+			require.False(t, status.Sandboxes[key].Stale)
 		})
 	}
 }
@@ -967,26 +850,25 @@ func TestOldCatalogReadCannotResolveNewUnverifiedToggle(t *testing.T) {
 		finished <- err
 	}()
 	<-started
-	if err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled); err == nil {
-		t.Fatal("unverified mutation reported success")
+	{
+		err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled)
+		require.Error(t, err, "unverified mutation reported success")
 	}
 	close(release)
-	if err := <-finished; err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, <-finished)
 	status, _ := store.ReadStatusStore()
 	key := store.StatusKey(scope, "one")
-	if !status.EnabledObservationPending[key] || status.EnabledChoices[key] != store.Disabled || !status.Sandboxes[key].Stale {
-		t.Fatalf("old catalog resolved new uncertainty: %+v", status.Sandboxes[key])
-	}
+	require.True(t, status.EnabledObservationPending[key])
+	require.False(t, status.EnabledChoices[key] != store.Disabled)
+	require.True(t, status.Sandboxes[key].Stale)
 	mutated = false
-	if _, err := f.service.SandboxRows(context.Background(), "/tmp/test-sandboxd.sock"); err != nil {
-		t.Fatal(err)
+	{
+		_, err := f.service.SandboxRows(context.Background(), "/tmp/test-sandboxd.sock")
+		require.NoError(t, err)
 	}
 	status, _ = store.ReadStatusStore()
-	if status.EnabledObservationPending[key] || status.EnabledChoices[key] != store.Enabled {
-		t.Fatalf("fresh observation not adopted: %+v", status.Sandboxes[key])
-	}
+	require.False(t, status.EnabledObservationPending[key])
+	require.False(t, status.EnabledChoices[key] != store.Enabled)
 }
 
 func TestExplicitAddRequiresVerifiedEnabledEntry(t *testing.T) {
@@ -1022,20 +904,15 @@ func TestExplicitAddRequiresVerifiedEnabledEntry(t *testing.T) {
 				return execute(ctx, c)
 			}
 			f.rebuildClients()
-			if err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled); err == nil {
-				t.Fatal("unverified or disabled entry reported successful Enable")
-			}
+
+			err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled)
+			require.Error(t, err, "unverified or disabled entry reported successful Enable")
+
 			status, _ := store.ReadStatusStore()
 			key := store.StatusKey(scope, "one")
-			if status.EnabledChoices[key] != store.Disabled {
-				t.Fatalf("requested choice retained: %+v", status.Sandboxes[key])
-			}
-			if status.EnabledObservationPending[key] != (outcome == "unknown") {
-				t.Fatalf("wrong observation wait: %+v", status.Sandboxes[key])
-			}
-			if outcome == "unknown" && (!status.Sandboxes[key].EntryPresent || status.Sandboxes[key].Label == "") {
-				t.Fatalf("actual added entry lost: %+v", status.Sandboxes[key])
-			}
+			require.Equal(t, store.EnabledChoice(store.Disabled), status.EnabledChoices[key], "requested choice retained: %+v", status.Sandboxes[key])
+			require.Equal(t, (outcome == "unknown"), status.EnabledObservationPending[key], "wrong observation wait: %+v", status.Sandboxes[key])
+			require.False(t, outcome == "unknown" && (!status.Sandboxes[key].EntryPresent || status.Sandboxes[key].Label == ""), "actual added entry lost: %+v", status.Sandboxes[key])
 		})
 	}
 }
@@ -1063,38 +940,28 @@ func TestOldCatalogCannotChangeConfirmedStateUsedByCancelledToggle(t *testing.T)
 		finished <- err
 	}()
 	<-started
-	if err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, f.service.SetEnabled(context.Background(), scope, "one", store.Enabled))
 	close(release)
-	if err := <-finished; err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, <-finished)
 	status, _ := store.ReadStatusStore()
 	key := store.StatusKey(scope, "one")
-	if status.Sandboxes[key].NativeEnabled == nil || !*status.Sandboxes[key].NativeEnabled {
-		t.Fatalf("old catalog overwrote confirmed native state: %+v", status.Sandboxes[key])
-	}
+	require.NotNil(t, status.Sandboxes[key].NativeEnabled)
+	require.True(t, *status.Sandboxes[key].NativeEnabled)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := f.service.SetEnabled(ctx, scope, "one", store.Disabled); !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancellation=%v", err)
+	{
+		err := f.service.SetEnabled(ctx, scope, "one", store.Disabled)
+		require.ErrorIs(t, err, context.Canceled, "cancellation=%v", err)
 	}
 	choices, _ := store.ReadEnabled()
-	if choices[key] != store.Enabled {
-		t.Fatalf("cancelled command changed actual choice: %v", choices)
-	}
+	require.Equal(t, store.EnabledChoice(store.Enabled), choices[key], "cancelled command changed actual choice: %v", choices)
 }
 
 func TestRenameSkipsAlreadyCurrentLabel(t *testing.T) {
 	f, scope, machines, calls := newManagementFixture(t, "stopped")
 	*machines = []herdr.Machine{{ID: "machine", Label: "Current label", Target: "demo.sbx", Session: "default", Enabled: boolPointer(false)}}
-	if err := f.service.Rename(context.Background(), scope, "one", "Current label"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, f.service.Rename(context.Background(), scope, "one", "Current label"))
 	for _, call := range *calls {
-		if strings.HasPrefix(call, "herdr machine rename ") {
-			t.Fatalf("unchanged label caused mutation: %s", call)
-		}
+		require.False(t, strings.HasPrefix(call, "herdr machine rename "), "unchanged label caused mutation: %s", call)
 	}
 }
