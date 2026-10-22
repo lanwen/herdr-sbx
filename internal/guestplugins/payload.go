@@ -6,11 +6,13 @@ import (
 	"debug/elf"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -25,6 +27,25 @@ func planPayload(root, manifestPath string, manifest map[string]any, arch string
 		return nil, err
 	}
 	root = resolved
+	selected, err := os.Lstat(root)
+	if err != nil {
+		return nil, err
+	}
+	if !selected.IsDir() {
+		return nil, errors.New("plugin source root is not a directory")
+	}
+	source, err := os.OpenRoot(root + "/.")
+	if err != nil {
+		return nil, err
+	}
+	defer source.Close()
+	opened, err := source.Stat(".")
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(selected, opened) {
+		return nil, errors.New("plugin source root changed while opening")
+	}
 	ignored, err := ignoredSourceFiles(root)
 	if err != nil {
 		return nil, err
@@ -39,73 +60,117 @@ func planPayload(root, manifestPath string, manifest map[string]any, arch string
 	}
 	var files []payloadFile
 	var size int64
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if path == root {
-			return nil
-		}
-		name, err := filepath.Rel(root, path)
+	var walk func(*os.Root, string) error
+	walk = func(dir *os.Root, prefix string) error {
+		entries, err := fs.ReadDir(dir.FS(), ".")
 		if err != nil {
 			return err
 		}
-		// Never export checkout metadata, local state or credentials.
-		if entry.Name() == ".git" || entry.Name() == ".env" || strings.HasPrefix(entry.Name(), ".env.") || entry.Name() == ".ssh" || entry.Name() == ".aws" || entry.Name() == ".netrc" || entry.Name() == ".npmrc" || entry.Name() == ".pypirc" || entry.Name() == ".cache" || strings.HasPrefix(entry.Name(), ".herdr-sbx-") {
-			if entry.IsDir() {
-				return filepath.SkipDir
+		for _, entry := range entries {
+			name := filepath.Join(prefix, entry.Name())
+			// Never export checkout metadata, local state or credentials.
+			if entry.Name() == ".git" || entry.Name() == ".env" || strings.HasPrefix(entry.Name(), ".env.") || entry.Name() == ".ssh" || entry.Name() == ".aws" || entry.Name() == ".netrc" || entry.Name() == ".npmrc" || entry.Name() == ".pypirc" || entry.Name() == ".cache" || strings.HasPrefix(entry.Name(), ".herdr-sbx-") {
+				continue
 			}
-			return nil
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		if ignored[filepath.ToSlash(name)] || name == manifestName || name == "herdr-plugin.toml" {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			// WalkDir does not follow links, including links to directories.
-			return nil
-		}
-		if strings.ContainsAny(name, "\n\r\\") {
-			return errors.New("invalid plugin filename")
-		}
-		size += info.Size()
-		if size > 128<<20 {
-			return errors.New("plugin payload exceeds 128 MiB")
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		mode := int64(0600)
-		if info.Mode().Perm()&0111 != 0 {
-			mode = 0700
-		}
-		if bytes.HasPrefix(data, []byte{0x7f, 'E', 'L', 'F'}) {
-			binary, err := elf.NewFile(bytes.NewReader(data))
+			info, err := dir.Lstat(entry.Name())
 			if err != nil {
 				return err
 			}
-			defer binary.Close()
-			want := elf.EM_X86_64
-			if strings.HasPrefix(arch, "aarch64") {
-				want = elf.EM_AARCH64
+			if info.IsDir() {
+				child, err := openPayloadDirectory(dir, entry.Name(), info)
+				if err != nil {
+					return err
+				}
+				err = walk(child, name)
+				child.Close()
+				if err != nil {
+					return err
+				}
+				continue
 			}
-			if arch != "" && binary.Machine != want {
-				return fmt.Errorf("%s is built for another architecture", name)
+			if ignored[filepath.ToSlash(name)] || name == manifestName || name == "herdr-plugin.toml" {
+				continue
 			}
-		} else if len(data) >= 4 && (bytes.Equal(data[:4], []byte{0xcf, 0xfa, 0xed, 0xfe}) || bytes.Equal(data[:4], []byte{0xfe, 0xed, 0xfa, 0xcf}) || bytes.Equal(data[:4], []byte{0xca, 0xfe, 0xba, 0xbe}) || bytes.HasPrefix(data, []byte("MZ"))) {
-			return fmt.Errorf("%s is not a Linux binary", name)
+			if !info.Mode().IsRegular() {
+				continue
+			}
+			if strings.ContainsAny(name, "\n\r\\") {
+				return errors.New("invalid plugin filename")
+			}
+			data, err := readPayloadFile(dir, entry.Name(), info, (128<<20)-size)
+			if err != nil {
+				return err
+			}
+			size += int64(len(data))
+			mode := int64(0600)
+			if info.Mode().Perm()&0111 != 0 {
+				mode = 0700
+			}
+			if bytes.HasPrefix(data, []byte{0x7f, 'E', 'L', 'F'}) {
+				binary, err := elf.NewFile(bytes.NewReader(data))
+				if err != nil {
+					return err
+				}
+				defer binary.Close()
+				want := elf.EM_X86_64
+				if strings.HasPrefix(arch, "aarch64") {
+					want = elf.EM_AARCH64
+				}
+				if arch != "" && binary.Machine != want {
+					return fmt.Errorf("%s is built for another architecture", name)
+				}
+			} else if len(data) >= 4 && (bytes.Equal(data[:4], []byte{0xcf, 0xfa, 0xed, 0xfe}) || bytes.Equal(data[:4], []byte{0xfe, 0xed, 0xfa, 0xcf}) || bytes.Equal(data[:4], []byte{0xca, 0xfe, 0xba, 0xbe}) || bytes.HasPrefix(data, []byte("MZ"))) {
+				return fmt.Errorf("%s is not a Linux binary", name)
+			}
+			files = append(files, payloadFile{filepath.ToSlash(name), data, mode})
 		}
-		files = append(files, payloadFile{filepath.ToSlash(name), data, mode})
 		return nil
-	})
+	}
+	err = walk(source, "")
 	return files, err
+}
+
+// openPayloadDirectory pins a selected directory before enumerating its children.
+func openPayloadDirectory(parent *os.Root, name string, selected fs.FileInfo) (*os.Root, error) {
+	// Slash-dot requires a directory, so a replacement FIFO cannot block opening.
+	child, err := parent.OpenRoot(name + "/.")
+	if err != nil {
+		return nil, err
+	}
+	opened, err := child.Stat(".")
+	if err == nil && (!opened.IsDir() || !os.SameFile(selected, opened)) {
+		err = fmt.Errorf("plugin source changed while reading directory %s", name)
+	}
+	if err != nil {
+		child.Close()
+		return nil, err
+	}
+	return child, nil
+}
+
+// readPayloadFile rejects replaced entries and confines reads to the opened root.
+func readPayloadFile(root *os.Root, name string, selected fs.FileInfo, remaining int64) ([]byte, error) {
+	// A regular file can become a FIFO after selection; never wait for a writer.
+	file, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(selected, opened) {
+		return nil, fmt.Errorf("plugin source changed while reading %s", name)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, remaining+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > remaining {
+		return nil, errors.New("plugin payload exceeds 128 MiB")
+	}
+	return data, nil
 }
 
 func platformTarget(platform string) (string, error) {

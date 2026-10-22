@@ -3,6 +3,7 @@
 package process
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,25 @@ import (
 	"strings"
 	"time"
 )
+
+const maxOutputBytes = 16 << 20
+
+var errOutputLimit = fmt.Errorf("command output exceeded %d-byte limit", maxOutputBytes)
+
+type cappedOutput struct {
+	buffer   bytes.Buffer
+	cancel   context.CancelFunc
+	exceeded bool
+}
+
+func (b *cappedOutput) Write(p []byte) (int, error) {
+	if len(p) > maxOutputBytes-b.buffer.Len() {
+		b.exceeded = true
+		b.cancel()
+		return 0, errOutputLimit
+	}
+	return b.buffer.Write(p)
+}
 
 // Command describes one process invocation after its owning client has chosen
 // the executable, arguments, timeout, and environment changes.
@@ -56,19 +76,32 @@ func execute(parent context.Context, command Command) (string, error) {
 		ctx, cancel = context.WithTimeout(parent, command.Timeout)
 		defer cancel()
 	}
-	cmd := exec.CommandContext(ctx, command.Name, command.Args...)
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	cmd := exec.CommandContext(runCtx, command.Name, command.Args...)
+	cmd.WaitDelay = time.Second
+	output := &cappedOutput{cancel: stop}
+	// Sharing the writer preserves merged output and serializes writes.
+	cmd.Stdout, cmd.Stderr = output, output
 	cmd.Stdin = command.Stdin
 	if len(command.Env) != 0 || len(command.Unset) != 0 {
 		cmd.Env = overlay(os.Environ(), command.Env, command.Unset)
 	}
-	output, err := cmd.CombinedOutput()
+	err := cmd.Run()
+	if output.exceeded {
+		// Never expose a truncated structured response, even to callers ignoring errors.
+		if ctx.Err() == nil {
+			return "", errOutputLimit
+		}
+		output.buffer.Reset()
+	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return string(output), fmt.Errorf("timed out")
+		return output.buffer.String(), fmt.Errorf("timed out")
 	}
 	if err != nil && ctx.Err() != nil {
-		return string(output), ctx.Err()
+		return output.buffer.String(), ctx.Err()
 	}
-	return string(output), err
+	return output.buffer.String(), err
 }
 
 func overlay(env []string, values map[string]string, unset []string) []string {
