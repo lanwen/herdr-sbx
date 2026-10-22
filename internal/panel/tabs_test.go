@@ -530,7 +530,7 @@ func TestFailedOffKeepsChoiceAndObservedRunning(t *testing.T) {
 		t.Fatal("OFF did not show the stopping transition")
 	}
 	m.Update(command())
-	line := ansi.Strip(m.statusLines()[1].text)
+	line := ansi.Strip(m.statusLines()[0].text)
 	if m.workerEnabled || !strings.Contains(line, "ERROR") || !strings.Contains(line, "Running") {
 		t.Fatalf("failed OFF lost the choice or runtime: %q", line)
 	}

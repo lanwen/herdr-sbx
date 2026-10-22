@@ -41,15 +41,13 @@ For a local checkout, run these subcommands with `bin/herdr-sbx`.
 
 ## Screenshots
 
-These screenshots use simulated data and `claude-*` sandbox names.
-
 Sandbox table:
 
-![Sandbox manager table with simulated claude sandboxes](docs/screenshots/sandboxes.png)
+![Sandbox manager table with simulated sandboxes](docs/screenshots/sandboxes.png)
 
 Sandbox details and recovery actions:
 
-![Expanded sandbox details with simulated claude data](docs/screenshots/sandbox-details.png)
+![Expanded sandbox details with simulated data](docs/screenshots/sandbox-details.png)
 
 Herdr plugin defaults:
 
@@ -57,7 +55,7 @@ Herdr plugin defaults:
 
 Compact layout:
 
-![Compact sandbox manager with simulated claude sandboxes](docs/screenshots/compact.png)
+![Compact sandbox manager with simulated sandboxes](docs/screenshots/compact.png)
 
 ## Upgrade
 

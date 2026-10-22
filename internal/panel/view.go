@@ -613,13 +613,24 @@ func (m *model) statusLines() []line {
 			off = ink(colorError, "OFF")
 		}
 	}
-	toggle := textLine(on + ink(colorMuted, " | ") + off + "  " + m.managementStatus())
-	toggle.hits = []hit{{x: 0, w: 2, action: "status-choice", id: "on"}, {x: 5, w: 3, action: "status-choice", id: "off"}, {x: 9, w: ansi.StringWidth(m.managementStatus()), action: "status-action", id: "0"}}
+	toggle := textLine(on + ink(colorMuted, " | ") + off)
+	toggle.hits = []hit{{x: 0, w: 2, action: "status-choice", id: "on"}, {x: 5, w: 3, action: "status-choice", id: "off"}}
 	border, title := colorSeparator, "Management"
 	if m.focus == "table" && m.button == 0 {
 		border, title = colorText, "Management ›"
 	}
 	lines := outline([]line{toggle}, title, m.width-4, 0, border)
+	state, stateColor := m.managementState()
+	width := m.width - 4
+	badge := badgeStyle(stateColor, truncate(state, max(1, width-11)))
+	if m.focus == "table" && m.button == 0 && width-ansi.StringWidth(badge)-6 < ansi.StringWidth(title) {
+		title = "› Management"
+	}
+	lines[0] = line{text: detailBorder(title, "", badge, width, 0, border), hits: []hit{{x: 1, w: width - 2, action: "status-action", id: "0"}}}
+	if activity := m.managementActivity(); activity != "" {
+		activity = " " + truncate(activity, max(1, width-4)) + " "
+		lines[len(lines)-1].text = ink(border, "╰"+strings.Repeat("─", max(0, width-ansi.StringWidth(activity)-2))) + ink(colorMuted, activity) + ink(border, "╯")
+	}
 	var refresh line
 	for i, action := range actions[1:] {
 		label := action.label

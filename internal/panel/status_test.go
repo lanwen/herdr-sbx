@@ -100,3 +100,34 @@ func TestStatusPrerequisiteGroupingAndUnstyledResults(t *testing.T) {
 		}
 	}
 }
+
+func TestManagementBordersSeparateStateAndObservationActivity(t *testing.T) {
+	for _, width := range []int{30, 60, 110} {
+		m := modelFixture(t)
+		m.width = width
+		m.openTab("Status")
+		m.worker.State = "running"
+		m.worker.LastSync = time.Now().Add(-time.Minute)
+		m.refreshing = true
+		lines := m.statusLines()
+		top, body, bottom := lines[0].text, lines[1].text, lines[2].text
+		if !strings.HasSuffix(ansi.Strip(top), " Running ╮") || !strings.Contains(ansi.Strip(body), "ON | OFF") || !strings.Contains(ansi.Strip(bottom), "last at "+m.worker.LastSync.Local().Format("15:04")+"*") {
+			t.Fatalf("width %d card:\n%s\n%s\n%s", width, top, body, bottom)
+		}
+		for _, l := range lines[:3] {
+			if ansi.StringWidth(l.text) != width-4 {
+				t.Fatalf("card width %d: %q", width, l.text)
+			}
+		}
+		m.worker.State = "cancelling"
+		m.workerControlError = true
+		t.Setenv("NO_COLOR", "1")
+		lines = m.statusLines()
+		if ansi.StringWidth(lines[0].text) > width-4 {
+			t.Fatalf("failure badge overflow: %q", lines[0].text)
+		}
+		if !strings.Contains(lines[0].text, "Cancelling") || !strings.Contains(lines[0].text, "›") {
+			t.Fatalf("narrow cancellation/focus lost: %q", lines[0].text)
+		}
+	}
+}

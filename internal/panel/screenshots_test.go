@@ -40,7 +40,7 @@ func TestCaptureScreenshots(t *testing.T) {
 	m.expanded, m.focus = m.selected, "actions"
 	m.button = 1
 	at := time.Date(2026, 10, 19, 12, 30, 0, 0, time.UTC)
-	m.errors = []uiError{{ref: "a3f9c1", code: store.CodeGuestPluginSync, scope: store.StatusKey("examples", m.selected), pluginID: "coil3d", detail: "Manual intervention required. The herdr plugin build could not finish.", recovery: "Repair the build dependencies in this sandbox, then choose Re-sync to check the plugin again.", output: "Build step 1 failed: a required build dependency is unavailable.", count: 3, firstSeen: at, seen: at}}
+	m.errors = []uiError{{ref: "a3f9c1", code: store.CodeGuestPluginSync, scope: store.StatusKey("examples", m.selected), pluginID: "example.plugin-b", detail: "Manual intervention required. The herdr plugin build could not finish.", recovery: "Repair the build dependencies in this sandbox, then choose Re-sync to check the plugin again.", output: "Build step 1 failed: a required build dependency is unavailable.", count: 3, firstSeen: at, seen: at}}
 	write("sandbox-details", m)
 	m = screenshotModel()
 	m.width, m.height = 110, 28
@@ -62,7 +62,7 @@ func TestCaptureScreenshots(t *testing.T) {
 	}
 	write("status", m)
 	m = screenshotModel()
-	m.page, m.pluginSelected = "Plugins", "testcontainers"
+	m.page, m.pluginSelected = "Plugins", "example.plugin-a"
 	m.height = 16
 	write("plugins", m)
 	m = screenshotModel()
@@ -75,8 +75,8 @@ func screenshotModel() *model {
 		queries: map[string]string{}, pending: map[string]bool{}, pendingChoices: map[string]pluginChoiceChange{},
 		workerEnabled: true, workerLoaded: true,
 		worker:   store.WorkerStatus{State: "running", LastSync: time.Now()},
-		plugins:  []guestplugins.Choice{{ID: "testcontainers", Enabled: true, Installed: true}, {ID: "coil3d", Installed: true}, {ID: "herdr-sbx", Installed: true}},
-		settings: store.GuestPluginDefaults{Plugins: map[string]store.GuestPluginDefault{"testcontainers": {Enabled: true}, "coil3d": {Enabled: false}}},
+		plugins:  []guestplugins.Choice{{ID: "example.plugin-a", Enabled: true, Installed: true}, {ID: "example.plugin-b", Installed: true}, {ID: "example.plugin-c", Installed: true}},
+		settings: store.GuestPluginDefaults{Plugins: map[string]store.GuestPluginDefault{"example.plugin-a": {Enabled: true}, "example.plugin-b": {Enabled: false}}},
 		checks:   precheck.Result{Checks: []precheck.Check{{Name: "herdr", Level: precheck.Ready, Detail: "herdr 0.9.0"}, {Name: "Sandbox daemon", Level: precheck.Ready, Detail: "Running"}, {Name: "Sandbox SSH", Level: precheck.Ready, Detail: "Configured"}}},
 	}
 	choices := []store.EnabledChoice{store.Enabled, store.Enabled, store.Disabled, store.Disabled, store.Disabled}
@@ -90,8 +90,8 @@ func screenshotModel() *model {
 		"e8321142-7f39-4b84-9ac8-11fa7080d9fb",
 	}
 	profileIDs := []string{"25a9b0f5f63eab13de0b68573e18cd92", "92c3df06bd5143e7a76d1f608d841b2c", "4cd97acb00af4ce68239298e9f082936"}
-	for i, name := range []string{"testcontainers", "coil3d", "herdr-sbx", "testcontainers-go", "testcontainers-java"} {
-		row := registration.SandboxRow{Sandbox: sbx.Sandbox{ID: sandboxIDs[i], Name: name, Status: states[i]}, Scope: "examples", Enabled: choices[i], Label: name, EntryPresent: i < 3,
+	for i, name := range []string{"claude-testcontainers", "codex-coil3d", "claude-herdr-sbx", "codex-testcontainers-go", "claude-testcontainers-java"} {
+		row := registration.SandboxRow{Sandbox: sbx.Sandbox{ID: sandboxIDs[i], Name: name, Status: states[i]}, Scope: "examples", Enabled: choices[i], Label: "sbx · " + name, EntryPresent: i < 3,
 			Status: store.SandboxStatus{Connection: connections[i], ObservedAt: time.Now(), GuestServer: &store.GuestServerObservation{Version: "0.9.0", Current: true, CheckedAt: time.Now()}}}
 		native := i == 0
 		if row.EntryPresent {

@@ -301,6 +301,8 @@ An active daemon does not imply that every sandbox is ready.
 On first use, opening the TUI starts management automatically.
 Closing the TUI leaves management running.
 The Status tab has an outlined Management subsection containing `ON | OFF` and the observed worker state.
+Show the worker state as a badge in the top-right border, matching the placement of the herdr version in sandbox details.
+Place additional details, such as update age or activity, in muted text at the bottom-right corner.
 Focus this subsection by default, using the brighter outline of focused sandbox details.
 Space or Enter toggles Management while it has focus, including reversing a requested change that is still settling.
 Up/Down moves between Management and the available setup or Refresh actions.

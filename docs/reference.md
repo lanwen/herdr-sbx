@@ -83,6 +83,7 @@ The bottom-right indicators show Management ON or OFF immediately before the obs
 An unsettled stop shows exactly gray `Cancelling`.
 The Status tab keeps the saved Management choice separate from daemon health.
 Management has its own outlined subsection, focused by default; Space or Enter toggles the choice.
+Its observed worker status appears in a top-right border badge, with additional details such as update age or activity muted at the bottom right.
 Its outline brightens while focused, and Up/Down moves to the other available Status actions.
 The Status Hint follows current Management activity and worker observations rather than retaining completed request notices or sandbox-specific guidance.
 Prerequisite results use colored foreground text, with capitalized status words in the Status column.

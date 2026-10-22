@@ -244,7 +244,7 @@ func (m *model) managementCancelling() bool {
 	return m.worker.State == "cancelling" || !m.stopRequestedAt.IsZero()
 }
 
-func (m *model) managementStatus() string {
+func (m *model) managementState() (string, string) {
 	state, color := "Error", colorError
 	switch m.worker.State {
 	case "running":
@@ -254,16 +254,21 @@ func (m *model) managementStatus() string {
 	case "stopped", "exited":
 		state, color = "Stopped", colorMuted
 	}
-	text := ink(color, state)
 	if m.managementCancelling() {
-		text = ink(colorMuted, "Cancelling")
 		if m.workerControlError {
-			text += " " + ink(colorError, "ERROR") + " · " + ink(color, state)
+			return "Cancelling ERROR · " + state, colorMuted
 		}
-		return text
+		return "Cancelling", colorMuted
 	}
 	if m.workerControlError {
-		return ink(colorError, "ERROR") + " · " + text
+		return "ERROR · " + state, colorError
+	}
+	return state, color
+}
+
+func (m *model) managementActivity() string {
+	if m.managementCancelling() || m.workerControlError {
+		return ""
 	}
 	pending := m.refreshing || m.checksPending
 	if m.worker.State == "running" && !m.worker.LastSync.IsZero() && time.Since(m.worker.LastSync) > 30*time.Second {
@@ -271,9 +276,19 @@ func (m *model) managementStatus() string {
 		if pending {
 			stamp += "*"
 		}
-		text += " " + ink(colorMuted, stamp)
-	} else if pending {
-		text += ink(colorWarning, " *")
+		return stamp
+	}
+	if pending {
+		return "*"
+	}
+	return ""
+}
+
+func (m *model) managementStatus() string {
+	state, color := m.managementState()
+	text := ink(color, state)
+	if activity := m.managementActivity(); activity != "" {
+		text += " " + ink(colorMuted, activity)
 	}
 	return text
 }
