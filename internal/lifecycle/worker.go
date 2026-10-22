@@ -98,6 +98,11 @@ func (s *Service) Worker(out io.Writer) error {
 		return nil
 	}
 	report := func(state, detail string, synced bool) {
+		// Completion of an old operation must not overwrite OFF cancellation
+		// with a late Running/reconnecting report.
+		if state != "stopped" && !automaticAllowed(context.Background()) {
+			state, detail, synced = "cancelling", "Cancelling", false
+		}
 		if err := store.RecordWorkerStatus(state, detail, synced); err != nil {
 			fmt.Fprintln(out, "Worker status was not saved:", err)
 		}
@@ -138,7 +143,8 @@ func (s *Service) Worker(out io.Writer) error {
 					logErrorReported = false
 				}
 				status, err := store.ReadStatusStore()
-				if err == nil && status.WorkerControl != nil && status.WorkerControl.Stopped {
+				if err != nil || status.WorkerControl != nil && status.WorkerControl.Stopped {
+					report("cancelling", "Cancelling", false)
 					cancel()
 					return
 				}
@@ -154,9 +160,13 @@ func (s *Service) Worker(out io.Writer) error {
 		cancel()
 		<-livenessDone
 	}()
-	fmt.Fprintln(out, "Docker Sandboxes worker started. It stops when the local Herdr server stops.")
+	fmt.Fprintln(out, "Docker Sandboxes daemon started. It stops when the local herdr server stops.")
+	baseline := managementBaseline{}
 	for {
-		err := s.watchWithStatus(ctx, out, report)
+		err := s.watchManaged(ctx, out, report, &baseline)
+		if !automaticAllowed(ctx) {
+			return nil
+		}
 		if ctx.Err() != nil || !s.workerAlive() {
 			return nil
 		}
@@ -246,9 +256,23 @@ func (s *Service) workerServerAlive(ctx context.Context) bool {
 // StartWorkerExplicit waits for a stopping worker to exit before clearing Stop
 // and starting its replacement. A cancelled worker cannot be resumed in place.
 func (s *Service) StartWorkerExplicit() error {
+	saved, err := store.ReadStatusStore()
+	if err != nil {
+		return err
+	}
+	var generation uint64
+	if saved.WorkerControl != nil {
+		generation = saved.WorkerControl.Generation
+	}
+	return s.StartWorkerExplicitAtGeneration(generation)
+}
+
+// StartWorkerExplicitAtGeneration binds ON to the choice accepted by the caller.
+// A later OFF supersedes this command even while the old worker is settling.
+func (s *Service) StartWorkerExplicitAtGeneration(generation uint64) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	if err := prepareWorkerStart(ctx); err != nil {
+	if err := prepareWorkerStartAtGeneration(ctx, generation); err != nil {
 		return err
 	}
 	return s.StartWorker()
@@ -258,6 +282,21 @@ func prepareWorkerStart(ctx context.Context) error {
 	saved, err := store.ReadStatusStore()
 	if err != nil {
 		return err
+	}
+	var generation uint64
+	if saved.WorkerControl != nil {
+		generation = saved.WorkerControl.Generation
+	}
+	return prepareWorkerStartAtGeneration(ctx, generation)
+}
+
+func prepareWorkerStartAtGeneration(ctx context.Context, generation uint64) error {
+	saved, err := store.ReadStatusStore()
+	if err != nil {
+		return err
+	}
+	if saved.WorkerControl != nil && saved.WorkerControl.Generation != generation {
+		return context.Canceled
 	}
 	if saved.WorkerControl != nil && saved.WorkerControl.Stopped {
 		ticker := time.NewTicker(100 * time.Millisecond)
@@ -277,7 +316,14 @@ func prepareWorkerStart(ctx context.Context) error {
 			}
 		}
 	}
-	return store.SetWorkerControl(false)
+	accepted, err := store.SetWorkerControlIfGeneration(false, generation)
+	if err != nil {
+		return err
+	}
+	if !accepted {
+		return context.Canceled
+	}
+	return nil
 }
 
 // StopWorker persists Stop and waits for the daemon's authoritative lock to
@@ -285,6 +331,17 @@ func prepareWorkerStart(ctx context.Context) error {
 func (s *Service) StopWorker(ctx context.Context) error {
 	if err := store.SetWorkerControl(true); err != nil {
 		return err
+	}
+	return s.WaitWorkerStopped(ctx)
+}
+
+// WaitWorkerStopped confirms an OFF choice already saved by the UI. It never
+// issues another command, so an ON queued during cancellation keeps its identity.
+func (s *Service) WaitWorkerStopped(ctx context.Context) error {
+	if status, err := store.ReadWorkerStatus(); err == nil && status.State != "stopped" {
+		if err := store.RecordWorkerStatus("cancelling", "Cancelling", false); err != nil {
+			return err
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()

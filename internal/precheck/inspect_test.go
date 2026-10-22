@@ -108,7 +108,7 @@ func TestInspectDoesNotListWhenDaemonStopped(t *testing.T) {
 	report := f.inspector.Inspect()
 	assertCheck(t, report, "Sandbox daemon", Blocked)
 	assertCheck(t, report, "Docker authorization", Unknown)
-	assertCheck(t, report, "Remote readiness", Unknown)
+	assertCheck(t, report, "Sandbox setup", Unknown)
 	if f.inventoryCalls != 0 || f.authCalls != 0 {
 		t.Fatal("stopped daemon caused an inventory or authorization query")
 	}
@@ -143,7 +143,7 @@ func TestInspectShowsUnresolvedDeletedRegistration(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	assertCheck(t, f.inspector.Inspect(), "Registration ownership", Unknown)
+	assertCheck(t, f.inspector.Inspect(), "Registration association", Unknown)
 }
 
 func TestInspectDockerSignIn(t *testing.T) {

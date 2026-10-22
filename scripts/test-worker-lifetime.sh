@@ -9,8 +9,13 @@ case "$HERDR_WORKER_TEST_ROOT" in
   *) echo "HERDR_WORKER_TEST_ROOT must be under a temporary directory." >&2; exit 2 ;;
 esac
 
-command -v python3 >/dev/null
-python3 - "$HERDR_WORKER_TEST_ROOT" <<'PY'
+# Resolve tool shims before changing HOME. A shim may otherwise rediscover the
+# host's entire tool configuration on every lock poll and startup hook.
+worker_test_python=$(python3 -c 'import sys; print(sys.executable)')
+worker_test_go="$(go env GOROOT)/bin/go"
+HERDR_BIN_PATH=$(command -v "$HERDR_BIN_PATH")
+export HERDR_BIN_PATH
+"$worker_test_python" - "$HERDR_WORKER_TEST_ROOT" <<'PY'
 import pathlib, sys
 root = pathlib.Path(sys.argv[1])
 parent = root.parent.resolve(strict=True)
@@ -39,6 +44,8 @@ export HERDR_WORKER_TEST_SOCKET="$HERDR_WORKER_TEST_ROOT/sandboxd.sock"
 
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR" "$HERDR_PLUGIN_STATE_DIR" "$HERDR_WORKER_TEST_ROOT/tools"
 chmod 700 "$HOME" "$XDG_RUNTIME_DIR"
+ln -s "$worker_test_python" "$HERDR_WORKER_TEST_ROOT/tools/python3"
+ln -s "$worker_test_go" "$HERDR_WORKER_TEST_ROOT/tools/go"
 ln -s "$(pwd)/scripts/test-worker-sbx.sh" "$HERDR_WORKER_TEST_ROOT/tools/sbx"
 chmod 700 scripts/test-worker-sbx.sh
 export PATH="$HERDR_WORKER_TEST_ROOT/tools:$PATH"
@@ -107,7 +114,7 @@ PYLOCK
 }
 
 assert_worker_locked() {
-  worker_lock_active || { echo 'Expected an active worker lock.' >&2; exit 1; }
+  worker_lock_active || { cat "$HERDR_PLUGIN_STATE_DIR/state.json.worker.log" >&2; echo 'Expected an active worker lock.' >&2; exit 1; }
   HERDR_SESSION="$second_session" python3 - "$HERDR_WORKER_TEST_ROOT/herdr-sbx" <<'PYNOOP'
 import subprocess, sys
 for command in [['daemon', 'start'], ['daemon', 'start', '--automatic']]:
@@ -164,18 +171,18 @@ HERDR_SESSION="$first_session" "$HERDR_BIN_PATH" plugin enable lanwen.herdr-sbx 
 start_worker "$first_session"
 assert_worker_locked
 
-# Public Stop persists the choice. Automatic hooks must honor it, and an
-# explicit Start must clear it and launch the daemon again.
+# Public Stop saves Management OFF. Automatic hooks must honor it, and an
+# explicit Start must save ON and launch the daemon again.
 "$HERDR_WORKER_TEST_ROOT/herdr-sbx" daemon stop
 wait_for_worker_exit
 assert_worker_stopped
 HERDR_SESSION="$first_session" "$HERDR_WORKER_TEST_ROOT/herdr-sbx" daemon start --automatic
 sleep 1
 assert_worker_stopped
-"$HERDR_WORKER_TEST_ROOT/herdr-sbx" daemon status --json | python3 -c 'import json,sys; value=json.load(sys.stdin); assert value["worker_control"]["stopped"] is True, value; assert value["worker"]["state"] == "stopped", value'
+"$HERDR_WORKER_TEST_ROOT/herdr-sbx" daemon status --json | python3 -c 'import json,sys; value=json.load(sys.stdin); assert value["management"]["initialized"] is True, value; assert value["management"]["enabled"] is False, value; assert value["daemon"]["state"] == "stopped", value'
 start_worker "$first_session"
 assert_worker_locked
-"$HERDR_WORKER_TEST_ROOT/herdr-sbx" daemon status --json | python3 -c 'import json,sys; value=json.load(sys.stdin); assert value["worker_control"]["stopped"] is False, value'
+"$HERDR_WORKER_TEST_ROOT/herdr-sbx" daemon status --json | python3 -c 'import json,sys; value=json.load(sys.stdin); assert value["management"]["initialized"] is True, value; assert value["management"]["enabled"] is True, value'
 
 HERDR_SESSION="$first_session" "$HERDR_BIN_PATH" server stop >/dev/null
 sleep 6

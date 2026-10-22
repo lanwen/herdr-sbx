@@ -29,7 +29,7 @@ try:
         path.write_text("#!/bin/sh\nprintf '%s %s\\n' '" + name + "' \"$*\" >> '" + str(log) + "'\n" + body)
         path.chmod(0o700)
         return str(path)
-    herdr = stub("herdr", 'case "$1" in --version) echo "herdr 0.9.1";; esac\n')
+    herdr = stub("herdr", 'case "$1" in --version) echo "herdr 0.9.3";; esac\n')
     stub("sbx", 'case "$*" in "--version") echo "sbx 0.45.1";; "version") echo "sbx 0.45.1";; "daemon status --help"|"ls --help") echo "--json";; "daemon status --json") echo "{\\"status\\":\\"stopped\\",\\"socket\\":\\"/tmp/herdr-sbx-panel.sock\\"}";; esac\n')
     stub("ssh", 'case "$1" in -V) echo "OpenSSH_9.9";; -G) echo "proxycommand sbx ssh proxy %n";; esac\n')
     binary = temp / "herdr-sbx"
@@ -54,23 +54,32 @@ try:
             if ready:
                 try: output += os.read(master, 65536)
                 except OSError: break
-            if expected.encode() in output[since:]:
+            rendered = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", output[since:])
+            if expected.encode() in rendered:
                 return
         raise RuntimeError("Missing " + repr(expected) + ":\n" + output.decode(errors="replace"))
     try:
-        wait_text("Start auto-sync?")
-        # Decline a stopped-worker prompt, then exercise page navigation.
-        os.write(master, b"\x1b")
-        time.sleep(0.2)
+        wait_text("Start Management?")
+        wait_text("Keep OFF")
+        # Decline the Management prompt, then exercise all page navigation.
         since = len(output)
-        os.write(master, b"\x1b[C")
-        wait_text("PREREQUISITE", since=since)
+        os.write(master, b"\x1b")
+        wait_text("ENABLED", since=since)
+        wait_text("HERDR LABEL", since=since)
+        wait_text("Management OFF", since=since)
         since = len(output)
         os.write(master, b"\t")
-        wait_text("AUTO-SYNC", since=since)
-        since = len(output)
-        os.write(master, b"\x1b[D")
         wait_text("PREREQUISITE", since=since)
+        wait_text("ON | OFF", since=since)
+        since = len(output)
+        os.write(master, b"\t")
+        wait_text("AVAILABILITY", since=since)
+        since = len(output)
+        os.write(master, b"\x1b[Z")
+        wait_text("PREREQUISITE", since=since)
+        since = len(output)
+        os.write(master, b"\x1b[Z")
+        wait_text("ENABLED", since=since)
         os.write(master, b"q")
         deadline = time.time() + 5
         while time.time() < deadline:
@@ -93,6 +102,9 @@ try:
     commands = log.read_text() if log.exists() else ""
     for forbidden in ("daemon start", " login", "setup ssh"):
         if forbidden in commands: raise SystemExit("observational panel ran repair: " + commands)
+    saved = json.loads((plugin_state / "state.json.status").read_text())
+    if not saved["worker_control"]["stopped"]:
+        raise SystemExit("read-only panel navigation changed Management OFF")
     print("panel PTY smoke passed:", temp, "session", session)
 finally:
     shutil.rmtree(temp, ignore_errors=True)

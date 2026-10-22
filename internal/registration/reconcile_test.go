@@ -82,13 +82,13 @@ func TestManualMachineIsNotAdopted(t *testing.T) {
 	outcome, saved := fixture.service.registerPrepared("scope", &state,
 		[]herdr.Machine{{ID: "manual", Label: "demo", Target: "demo.sbx", Session: "default"}},
 		sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"})
-	if outcome.Status != "ownership conflict" || outcome.Detail != "This sandbox is already a Herdr machine. It was added outside Herdr-sbx." || saved != nil {
+	if outcome.Status != "association warning" || outcome.Detail != "A herdr entry already exists for this sandbox; refresh its association before creating an entry." || saved != nil {
 		t.Fatalf("outcome=%#v saved=%#v", outcome, saved)
 	}
 	outcome, saved = fixture.service.registerPrepared("scope", &state,
 		[]herdr.Machine{{ID: "other", Label: sandboxMachineLabel("demo"), Target: "other.sbx", Session: "default"}},
 		sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"})
-	if outcome.Status != "ownership conflict" || outcome.Detail != "Another Herdr machine already uses this sandbox's name. Review that machine in Herdr." || saved != nil {
+	if outcome.Status != "association warning" || outcome.Detail != "Another herdr entry already uses this label. Rename that entry before creating one for this sandbox." || saved != nil {
 		t.Fatalf("name collision outcome=%#v saved=%#v", outcome, saved)
 	}
 }

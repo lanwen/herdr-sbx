@@ -8,7 +8,6 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lanwen/herdr-sbx/internal/precheck"
-	"github.com/lanwen/herdr-sbx/internal/store"
 )
 
 // These terminal colors echo the sandbox CLI palette without depending on its
@@ -42,6 +41,9 @@ func filled(fg, bg, text string) string {
 		return text
 	}
 	// Restore the containing surface after nested semantic text or controls.
+	// Style-preserving wrapping may emit a full reset at a physical newline.
+	// Reset text attributes while restoring this surface's foreground/background.
+	text = strings.NewReplacer("\x1b[m", "\x1b[m"+fg+bg, "\x1b[0m", "\x1b[0m"+fg+bg).Replace(text)
 	text = strings.ReplaceAll(text, "\x1b[39m", fg)
 	text = strings.ReplaceAll(text, "\x1b[49m", bg)
 	return fg + bg + text + "\x1b[39m\x1b[49m"
@@ -52,7 +54,7 @@ func buttonStyle(text string, focused bool) string {
 func primaryButtonStyle(text string, focused bool) string {
 	return styledButton(text, focused, true)
 }
-func styledButton(text string, focused, primary bool) string {
+func styledButton(text string, focused, primary bool, focusColor ...string) string {
 	text = strings.TrimPrefix(strings.TrimSuffix(ansi.Strip(text), "]"), "[")
 	text = strings.TrimPrefix(text, "› ")
 	if focused {
@@ -68,8 +70,18 @@ func styledButton(text string, focused, primary bool) string {
 	}
 	if focused {
 		fg, bg = "\x1b[38;2;0;0;0m", "\x1b[48;2;136;162;238m"
+		if len(focusColor) > 0 {
+			bg = strings.Replace(focusColor[0], "[38;", "[48;", 1)
+		}
 	}
-	return filled(fg, bg, "\x1b[1m"+text+"\x1b[22m")
+	return filled(fg, bg, buttonLabelWeight(text))
+}
+
+func buttonLabelWeight(text string) string {
+	if !colorsEnabled() {
+		return text
+	}
+	return "\x1b[1m" + strings.ReplaceAll(text, "(space)", "\x1b[22m(space)\x1b[1m") + "\x1b[22m"
 }
 
 func badgeStyle(color, text string) string {
@@ -107,31 +119,19 @@ func runtimeStyle(state, text string) string {
 		return ink(colorInfo, text)
 	}
 }
-func managementStyle(choice store.ManagementChoice, text string) string {
-	switch choice {
-	case store.Watched:
-		return ink(colorAccent, text)
-	case store.Unmanaged:
-		return ink(colorWarning, text)
-	case store.Disabled:
-		return ink(colorMuted, text)
-	default:
-		return ink(colorInfo, text)
-	}
-}
 func enabledStyle(enabled bool, text string) string {
 	if enabled {
 		return ink(colorSuccess, text)
 	}
 	return ink(colorMuted, text)
 }
-func readinessStyle(state, text string) string {
+func statusStyle(state, text string) string {
 	switch strings.ToLower(state) {
 	case "ready", "connected", "registered":
 		return ink(colorSuccess, text)
 	case "failed", "blocked", "error", "manual intervention required":
 		return ink(colorError, text)
-	case "preparing", "installing", "pending", "adopted", "ownership-conflict", "ownership conflict":
+	case "preparing", "installing", "pending", "entry ambiguous":
 		return ink(colorWarning, text)
 	default:
 		return ink(colorMuted, text)
@@ -141,7 +141,7 @@ func (m *model) selectedLine(l line) bool {
 	for _, h := range l.hits {
 		switch h.action {
 		case "select":
-			if m.page == "Sandboxes" && m.focus == "table" && m.input == nil && m.dialog == "" && h.id == m.selected {
+			if m.page == "Sandboxes" && m.focus == "table" && m.input == nil && m.dialog == "" && h.id == m.selected && h.id != m.expanded {
 				return true
 			}
 		case "plugin":
@@ -180,7 +180,11 @@ func (m *model) paintLine(l line) string {
 
 // outline uses the same cells for drawing and hit testing. It adds no focus or
 // navigation state; long content still scrolls through the existing viewport.
-func outline(lines []line, title string, width, indent int) []line {
+func outline(lines []line, title string, width, indent int, borderColors ...string) []line {
+	border := colorSeparator
+	if len(borderColors) > 0 {
+		border = borderColors[0]
+	}
 	if width-indent < 6 {
 		return lines
 	}
@@ -189,12 +193,12 @@ func outline(lines []line, title string, width, indent int) []line {
 	top := strings.Repeat(" ", indent) + "╭" + label + strings.Repeat("─", max(0, width-indent-2-ansi.StringWidth(label))) + "╮"
 	// Inline title colors must restore the border foreground after their reset.
 	if colorsEnabled() {
-		top = strings.ReplaceAll(top, "\x1b[39m", colorSeparator)
+		top = strings.ReplaceAll(top, "\x1b[39m", border)
 	}
-	result := []line{textLine(ink(colorSeparator, top))}
+	result := []line{textLine(ink(border, top))}
 	for _, l := range fitLines(lines, inner) {
 		text := truncate(l.text, inner)
-		content := strings.Repeat(" ", indent) + ink(colorSeparator, "│") + " " + text + strings.Repeat(" ", max(0, inner-ansi.StringWidth(text))) + " " + ink(colorSeparator, "│")
+		content := strings.Repeat(" ", indent) + ink(border, "│") + " " + text + strings.Repeat(" ", max(0, inner-ansi.StringWidth(text))) + " " + ink(border, "│")
 		hits := make([]hit, 0, len(l.hits))
 		for _, h := range l.hits {
 			h.w = min(h.w, max(0, inner-h.x))
@@ -205,7 +209,7 @@ func outline(lines []line, title string, width, indent int) []line {
 		}
 		result = append(result, line{text: content, hits: hits})
 	}
-	result = append(result, textLine(ink(colorSeparator, strings.Repeat(" ", indent)+"╰"+strings.Repeat("─", width-indent-2)+"╯")))
+	result = append(result, textLine(ink(border, strings.Repeat(" ", indent)+"╰"+strings.Repeat("─", width-indent-2)+"╯")))
 	return result
 }
 
@@ -237,17 +241,13 @@ func stateLabel(state string) string {
 		return "Unknown"
 	}
 }
-func autoSyncIndicator(state string) (string, string) {
-	switch strings.ToLower(state) {
-	case "running":
-		return "ON", colorSuccess
-	case "starting", "stopped", "exited":
-		return "OFF", colorMuted
-	default:
-		return "ERROR", colorError
-	}
+
+// managementCancelling reports work settling independently of the requested setting.
+func (m *model) managementCancelling() bool {
+	return m.worker.State == "cancelling" || !m.stopRequestedAt.IsZero()
 }
-func (m *model) autoSyncStatus() string {
+
+func (m *model) managementState() (string, string) {
 	state, color := "Error", colorError
 	switch m.worker.State {
 	case "running":
@@ -257,12 +257,21 @@ func (m *model) autoSyncStatus() string {
 	case "stopped", "exited":
 		state, color = "Stopped", colorMuted
 	}
-	text := ink(color, state)
-	if m.workerControlError {
-		return ink(colorError, "ERROR") + " · " + text
+	if m.managementCancelling() {
+		if m.workerControlError {
+			return "Cancelling ERROR · " + state, colorMuted
+		}
+		return "Cancelling", colorMuted
 	}
-	if !m.stopRequestedAt.IsZero() && m.worker.State != "stopped" && m.worker.State != "exited" {
-		return text + " " + ink(colorWarning, "→ Stopping")
+	if m.workerControlError {
+		return "ERROR · " + state, colorError
+	}
+	return state, color
+}
+
+func (m *model) managementActivity() string {
+	if m.managementCancelling() || m.workerControlError {
+		return ""
 	}
 	pending := m.refreshing || m.checksPending
 	if m.worker.State == "running" && !m.worker.LastSync.IsZero() && time.Since(m.worker.LastSync) > 30*time.Second {
@@ -270,9 +279,19 @@ func (m *model) autoSyncStatus() string {
 		if pending {
 			stamp += "*"
 		}
-		text += " " + ink(colorMuted, stamp)
-	} else if pending {
-		text += ink(colorWarning, " *")
+		return stamp
+	}
+	if pending {
+		return "*"
+	}
+	return ""
+}
+
+func (m *model) managementStatus() string {
+	state, color := m.managementState()
+	text := ink(color, state)
+	if activity := m.managementActivity(); activity != "" {
+		text += " " + ink(colorMuted, activity)
 	}
 	return text
 }
@@ -288,14 +307,10 @@ func (m *model) statusFooter() line {
 			}
 		}
 	}
-	autoSyncState, autoSyncColor := autoSyncIndicator(m.worker.State)
-	transitioning := m.pending["worker"] ||
-		(!m.stopRequestedAt.IsZero() && m.worker.State != "stopped" && m.worker.State != "exited") ||
-		m.worker.State == "starting" || m.worker.State == "pending" || m.worker.State == "reconnecting"
-	if transitioning && !m.workerControlError {
-		autoSyncState += "*"
+	management := "Management " + enabledStyle(m.workerEnabled, strings.ToUpper(onOff(m.workerEnabled)))
+	if m.managementCancelling() && m.width >= 42 {
+		management += " " + ink(colorMuted, "Cancelling")
 	}
-	daemon := "Auto-sync " + ink(autoSyncColor, autoSyncState)
 	docker := "sbx " + stateDot(dockerState)
 	if !colorsEnabled() {
 		if m.width >= 60 {
@@ -304,16 +319,7 @@ func (m *model) statusFooter() line {
 			docker = "sbx " + runtimeDot(dockerState)
 		}
 	}
-	if m.focus == "worker" {
-		daemon = ink(colorAccent, "› ") + daemon + ink(colorAccent, " ↵")
-	}
-	statusWidth := ansi.StringWidth(daemon) + 2 + ansi.StringWidth(docker)
-	helpWidth := max(1, m.width-statusWidth-2)
-	helpText := ink(colorMuted, m.renderHelp(helpWidth, false))
-	if helpWidth < 10 {
-		helpText = ink(colorMuted, "?")
-	}
-	gap := max(1, m.width-ansi.StringWidth(helpText)-statusWidth)
-	x := ansi.StringWidth(helpText) + gap
-	return line{text: helpText + strings.Repeat(" ", gap) + daemon + "  " + docker, hits: []hit{{x: x, w: ansi.StringWidth(daemon), action: "worker"}, {x: x + ansi.StringWidth(daemon) + 2, w: ansi.StringWidth(docker), action: "docker"}}}
+	gap := 2
+	start := max(0, m.width-ansi.StringWidth(management)-gap-ansi.StringWidth(docker))
+	return line{text: strings.Repeat(" ", start) + management + strings.Repeat(" ", gap) + docker, hits: []hit{{x: start, w: ansi.StringWidth(management), action: "worker"}, {x: start + ansi.StringWidth(management) + gap, w: ansi.StringWidth(docker), action: "docker"}}}
 }

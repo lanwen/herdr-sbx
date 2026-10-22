@@ -16,8 +16,8 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/store"
 )
 
-// Project setup is part of registration, including upgrades of already owned
-// machines. Its failure must not discard ownership or add another machine.
+// Project setup is part of registration, including upgrades of already associated
+// machines. Its failure must not discard the association or add another machine.
 func (s *Service) projectReadiness(ctx context.Context, scope string, st *store.State, sb sbx.Sandbox, item *store.Tracked, known bool, current func() bool) result {
 	s.observeGuestServer(ctx, scope, sb, current)
 	outcome := result{Name: sb.Name, Status: "ready", Detail: "already registered"}
@@ -40,7 +40,7 @@ func (s *Service) projectReadiness(ctx context.Context, scope string, st *store.
 	if err != nil {
 		return result{Name: sb.Name, Status: "plugin setup required", Detail: "herdr plugin sync could not read the local source: " + err.Error()}
 	}
-	fingerprint = item.ProfileID + "\x00" + item.Target + "\x00" + sb.ID + "\x00" + fingerprint
+	fingerprint = item.Target + "\x00" + sb.ID + "\x00" + fingerprint
 	if observed := item.GuestSync; !explicit && !fresh && observed != nil && observed.Fingerprint == fingerprint && time.Since(observed.CheckedAt) >= 0 && time.Since(observed.CheckedAt) < guestObservationAuditInterval {
 		if ctx.Err() != nil || current == nil || !current() {
 			return result{Name: sb.Name, Status: "stale", Detail: "sandbox identity could not be verified"}
@@ -59,7 +59,7 @@ func (s *Service) projectReadiness(ctx context.Context, scope string, st *store.
 			}
 		}
 		latest, fingerprintErr := guestplugins.DesiredFingerprint(ctx, s.herdr, scope, sb.ID)
-		latest = item.ProfileID + "\x00" + item.Target + "\x00" + sb.ID + "\x00" + latest
+		latest = item.Target + "\x00" + sb.ID + "\x00" + latest
 		if ctx.Err() != nil || current == nil || !current() {
 			return result{Name: sb.Name, Status: "stale", Detail: "sandbox changed during herdr plugin synchronization"}
 		}
@@ -266,6 +266,9 @@ func (s *Service) prepareProjectWorkspace(ctx context.Context, scope string, st 
 	if err := checkCurrent(); err != nil {
 		return err
 	}
+	if err := CheckAutomaticWork(ctx); err != nil {
+		return err
+	}
 	panes, output, err := s.herdr.Panes(ctx, item.ProfileID)
 	if err != nil {
 		var upstream *herdr.CommandError
@@ -294,6 +297,9 @@ func (s *Service) prepareProjectWorkspace(ctx context.Context, scope string, st 
 		if saveErr := save(); saveErr != nil {
 			return saveErr
 		}
+		return err
+	}
+	if err := CheckAutomaticWork(ctx); err != nil {
 		return err
 	}
 	response, output, createErr := s.herdr.CreateWorkspace(ctx, item.ProfileID, cwd, sb.Name)
@@ -345,6 +351,11 @@ func (s *Service) projectDirectory(ctx context.Context, sb sbx.Sandbox) (string,
 // in its SSH login directory. Persist the startup intent so failed or uncertain
 // attempts must verify the same project on retry, never create another workspace.
 func (s *Service) prepareInitialProjectWorkspace(ctx context.Context, scope string, st *store.State, sb sbx.Sandbox, current func() bool) (string, error) {
+	for _, item := range st.Scopes[scope] {
+		if item.SandboxID == sb.ID && item.ProjectWorkspaceDone {
+			return "", nil
+		}
+	}
 	cwd := ""
 	for _, item := range st.Scopes[scope] {
 		if item.SandboxID == sb.ID && item.ProfileID == "" {
@@ -354,6 +365,12 @@ func (s *Service) prepareInitialProjectWorkspace(ctx context.Context, scope stri
 	if cwd == "" {
 		if sb.Workspace == "" {
 			return "", nil
+		}
+		if err := CheckAutomaticWork(ctx); err != nil {
+			return "", err
+		}
+		if current != nil && !current() {
+			return "", context.Canceled
 		}
 		running, err := s.herdr.GuestServerRunning(ctx, sb.Name+".sbx")
 		if err != nil {
@@ -376,6 +393,9 @@ func (s *Service) prepareInitialProjectWorkspace(ctx context.Context, scope stri
 	}
 	if ctx.Err() != nil || current == nil || !current() {
 		return "", errors.New("sandbox changed before project startup")
+	}
+	if err := CheckAutomaticWork(ctx); err != nil {
+		return "", err
 	}
 	if err := s.herdr.StartProjectServer(ctx, sb.Name+".sbx", cwd); err != nil {
 		return "", err

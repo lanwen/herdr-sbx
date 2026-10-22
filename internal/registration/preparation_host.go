@@ -193,6 +193,9 @@ func (s *Service) streamHerdr(ctx context.Context, target string, binary io.Read
 }
 
 func (s *Service) streamHerdrReplacing(ctx context.Context, target string, binary io.Reader, checksum, version, old string) error {
+	if err := CheckAutomaticWork(ctx); err != nil {
+		return err
+	}
 	script := transferredInstallCommand(checksum, version)
 	if old != "" {
 		script = strings.Replace(script, `[ ! -e "$HOME/.local/bin/herdr" ] && [ ! -L "$HOME/.local/bin/herdr" ]; ln -T "$stage/herdr" "$HOME/.local/bin/herdr"`,

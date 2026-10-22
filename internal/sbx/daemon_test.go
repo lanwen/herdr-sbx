@@ -3,6 +3,7 @@ package sbx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -28,9 +29,10 @@ func TestSandboxAbsenceRequiresA404(t *testing.T) {
 		{"named absence", 404, `{"message":"sandbox \"demo\" not found"}`, true, false},
 		{"coded absence", 404, `{"code":"sandbox_not_found"}`, true, false},
 		{"present", 200, `{"uuid":"old","name":"demo","status":"running"}`, false, false},
-		{"replacement", 200, `{"uuid":"new","name":"demo","status":"running"}`, true, false},
+		{"replacement", 200, `{"uuid":"new","name":"demo","status":"running"}`, false, true},
 		{"generic 404", 404, `{"message":"Not Found"}`, false, true},
 		{"unavailable", 503, ``, false, true},
+		{"missing identity", 200, `{"name":"demo"}`, false, true},
 		{"wrong sandbox", 200, `{"uuid":"new","name":"different"}`, false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -41,6 +43,9 @@ func TestSandboxAbsenceRequiresA404(t *testing.T) {
 				return &http.Response{StatusCode: test.status, Body: io.NopCloser(strings.NewReader(test.body))}, nil
 			}))
 			absent, err := client.SandboxAbsent(context.Background(), "unused", "demo", "old")
+			if errors.Is(err, ErrSandboxIdentityChanged) != (test.name == "replacement") {
+				t.Fatalf("incorrect replacement proof: %v", err)
+			}
 			if absent != test.absent || (err != nil) != test.err {
 				t.Fatalf("absence = %v, %v", absent, err)
 			}

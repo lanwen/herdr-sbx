@@ -74,8 +74,9 @@ func TestThemeRetainsContentGeometryAndMouseBoundsWithoutColor(t *testing.T) {
 func TestThemeUsesSemanticColorsAndFocusedButtonFill(t *testing.T) {
 	unsetNoColor(t)
 	m := styledFixture(t)
+	m.workerEnabled = true
 	view := m.View().Content
-	for _, color := range []string{colorSuccess, colorSand, colorWarning, colorError, backgroundSelected, colorSeparator} {
+	for _, color := range []string{colorSuccess, colorSand, colorError, colorSeparator} {
 		if !strings.Contains(view, color) {
 			t.Fatalf("semantic color %q missing", color)
 		}
@@ -83,12 +84,12 @@ func TestThemeUsesSemanticColorsAndFocusedButtonFill(t *testing.T) {
 	m.dialog = "startup"
 	m.button = 1
 	view = m.View().Content
-	if !strings.Contains(view, "\x1b[48;2;136;162;238m\x1b[1m  Start auto-sync ↵  ") {
+	if !strings.Contains(view, "\x1b[48;2;136;162;238m\x1b[1m  Start Management ↵  ") {
 		t.Fatal("focused button has no selected fill")
 	}
 	t.Setenv("NO_COLOR", "")
 	plain := m.View().Content
-	if !strings.Contains(plain, "  Start auto-sync ↵  ") || !strings.Contains(plain, "Auto-sync ON") {
+	if !strings.Contains(plain, "  Start Management ↵  ") || !strings.Contains(plain, "Management ON") {
 		t.Fatal("colorless controls lost labels")
 	}
 }
@@ -154,6 +155,7 @@ func TestDiagnosticAndEventsHeadersShowActionableFocus(t *testing.T) {
 func TestSandboxRowFillFollowsTableFocus(t *testing.T) {
 	unsetNoColor(t)
 	m := modelFixture(t)
+	m.expanded = ""
 	var row line
 	for _, l := range m.sandboxLines() {
 		for _, h := range l.hits {
@@ -223,19 +225,19 @@ func TestOutlinedMouseControlsUseRenderedCells(t *testing.T) {
 	unsetNoColor(t)
 	m := styledFixture(t)
 	m.View()
-	var expand hit
+	var target hit
 	for _, h := range m.hits {
-		if h.action == "expand" && h.id == "a" {
-			expand = h
+		if h.action == "select" && h.id == "b" && h.x > 4 {
+			target = h
 		}
 	}
-	row := strings.Split(ansi.Strip(m.View().Content), "\n")[expand.y]
-	if ansi.Cut(row, expand.x, expand.x+expand.w) != "▸ " {
-		t.Fatalf("disclosure hit does not match render: %#v %q", expand, row)
+	row := strings.Split(ansi.Strip(m.View().Content), "\n")[target.y]
+	if !strings.Contains(ansi.Cut(row, target.x, target.x+target.w), "beta") {
+		t.Fatalf("row selection hit misses sandbox name: %#v %q", target, row)
 	}
-	m.click(expand.x, expand.y)
-	if m.expanded != "a" {
-		t.Fatal("outlined disclosure cannot activate")
+	m.click(target.x, target.y)
+	if m.selected != "b" || m.expanded != "b" {
+		t.Fatal("outlined row cannot select sandbox preview")
 	}
 }
 
@@ -248,7 +250,11 @@ func TestOutlinedLongInputsKeepCursorVisible(t *testing.T) {
 				m.width, m.height = width, 18
 				m.input = &inputState{kind: kind, target: "a", text: strings.Repeat("long ", 40), cursor: 200}
 				view := ansi.Strip(m.View().Content)
-				if !strings.Contains(view, "long │") {
+				caret := "│"
+				if kind == "rename" {
+					caret = "█"
+				}
+				if !strings.Contains(view, "long "+caret) {
 					t.Fatalf("cursor clipped: %s", view)
 				}
 				if kind == "filter" {

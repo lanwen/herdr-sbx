@@ -27,10 +27,10 @@ type result struct {
 	PluginFailures []store.PluginFailure
 }
 
-func ownedMachineByID(machines []herdr.Machine, id, label, target string) *herdr.Machine {
+func associatedMachineByID(machines []herdr.Machine, id, label, target string) *herdr.Machine {
 	for i := range machines {
 		candidate := &machines[i]
-		if candidate.ID == id && candidate.Label == label && candidate.Target == target && usesDefaultSession(candidate.Session) {
+		if candidate.ID == id && candidate.Target == target && usesDefaultSession(candidate.Session) {
 			return candidate
 		}
 	}
@@ -56,7 +56,7 @@ func (s *Service) Reconcile(out io.Writer) error {
 func (s *Service) ReconcileSelected(out io.Writer, match func(sbx.Sandbox) bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return s.reconcileMatching(ctx, out, match, nil)
+	return s.reconcileMatching(WithExplicitAction(ctx), out, match, nil)
 }
 
 func (s *Service) ReconcileContext(ctx context.Context, out io.Writer) error {
@@ -68,7 +68,7 @@ func (s *Service) reconcileMatching(ctx context.Context, out io.Writer, match fu
 }
 
 func (s *Service) reconcileWithInstallation(ctx context.Context, out io.Writer, match func(sbx.Sandbox) bool, current func(sbx.Sandbox) bool, installation installationOptions) error {
-	if err := ctx.Err(); err != nil {
+	if err := CheckAutomaticWork(ctx); err != nil {
 		return err
 	}
 	p := s.Inspect()
@@ -81,20 +81,22 @@ func (s *Service) reconcileWithInstallation(ctx context.Context, out io.Writer, 
 		return err
 	}
 	defer unlock()
-	if err := s.recoverPolicy(p.Scope, p.Socket); err != nil {
-		return err
+	if err := CheckAutomaticWork(context.Background()); err == nil {
+		if err := s.recoverPolicy(p.Scope, p.Socket); err != nil {
+			return err
+		}
 	}
 	// A full refresh must recover deletions even when an empty inventory or
 	// missing guest SSH setup prevents registering new machines.
-	if match == nil && hasLevel(p.Checks, "Herdr", precheck.Ready) && hasLevel(p.Checks, "Sandbox capability", precheck.Ready) && hasLevel(p.Checks, "Sandbox daemon", precheck.Ready) && !hasBlocked(p.Checks, "Docker authorization") {
+	if match == nil && CheckAutomaticWork(context.Background()) == nil && hasLevel(p.Checks, "Herdr", precheck.Ready) && hasLevel(p.Checks, "Sandbox capability", precheck.Ready) && hasLevel(p.Checks, "Sandbox daemon", precheck.Ready) && !hasBlocked(p.Checks, "Docker authorization") {
 		if err := s.recoverDeletedSandboxes(ctx, out, p.Scope, p.Socket); err != nil {
 			return err
 		}
 	}
-	if hasBlocked(p.Checks, "Sandbox capability") || hasBlocked(p.Checks, "Sandbox daemon") || hasBlocked(p.Checks, "Docker authorization") || hasBlocked(p.Checks, "Sandbox SSH") {
+	if hasBlocked(p.Checks, "Sandbox capability") || hasBlocked(p.Checks, "Sandbox daemon") || hasBlocked(p.Checks, "Docker authorization") {
 		return errors.New("fix the blocked prerequisites before registering sandboxes")
 	}
-	if !hasLevel(p.Checks, "Sandbox capability", precheck.Ready) || !hasLevel(p.Checks, "Sandbox daemon", precheck.Ready) || !hasLevel(p.Checks, "Sandbox inventory", precheck.Ready) || !hasLevel(p.Checks, "Sandbox SSH", precheck.Ready) {
+	if !hasLevel(p.Checks, "Sandbox capability", precheck.Ready) || !hasLevel(p.Checks, "Sandbox daemon", precheck.Ready) || !hasLevel(p.Checks, "Sandbox inventory", precheck.Ready) {
 		return errors.New("complete the prerequisite checks before registering sandboxes")
 	}
 
@@ -115,6 +117,10 @@ func (s *Service) reconcileWithInstallation(ctx context.Context, out io.Writer, 
 			}
 		}
 	}
+	beforeCatalog, err := store.ReadStatusStore()
+	if err != nil {
+		return err
+	}
 	machines, machineOutput, err := s.herdr.ListMachines(ctx)
 	if err != nil {
 		return fmt.Errorf("list Herdr machines: %s", commandError(err, machineOutput))
@@ -124,13 +130,38 @@ func (s *Service) reconcileWithInstallation(ctx context.Context, out io.Writer, 
 	if err != nil {
 		return err
 	}
-	rows, err := observeManagement(p.Scope, sandboxes, machines, st)
+	rows, err := observeEntries(p.Scope, sandboxes, machines, st, true, beforeCatalog.EnabledRevisions)
 	if err != nil {
 		return err
 	}
-	management := map[string]store.ManagementChoice{}
+	management := map[string]store.EnabledChoice{}
+	associationIssues := map[string]string{}
+	observationPending := map[string]bool{}
 	for _, row := range rows {
-		management[row.Sandbox.ID] = row.Management
+		management[row.Sandbox.ID] = row.Enabled
+		observationPending[row.Sandbox.ID] = row.ObservationPending
+		associationIssues[row.Sandbox.ID] = row.AssociationIssue
+		if !row.EntryPresent && row.AssociationIssue == "" {
+			clearAbsentProfile(&st, p.Scope, row.Sandbox.ID)
+		}
+		if row.EntryPresent {
+			item := store.Tracked{SandboxID: row.Sandbox.ID, Target: row.Sandbox.Name + ".sbx", ProfileID: row.ProfileID, Label: row.Label}
+			for _, saved := range st.Scopes[p.Scope] {
+				if saved.SandboxID == row.Sandbox.ID {
+					item = saved
+					break
+				}
+			}
+			item.ProfileID, item.Target = row.ProfileID, row.Sandbox.Name+".sbx"
+			item.Pending = false
+			item.Label = row.Label
+			if err := replaceTracked(&st, p.Scope, item); err != nil {
+				st.Scopes[p.Scope] = append(st.Scopes[p.Scope], item)
+			}
+		}
+	}
+	if err := store.SaveState(st); err != nil {
+		return err
 	}
 	trackedByID := map[string]store.Tracked{}
 	for _, item := range st.Scopes[p.Scope] {
@@ -140,14 +171,72 @@ func (s *Service) reconcileWithInstallation(ctx context.Context, out io.Writer, 
 	results := []result{}
 	resultSandboxes := map[string]sbx.Sandbox{}
 	for _, sb := range sandboxes {
-		if management[sb.ID] != store.Watched {
-			if management[sb.ID] == store.Unmanaged && (match == nil || match(sb)) {
-				results = append(results, result{Name: sb.Name, Status: "ownership conflict", Detail: "This sandbox is already a Herdr machine. It was added outside Herdr-sbx."})
-				resultSandboxes[sb.Name] = sb
+		if err := CheckAutomaticWork(ctx); err != nil {
+			return err
+		}
+		if match != nil && !match(sb) {
+			continue
+		}
+		if observationPending[sb.ID] {
+			continue
+		}
+		if issue := associationIssues[sb.ID]; issue != "" {
+			results = append(results, result{Name: sb.Name, Status: "association warning", DiagnosticCode: store.CodeOwnershipConflict, Detail: issue})
+			resultSandboxes[sb.Name] = sb
+			continue
+		}
+		if management[sb.ID] != store.Enabled {
+			if item, known := trackedByID[sb.ID]; known && item.ProfileID != "" {
+				if m := associatedTrackedMachine(machines, item); m != nil && (m.Enabled == nil || *m.Enabled) {
+					if err := CheckAutomaticWork(ctx); err != nil {
+						return err
+					}
+					output, err := s.herdr.SetMachineEnabled(ctx, m.ID, false)
+					after, _, readErr := s.herdr.ListMachines(ctx)
+					confirmed := associatedTrackedMachine(after, item)
+					if err != nil || readErr != nil || confirmed == nil || confirmed.Enabled == nil || *confirmed.Enabled {
+						detail := "disabled herdr connection is not confirmed"
+						if err != nil {
+							detail += ": " + commandError(err, output)
+						}
+						results = append(results, result{Name: sb.Name, Status: "failed", Detail: detail})
+						resultSandboxes[sb.Name] = sb
+						continue
+					}
+					item.LastObservedNativeEnabled = confirmed.Enabled
+					_ = replaceTracked(&st, p.Scope, item)
+					if err := store.SaveState(st); err != nil {
+						return err
+					}
+				}
 			}
 			continue
 		}
 		if !strings.EqualFold(sb.Status, "running") {
+			if !strings.EqualFold(sb.Status, "stopped") {
+				status, detail := deferredRuntime(sb.Status)
+				results = append(results, result{Name: sb.Name, Status: status, Detail: detail})
+				resultSandboxes[sb.Name] = sb
+				continue
+			}
+			item, known := trackedByID[sb.ID]
+			if known && item.ProfileID != "" {
+				observed := store.SandboxStatus{}
+				row := SandboxRow{Sandbox: sb, Enabled: store.Enabled, EntryPresent: true}
+				if machine := associatedTrackedMachine(machines, item); machine != nil {
+					row.NativeEnabled = machine.Enabled
+				}
+				applyObservedStatus(&observed, row)
+				results = append(results, result{Name: sb.Name, Status: observed.Connection, Detail: observed.Detail})
+			} else {
+				// Passive observation normally already saved Disabled. Keep this
+				// branch fail-closed if inventory changes during reconciliation.
+				if err := store.SetEnabled(p.Scope, sb.ID, store.Disabled); err != nil {
+					return err
+				}
+				results = append(results, result{Name: sb.Name, Status: "stopped", Detail: "This sandbox is stopped and has no herdr entry."})
+			}
+			resultSandboxes[sb.Name] = sb
 			continue
 		}
 		if match != nil && !match(sb) {
@@ -158,19 +247,47 @@ func (s *Service) reconcileWithInstallation(ctx context.Context, out io.Writer, 
 			resultSandboxes[sb.Name] = sb
 			continue
 		}
-		registrationCurrent := func() bool { return s.sandboxRunning(p.Socket, sb) }
+		if !hasLevel(p.Checks, "Sandbox SSH", precheck.Ready) {
+			results = append(results, result{Name: sb.Name, Status: "setup required", Detail: "Set up sandbox SSH before preparing this running sandbox."})
+			resultSandboxes[sb.Name] = sb
+			continue
+		}
+		registrationCurrent := func() bool { return s.sandboxRunning(p.Socket, sb) && sandboxWorkAllowed(ctx, p.Scope, sb.ID) }
 		if current != nil {
-			registrationCurrent = func() bool { return current(sb) }
+			registrationCurrent = func() bool { return current(sb) && sandboxWorkAllowed(ctx, p.Scope, sb.ID) }
 		}
 		item, known := trackedByID[sb.ID]
 		if known && item.ProfileID != "" {
+			if machine := associatedTrackedMachine(machines, item); machine != nil && machine.Enabled != nil && !*machine.Enabled {
+				if !registrationCurrent() {
+					return context.Canceled
+				}
+				output, err := s.herdr.SetMachineEnabled(ctx, machine.ID, true)
+				if err != nil {
+					results = append(results, result{Name: sb.Name, Status: "failed", Detail: "enable herdr connection: " + commandError(err, output)})
+					resultSandboxes[sb.Name] = sb
+					continue
+				}
+				after, _, err := s.herdr.ListMachines(ctx)
+				confirmed := associatedTrackedMachine(after, item)
+				if err != nil || confirmed == nil || confirmed.Enabled == nil || !*confirmed.Enabled {
+					results = append(results, result{Name: sb.Name, Status: "failed", Detail: "herdr connection enable is not confirmed"})
+					resultSandboxes[sb.Name] = sb
+					continue
+				}
+				item.LastObservedNativeEnabled = confirmed.Enabled
+				_ = replaceTracked(&st, p.Scope, item)
+				if err := store.SaveState(st); err != nil {
+					return err
+				}
+			}
 			labelErr := s.recoverMachineLabel(ctx, p.Scope, &st, machines, sb, &item, registrationCurrent)
 			if labelErr == nil {
 				results = append(results, s.projectReadiness(ctx, p.Scope, &st, sb, &item, true, registrationCurrent))
 				resultSandboxes[sb.Name] = sb
 				continue
 			}
-			results = append(results, result{Name: sb.Name, Status: "ownership conflict", Detail: "saved machine label was not updated: " + labelErr.Error()})
+			results = append(results, result{Name: sb.Name, Status: "association warning", Detail: "saved machine label was not updated: " + labelErr.Error()})
 			resultSandboxes[sb.Name] = sb
 			continue
 		}
@@ -184,7 +301,7 @@ func (s *Service) reconcileWithInstallation(ctx context.Context, out io.Writer, 
 				}
 			}
 			if collision {
-				results = append(results, result{Name: sb.Name, Status: "ownership conflict", Detail: "previous registration is unresolved; inspect the machine catalog before retrying"})
+				results = append(results, result{Name: sb.Name, Status: "association warning", Detail: "previous registration is unresolved; inspect the machine catalog before retrying"})
 				resultSandboxes[sb.Name] = sb
 				continue
 			}
@@ -260,9 +377,9 @@ func (s *Service) registerWithInstallation(ctx context.Context, scope string, st
 	for _, m := range machines {
 		if m.Label == sandboxMachineLabel(sb.Name) || m.Target == target {
 			if m.Target == target {
-				return result{Name: sb.Name, Status: "ownership conflict", Detail: "This sandbox is already a Herdr machine. It was added outside Herdr-sbx."}, nil
+				return result{Name: sb.Name, Status: "association warning", Detail: "A herdr entry already exists for this sandbox; refresh its association before creating an entry."}, nil
 			}
-			return result{Name: sb.Name, Status: "ownership conflict", Detail: "Another Herdr machine already uses this sandbox's name. Review that machine in Herdr."}, nil
+			return result{Name: sb.Name, Status: "association warning", Detail: "Another herdr entry already uses this label. Rename that entry before creating one for this sandbox."}, nil
 		}
 	}
 
@@ -316,6 +433,13 @@ func (s *Service) registerWithInstallation(ctx context.Context, scope string, st
 		return result{Name: sb.Name, Status: "workspace setup required", Detail: err.Error()}, nil
 	}
 	pending := store.Tracked{SandboxID: sb.ID, Label: sandboxMachineLabel(sb.Name), Target: target, Pending: true, ProjectWorkspacePending: initialCWD}
+	for _, previous := range st.Scopes[scope] {
+		if previous.SandboxID == sb.ID {
+			pending.ProjectWorkspaceDone = previous.ProjectWorkspaceDone
+			pending.GuestSync = previous.GuestSync
+			break
+		}
+	}
 	if err := replaceTracked(st, scope, pending); err != nil {
 		st.Scopes[scope] = append(st.Scopes[scope], pending)
 	}
@@ -323,8 +447,8 @@ func (s *Service) registerWithInstallation(ctx context.Context, scope string, st
 		return result{Name: sb.Name, Status: "failed", Detail: err.Error()}, nil
 	}
 	if current != nil && !current() {
-		if err := removeTracked(st, scope, pending.SandboxID); err != nil || store.SaveState(*st) != nil {
-			return result{Name: sb.Name, Status: "ownership conflict", Detail: "sandbox changed and registration intent could not be cleared"}, &pending
+		if err := clearUnperformedAdd(st, scope, pending.SandboxID); err != nil || store.SaveState(*st) != nil {
+			return result{Name: sb.Name, Status: "association warning", Detail: "sandbox changed and registration intent could not be cleared"}, &pending
 		}
 		return result{Name: sb.Name, Status: "stale", Detail: "sandbox changed before machine registration"}, nil
 	}
@@ -338,35 +462,35 @@ func (s *Service) registerWithInstallation(ctx context.Context, scope string, st
 			return result{Name: sb.Name, Status: "retrying", Detail: "Herdr aligned; registration will retry on the next scan"}, &pending
 		}
 		if deterministicAddFailure(addOutput) {
-			if err := removeTracked(st, scope, pending.SandboxID); err != nil {
-				return result{Name: sb.Name, Status: "ownership conflict", Detail: "machine add failed and its intent could not be cleared"}, &pending
+			if err := clearUnperformedAdd(st, scope, pending.SandboxID); err != nil {
+				return result{Name: sb.Name, Status: "association warning", Detail: "machine add failed and its intent could not be cleared"}, &pending
 			}
 			if err := store.SaveState(*st); err != nil {
-				return result{Name: sb.Name, Status: "ownership conflict", Detail: "machine add failed and its cleared intent could not be saved"}, &pending
+				return result{Name: sb.Name, Status: "association warning", Detail: "machine add failed and its cleared intent could not be saved"}, &pending
 			}
 			return addFailureResult(sb.Name, addErr, addOutput), nil
 		}
-		return result{Name: sb.Name, Status: "ownership conflict", Detail: "registration outcome is uncertain: " + commandError(addErr, addOutput)}, &pending
+		return result{Name: sb.Name, Status: "association warning", Detail: "registration outcome is uncertain: " + commandError(addErr, addOutput)}, &pending
 	}
 
 	if profileID == "" {
-		return result{Name: sb.Name, Status: "ownership conflict", Detail: "registration succeeded but did not return a trusted machine ID"}, &pending
+		return result{Name: sb.Name, Status: "association warning", Detail: "registration succeeded but did not return a trusted machine ID"}, &pending
 	}
 	after, _, listErr := s.herdr.ListMachines(ctx)
 	if listErr != nil {
-		return result{Name: sb.Name, Status: "ownership conflict", Detail: "registration completed but could not inspect the returned machine ID"}, &pending
+		return result{Name: sb.Name, Status: "association warning", Detail: "registration completed but could not inspect the returned machine ID"}, &pending
 	}
-	if ownedMachineByID(after, profileID, pending.Label, target) == nil {
-		return result{Name: sb.Name, Status: "ownership conflict", Detail: "registration did not yield the returned owned machine"}, &pending
+	if associatedMachineByID(after, profileID, pending.Label, target) == nil {
+		return result{Name: sb.Name, Status: "association warning", Detail: "registration did not yield the returned associated entry"}, &pending
 	}
 
 	pending.ProfileID = profileID
 	pending.Pending = false
 	if err := replaceTracked(st, scope, pending); err != nil {
-		return result{Name: sb.Name, Status: "ownership conflict", Detail: "machine was registered but ownership could not be saved"}, &pending
+		return result{Name: sb.Name, Status: "association warning", Detail: "machine was registered but association could not be saved"}, &pending
 	}
 	if err := store.SaveState(*st); err != nil {
-		return result{Name: sb.Name, Status: "ownership conflict", Detail: "machine was registered but ownership could not be saved"}, &pending
+		return result{Name: sb.Name, Status: "association warning", Detail: "machine was registered but association could not be saved"}, &pending
 	}
 	if current != nil && !current() {
 		return result{Name: sb.Name, Status: "stale", Detail: "sandbox changed after machine registration; cleanup is pending"}, &pending
@@ -402,6 +526,26 @@ func replaceTracked(st *store.State, scope string, next store.Tracked) error {
 			st.Scopes[scope][i] = next
 			return nil
 		}
+	}
+	return errors.New("registration intent is missing")
+}
+
+// clearUnperformedAdd discards a creation request without discarding completed
+// guest work. Fresh requests without guest effects need no retained record.
+func clearUnperformedAdd(st *store.State, scope, id string) error {
+	for i := range st.Scopes[scope] {
+		item := &st.Scopes[scope][i]
+		if item.SandboxID != id {
+			continue
+		}
+		if !item.ProjectWorkspaceDone && item.GuestSync == nil && item.ProjectWorkspacePending == "" {
+			return removeTracked(st, scope, id)
+		}
+		item.ProfileID = ""
+		item.Pending = false
+		item.PendingLabel = ""
+		item.LastObservedNativeEnabled = nil
+		return nil
 	}
 	return errors.New("registration intent is missing")
 }
@@ -456,6 +600,9 @@ func deterministicAddFailure(output string) bool {
 
 // Save the diagnostic before advertising its reference in a notification.
 func saveResultError(scope string, item result) error {
+	if (item.Status == "stopped" || item.Status == "waiting for start" || item.Status == "disabled in herdr" || item.Status == "enable not confirmed" || item.Status == "disabled" || item.Status == "pending" || item.Status == "runtime unknown" || item.Status == "runtime failed") && item.DiagnosticCode == "" {
+		return store.SetRegistrationError("", scope, "")
+	}
 	if item.Status == "ready" {
 		if err := store.SetRegistrationError("", scope, ""); err != nil {
 			return err
@@ -477,7 +624,7 @@ func saveResultError(scope string, item result) error {
 	}
 	code := store.CodeRegistration
 	switch item.Status {
-	case "ownership conflict":
+	case "association warning":
 		code = store.CodeOwnershipConflict
 	case "workspace setup required":
 		code = store.CodeWorkspaceSetup

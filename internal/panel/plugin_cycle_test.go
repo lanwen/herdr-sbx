@@ -183,34 +183,35 @@ func TestUnsupportedPluginCannotBeEnabledButCanBeTurnedOff(t *testing.T) {
 	}
 }
 
-func TestExpandedControlsTargetExpandedSandboxAfterArrowSelection(t *testing.T) {
+func TestPreviewControlsTargetSandboxAfterArrowSelection(t *testing.T) {
 	m := modelFixture(t)
-	m.expanded = "a"
 	m.plugins = []guestplugins.Choice{{ID: "test.plugin"}}
 	m.key(keyMsg(tea.KeyEnd, ""))
-	if m.selected != "b" || m.expanded != "a" {
-		t.Fatal("selection did not retain details")
+	if m.selected != "b" || m.expanded != "b" || m.focus != "table" {
+		t.Fatal("preview did not follow selection")
 	}
 	command := m.hitAction(hit{action: "override", id: "test.plugin"})
-	if command == nil || m.selected != "a" || m.expanded != "a" {
-		t.Fatal("plugin control did not retain and target expanded sandbox")
+	if command == nil || m.selected != "b" || m.expanded != "b" || m.focus != "plugins" {
+		t.Fatal("plugin control targeted another preview")
 	}
-	if result := command().(operationMsg); result.err != nil {
+	result := command().(operationMsg)
+	if result.err != nil {
 		t.Fatal(result.err)
 	}
+	m.refreshing = true
+	m.Update(result)
 	settings, _ := store.ReadGuestPluginDefaults()
-	if !settings.Overrides[store.StatusKey("scope", "a")]["test.plugin"] || len(settings.Overrides[store.StatusKey("scope", "b")]) != 0 {
-		t.Fatal("plugin choice saved against selected rather than expanded sandbox")
+	if !settings.Overrides[store.StatusKey("scope", "b")]["test.plugin"] || len(settings.Overrides[store.StatusKey("scope", "a")]) != 0 {
+		t.Fatal("plugin choice saved against previous sandbox")
 	}
-	m.selected = "b"
 	m.hitAction(hit{action: "action", id: "rename"})
-	if m.input == nil || m.input.target != "a" || m.expanded != "a" {
-		t.Fatal("rename control targeted the wrong sandbox or closed details")
+	if m.input == nil || m.input.target != "b" || m.expanded != "b" {
+		t.Fatal("rename control targeted wrong sandbox")
 	}
 	m.input = nil
-	m.mergeRows(m.rows[1:])
+	m.mergeRows(m.rows[:1])
 	m.ensureSelection()
-	if m.expanded != "" {
-		t.Fatal("deleted sandbox expansion survived")
+	if m.selected != "a" || m.expanded != "a" || m.focus != "table" {
+		t.Fatal("deleted selected sandbox did not preview replacement")
 	}
 }

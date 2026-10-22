@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lanwen/herdr-sbx/internal/precheck"
 	"github.com/lanwen/herdr-sbx/internal/store"
@@ -85,7 +86,11 @@ func (m *model) renderedInput(width int) string {
 		_, n := utf8.DecodeRuneInString(left)
 		left = left[n:]
 	}
-	return truncate(left+"│"+right, max(1, width))
+	caret := "│"
+	if m.input.kind == "rename" {
+		caret = "█"
+	}
+	return truncate(left+caret+right, max(1, width))
 }
 func (m *model) View() tea.View {
 	if m.textSelection != nil {
@@ -94,18 +99,21 @@ func (m *model) View() tea.View {
 		v.MouseMode = tea.MouseModeCellMotion
 		return v
 	}
+	if m.helpOpen {
+		return m.helpView()
+	}
 	m.hits = nil
 	m.hintInBody = false
 	pageTitle := m.page
 	if pageTitle == "Plugins" {
 		pageTitle = "Plugin defaults"
 	}
-	inlineConfirmation := m.dialog == "adopt" || m.dialog == "fix-herdr"
+	inlineConfirmation := m.dialog == "fix-herdr"
 	var body []line
 	if m.dialog != "" && !inlineConfirmation {
 		body = m.dialogLines()
 	} else if m.width < 30 || m.height < 10 {
-		body = []line{textLine("Resize to at least 30 columns × 10 rows."), textLine("b auto-sync · e diagnostics · q close")}
+		body = []line{textLine("Resize to at least 30 columns × 10 rows."), textLine("b Management · e diagnostics · q close")}
 	} else {
 		switch m.page {
 		case "Sandboxes":
@@ -137,6 +145,9 @@ func (m *model) View() tea.View {
 
 	var notices []line
 	hint, hintColor := m.notice, colorInfo
+	if m.noticeTarget == "worker" && m.managementCancelling() {
+		hintColor = colorMuted
+	}
 	if hint != "" && m.width < 60 {
 		if identity, _ := m.contextHint(); strings.HasPrefix(identity, "herdr plugin: ") {
 			hint = identity + ". " + hint
@@ -148,17 +159,10 @@ func (m *model) View() tea.View {
 	var hintLines []line
 	if inlineConfirmation {
 		hintLines = m.dialogLines()
-		if m.dialog == "adopt" {
-			for i := range hintLines {
-				if len(hintLines[i].hits) == 0 {
-					hintLines[i].text = ink(colorAccent, hintLines[i].text)
-				}
-			}
-		}
 	} else {
 		if hint != "" {
 			hint = strings.ReplaceAll(productText(hint), "herdr-sbx", "the plugin")
-			if m.noticeTarget != "" && m.pending[m.noticeTarget] {
+			if m.noticeTarget != "" && m.pending[m.noticeTarget] && !(m.noticeTarget == "worker" && m.managementCancelling()) {
 				hint = m.actionSpinner() + " " + hint
 			}
 			for _, part := range wrapHint(safeText(hint), max(1, m.width-4)) {
@@ -211,9 +215,14 @@ func (m *model) View() tea.View {
 		notices = nil
 	}
 	footer := m.statusFooter()
-	fixed := len(notices) + 1
+	footerLines := []line{textLine(ink(colorMuted, m.renderHelp(m.width, false)))}
+	if m.managementCancelling() && m.width < 42 {
+		footerLines = append(footerLines, textLine(ink(colorMuted, "Cancelling")))
+	}
+	footerLines = append(footerLines, footer)
+	fixed := len(notices) + len(footerLines)
 	capacity := max(1, m.height-fixed-1)
-	if m.reveal {
+	if m.reveal || m.focus == "errors" || m.focus == "diagnostics" || m.focus == "events" {
 		target := -1
 		for i, l := range body {
 			for _, h := range l.hits {
@@ -250,10 +259,14 @@ func (m *model) View() tea.View {
 			}
 		}
 		if target >= 0 {
-			if target < m.scroll {
+			if target < m.scroll && m.reveal {
 				m.scroll = target
 			}
-			if target >= m.scroll+capacity {
+			if (m.focus == "errors" || m.focus == "events" && m.eventIndex >= 0) && target+2 >= m.scroll+capacity {
+				// Keep the selected cause and reference below its metadata,
+				// rather than revealing only its first line at the viewport edge.
+				m.scroll = max(0, target-min(2, max(0, capacity-3)))
+			} else if target >= m.scroll+capacity {
 				m.scroll = target - capacity + 1
 			}
 		}
@@ -280,11 +293,13 @@ func (m *model) View() tea.View {
 		}
 		lines = append(lines, l)
 	}
-	for _, h := range footer.hits {
-		h.y = len(lines)
-		m.hits = append(m.hits, h)
+	for _, footerLine := range footerLines {
+		for _, h := range footerLine.hits {
+			h.y = len(lines)
+			m.hits = append(m.hits, h)
+		}
+		lines = append(lines, footerLine)
 	}
-	lines = append(lines, footer)
 	var b strings.Builder
 	for i, l := range lines {
 		if i > 0 {
@@ -301,9 +316,17 @@ func (m *model) View() tea.View {
 }
 
 func (m *model) contextHint() (string, string) {
-	const adoptHint = "Adopt lets the plugin watch this sandbox and sync selected herdr plugins. The herdr name and connection stay the same. The plugin can remove the herdr machine when you delete the sandbox."
-	if m.dialog == "adopt" {
-		return adoptHint, colorAccent
+	if m.page == "Status" && m.dialog == "" {
+		if m.managementCancelling() {
+			return "Cancelling", colorMuted
+		}
+		if m.pending["worker"] {
+			return "Management change in progress.", colorInfo
+		}
+		if m.worker.Detail != "" {
+			return safeText(m.worker.Detail), colorInfo
+		}
+		return "Management: " + ansi.Strip(m.managementStatus()) + ".", colorInfo
 	}
 	if m.dialog == "" && m.width < 60 {
 		// Compact rows reserve room for choices; retain the complete focused ID.
@@ -328,14 +351,15 @@ func (m *model) contextHint() (string, string) {
 		actions := m.sandboxActions(row)
 		if m.button >= 0 && m.button < len(actions) {
 			switch actions[m.button].id {
-			case "adopt":
-				return adoptHint, colorAccent
-			case "watch":
-				return "Watch lets the plugin manage this sandbox and sync selected herdr plugins. It will try to add a herdr machine when the sandbox runs.", colorInfo
-			case "unwatch":
-				return "Unwatch stops management and future herdr plugin sync. The herdr machine and existing plugin files stay.", colorInfo
+			case "enable":
+				if !row.EntryPresent && strings.EqualFold(row.Sandbox.Status, "stopped") {
+					return "Start the sandbox yourself before enabling its herdr connection.", colorMuted
+				}
+				return "Enable this sandbox's herdr connection. Herdr may start it when connecting.", colorAccent
 			case "disable":
-				return "Disable stops management and removes the owned herdr machine. The sandbox and existing herdr plugin files stay.", colorInfo
+				return "Disable this sandbox's herdr connection and stop its plugin work. Keep its entry, label, and existing files.", colorInfo
+			case "remove":
+				return "Remove this disabled entry from herdr. Keep the sandbox and its files. Enable adds the entry again.", colorInfo
 			case "rename":
 				return "Rename changes this sandbox's label in herdr. Its sandbox name and connection stay the same.", colorInfo
 			case "resync":
@@ -345,20 +369,24 @@ func (m *model) contextHint() (string, string) {
 			}
 		}
 	}
-	if row.Management == store.Unmanaged {
-		return "This sandbox is already a herdr machine. It was added outside the plugin.", colorWarning
+	if row.Status.Stale {
+		detail := "Current observations are unavailable."
+		if row.Status.Detail != "" {
+			detail += " Last known status: " + safeText(row.Status.Detail)
+		}
+		if !row.Status.ObservedAt.IsZero() {
+			detail += " Last observation " + row.Status.ObservedAt.Local().Format("2006-01-02 15:04:05") + "."
+		}
+		return detail, colorWarning
+	}
+	if row.AssociationIssue != "" {
+		return row.AssociationIssue, colorWarning
 	}
 	if m.rowHasCode(row, store.CodeHerdrCompatibility) || strings.Contains(strings.ToLower(row.Status.Detail), "herdr in this sandbox") {
 		return m.herdrCompatibilityHint(row), colorError
 	}
-	if row.Status.Connection == "ownership conflict" {
-		if strings.Contains(row.Status.Detail, "a manual or untracked machine uses this label or target") {
-			return "This sandbox is already a herdr machine. It was added outside the plugin.", colorWarning
-		}
-		return strings.ReplaceAll(productText(row.Status.Detail), "herdr-sbx", "the plugin"), colorWarning
-	}
-	if row.Management == store.Watched && !row.Owned && row.ProfileID == "" && strings.EqualFold(row.Sandbox.Status, "stopped") {
-		return "This sandbox is stopped. The plugin will try to add its herdr machine when it starts.", colorMuted
+	if row.Enabled == store.Enabled && row.EntryPresent && strings.EqualFold(row.Sandbox.Status, "stopped") && strings.EqualFold(row.Status.Connection, "waiting for start") {
+		return "This sandbox is stopped. Its herdr entry is saved. Setup waits until it starts and Management is ON.", colorMuted
 	}
 	switch row.Status.Detail {
 	case "already registered", "registered", "already registered and reachable", "registered and reachable":
@@ -370,7 +398,7 @@ func (m *model) contextHint() (string, string) {
 		color = colorSuccess
 	case "failed", "blocked", "error", "manual intervention required":
 		color = colorError
-	case "preparing", "installing", "pending", "adopted":
+	case "preparing", "installing", "pending":
 		color = colorWarning
 	}
 	return strings.ReplaceAll(productText(row.Status.Detail), "herdr-sbx", "the plugin"), color
@@ -459,39 +487,34 @@ func (m *model) sandboxLines() []line {
 	}
 	for _, r := range rows {
 		id := r.Sandbox.ID
+		if m.expanded == id {
+			lines = append(lines, m.sandboxDetails(r)...)
+			continue
+		}
 		selected := id == m.selected
 		prefix := "  "
 		if selected {
 			prefix = "> "
 		}
-		marker := "▸ "
-		if m.expanded == id {
-			marker = "▾ "
-		}
-		management := columns.managementText(r.Management)
-		runtime := runtimeStyle(r.Sandbox.Status, runtimeDescription(r))
-		if columns.compactRuntime {
-			runtime = runtimeDot(r.Sandbox.Status)
-		}
 		label := r.Label
-		if label == "" {
-			label = "—"
-		}
 		if m.input != nil && m.input.kind == "rename" && m.input.target == id {
 			label = m.renderedInput(columns.label)
 		}
-		readiness := readinessStyle(r.Status.Connection, readinessDescription(r))
-		if m.expanded == id {
-			readiness = ""
+		status := statusStyle(r.Status.Connection, statusDescription(r))
+		if r.AssociationIssue != "" || r.Status.Stale {
+			status = ink(colorWarning, statusDescription(r))
 		}
-		text := columns.render(prefix+marker, managementStyle(r.Management, management), highlight(m.queries["Sandboxes"], safeText(r.Sandbox.Name)), runtime, ink(colorSand, highlight(m.queries["Sandboxes"], safeText(label))), readiness)
+		if m.pending[id] {
+			status = m.sandboxProgress(id)
+		}
+		mark := enabledMark(r)
+		if choice, ok := m.pendingEnabled[id]; ok && choice == store.Enabled {
+			mark = ink(colorAccent, "✓")
+		}
+		text := columns.render(prefix+"  ", mark, highlight(m.queries["Sandboxes"], safeText(r.Sandbox.Name)), ink(colorSand, highlight(m.queries["Sandboxes"], safeText(label))), status)
 		l := textLine(text)
-		l.hits = []hit{{x: 4, w: max(1, m.width-8), action: "select", id: id}, {x: 2, w: 2, action: "expand", id: id}}
+		l.hits = []hit{{x: 4, w: columns.enabled, action: "enabled", id: id}, {x: 5 + columns.enabled, w: max(1, m.width-9-columns.enabled), action: "select", id: id}, {x: 2, w: 2, action: "select", id: id}}
 		lines = append(lines, l)
-		if m.expanded != id {
-			continue
-		}
-		lines = append(lines, m.sandboxDetails(r)...)
 
 	}
 	return lines
@@ -509,7 +532,7 @@ func (m *model) pluginLines() []line {
 	if m.width < 60 {
 		nameWidth, syncWidth = max(1, m.width-4-2-1-4), 4
 	}
-	heading := "  " + padded("PLUGIN", nameWidth) + " " + padded("AUTO-SYNC", syncWidth) + " AVAILABILITY"
+	heading := "  " + padded("PLUGIN", nameWidth) + " " + padded("SYNC", syncWidth) + " AVAILABILITY"
 	if m.width < 60 {
 		heading = "  " + padded("PLUGIN", nameWidth) + " SYNC"
 	}
@@ -554,7 +577,7 @@ func (m *model) pluginLines() []line {
 	}
 	explanation := "This herdr plugin will not be synchronized. Existing copies stay intact."
 	if plugins[min(m.pluginIndex, len(plugins)-1)].Enabled {
-		explanation = "The matching herdr plugin version will be copied to watched sandboxes."
+		explanation = "The matching herdr plugin version will be copied to enabled sandboxes while Management is ON."
 	}
 	lines = append(lines, textLine(""))
 	for _, part := range strings.Split(ansi.Hardwrap(explanation, max(10, m.width-4), true), "\n") {
@@ -566,7 +589,7 @@ func (m *model) statusActions() []detailAction {
 	return m.statusActionsAt(time.Now())
 }
 func (m *model) statusActionsAt(now time.Time) []detailAction {
-	actions := []detailAction{{"toggle", "Auto-sync"}}
+	actions := []detailAction{{"toggle", "Management"}}
 	sshReady := false
 	for _, check := range m.checks.Checks {
 		if check.Name == "Sandbox SSH" {
@@ -577,18 +600,13 @@ func (m *model) statusActionsAt(now time.Time) []detailAction {
 		actions = append(actions, detailAction{"ssh", "Set up SSH…"})
 	}
 	if !m.workerEnabled || m.worker.State != "running" || m.worker.LastSync.IsZero() || now.Sub(m.worker.LastSync) > 30*time.Second || m.hasBlockingErrors() {
-		actions = append(actions, detailAction{"refresh", "Refresh observations"})
+		actions = append(actions, detailAction{"refresh", "Refresh"})
 	}
 	return actions
 }
 func (m *model) statusLines() []line {
 	actions := m.statusActions()
-	prefix := ""
-	if m.button == 0 {
-		prefix = "› "
-	}
-	on := enabledStyle(m.workerEnabled, "ON")
-	off := enabledStyle(!m.workerEnabled, "OFF")
+	on, off := enabledStyle(m.workerEnabled, "ON"), enabledStyle(!m.workerEnabled, "OFF")
 	if m.workerControlError {
 		if m.workerEnabled {
 			on = ink(colorError, "ON")
@@ -596,17 +614,23 @@ func (m *model) statusLines() []line {
 			off = ink(colorError, "OFF")
 		}
 	}
-	toggle := textLine("Auto-sync " + prefix + on + ink(colorMuted, " | ") + off + "  " + m.autoSyncStatus())
-	onX := ansi.StringWidth("Auto-sync " + prefix)
-	offX := onX + ansi.StringWidth("ON | ")
-	toggle.hits = []hit{
-		{x: onX, w: 2, action: "status-choice", id: "on"},
-		{x: offX, w: 3, action: "status-choice", id: "off"},
+	toggle := textLine(on + ink(colorMuted, " | ") + off)
+	toggle.hits = []hit{{x: 0, w: 2, action: "status-choice", id: "on"}, {x: 5, w: 3, action: "status-choice", id: "off"}}
+	border, title := colorSeparator, "Management"
+	if m.focus == "table" && m.button == 0 {
+		border, title = colorText, "Management ›"
 	}
-	lines := []line{toggle}
-	if m.width < 60 {
-		lines[0].text = "Auto-sync " + prefix + on + ink(colorMuted, " | ") + off
-		lines = append(lines, textLine(m.autoSyncStatus()))
+	lines := outline([]line{toggle}, title, m.width-4, 0, border)
+	state, stateColor := m.managementState()
+	width := m.width - 4
+	badge := badgeStyle(stateColor, truncate(state, max(1, width-11)))
+	if m.focus == "table" && m.button == 0 && width-ansi.StringWidth(badge)-6 < ansi.StringWidth(title) {
+		title = "› Management"
+	}
+	lines[0] = line{text: detailBorder(title, "", badge, width, 0, border), hits: []hit{{x: 1, w: width - 2, action: "status-action", id: "0"}}}
+	if activity := m.managementActivity(); activity != "" {
+		activity = " " + truncate(activity, max(1, width-4)) + " "
+		lines[len(lines)-1].text = ink(border, "╰"+strings.Repeat("─", max(0, width-ansi.StringWidth(activity)-2))) + ink(colorMuted, activity) + ink(border, "╯")
 	}
 	var refresh line
 	for i, action := range actions[1:] {
@@ -621,12 +645,16 @@ func (m *model) statusLines() []line {
 			lines = append(lines, control)
 		}
 	}
-	if m.worker.State != "stopped" || m.worker.Detail != "Daemon is not running." {
-		lines = append(lines, textLine(safeText(m.worker.Detail)))
-	}
-	lines = append(lines, textLine(""), textLine(ink(colorMuted, padded("PREREQUISITE", 26)+padded("RESULT", 14)+"DETAIL")))
-	for _, c := range m.checks.Checks {
-		lines = append(lines, textLine(padded(productText(c.Name), 26)+padded(levelStyle(c.Level, symbol(c.Level)), 14)+safeText(productText(c.Detail))))
+
+	lines = append(lines, textLine(""), textLine(ink(colorMuted, padded("PREREQUISITE", 26)+padded("RESULT", 14)+"STATUS")))
+	for _, c := range statusPrerequisites(m.checks.Checks) {
+		color := colorWarning
+		if c.Level == precheck.Ready {
+			color = colorSuccess
+		} else if c.Level == precheck.Blocked {
+			color = colorError
+		}
+		lines = append(lines, textLine(padded(productText(c.Name), 26)+padded(ink(color, symbol(c.Level)), 14)+safeText(productText(c.Detail))))
 		if c.Action != "" {
 			lines = append(lines, textLine(ink(colorInfo, "  Next: "+safeText(productText(c.Action)))))
 		}
@@ -862,6 +890,16 @@ func (m *model) diagnosticScope(scope, name string) string {
 	return safeText(scope)
 }
 
+// styledHardwrap makes each physical row restore its own style before borders
+// or padding can reset the terminal pen between continuation rows.
+func styledHardwrap(text string, width int) string {
+	var result strings.Builder
+	writer := lipgloss.NewWrapWriter(&result)
+	_, _ = writer.Write([]byte(ansi.Hardwrap(text, max(1, width), true)))
+	_ = writer.Close()
+	return result.String()
+}
+
 // fitLines keeps text and control bounds in the same layout at narrow widths.
 func fitLines(lines []line, width int) []line {
 	var result []line
@@ -870,7 +908,7 @@ func fitLines(lines []line, width int) []line {
 			for _, h := range l.hits {
 				text := ansi.Cut(l.text, h.x, h.x+h.w)
 				h.x = 0
-				for _, part := range strings.Split(ansi.Hardwrap(text, max(1, width), true), "\n") {
+				for _, part := range strings.Split(styledHardwrap(text, width), "\n") {
 					h.w = ansi.StringWidth(part)
 					result = append(result, line{text: part, hits: []hit{h}})
 				}
@@ -878,7 +916,7 @@ func fitLines(lines []line, width int) []line {
 			continue
 		}
 		if len(l.hits) == 0 {
-			for _, text := range strings.Split(ansi.Hardwrap(l.text, max(1, width), true), "\n") {
+			for _, text := range strings.Split(styledHardwrap(l.text, width), "\n") {
 				result = append(result, textLine(text))
 			}
 		} else {
@@ -894,21 +932,7 @@ func (m *model) actionSpinner() string {
 func (m *model) dialogLines() []line {
 	switch m.dialog {
 	case "startup":
-		return []line{textLine("Start auto-sync?"), textLine("Auto-sync watches sandboxes and synchronizes selected herdr plugins."), textLine(""), m.buttons([]string{"Keep stopped", "Start auto-sync"})}
-
-	case "adopt":
-		r, _ := findRow(m.rows, m.dialogTarget)
-		explanation, _ := m.contextHint()
-		lines := []line{textLine("Adopt " + safeText(r.Sandbox.Name) + "?"), textLine(explanation)}
-		if m.dialogReason == "… Checking eligibility" {
-			lines = append(lines, textLine(m.actionSpinner()+" Checking eligibility"))
-		} else if m.dialogReason != "" {
-			lines = append(lines, textLine(m.dialogReason))
-		}
-		if m.adoption != nil {
-			lines = append(lines, textLine("✓ Running sandbox  ✓ Exact SSH target  ✓ Default session"))
-		}
-		return append(lines, m.buttons([]string{"Cancel", "Adopt and watch / retry eligibility"}))
+		return []line{textLine("Start Management?"), textLine("Management sets up sandbox entries and synchronizes selected herdr plugins."), textLine(""), m.buttons([]string{"Keep OFF", "Start Management"})}
 
 	case "ssh":
 		return []line{textLine("Set up sandbox SSH?"), textLine("The setup process will temporarily use this terminal."), textLine("Follow its prompts; the interface returns when it finishes."), m.buttons([]string{"Cancel", "Start SSH setup"})}

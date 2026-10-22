@@ -5,15 +5,18 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/lanwen/herdr-sbx/internal/process"
+	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
 )
 
@@ -341,5 +344,208 @@ func TestStopWorkerReportsUnreadableConfirmation(t *testing.T) {
 	saved, err := store.ReadStatusStore()
 	if err != nil || saved.WorkerControl == nil || !saved.WorkerControl.Stopped {
 		t.Fatalf("Stop was lost: %+v %v", saved.WorkerControl, err)
+	}
+}
+
+func TestOffBlocksEverySchedulerPath(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.save(ownedRegistration())
+	if err := store.SetWorkerControl(true); err != nil {
+		t.Fatal(err)
+	}
+	f.run = func(_ context.Context, cmd process.Command) (string, error) {
+		t.Errorf("automatic command while OFF: %s %v", cmd.Name, cmd.Args)
+		return "", errors.New("automatic command forbidden")
+	}
+	f.request = func(r *http.Request) (*http.Response, error) {
+		t.Errorf("automatic inventory/probe while OFF: %s", r.URL)
+		return nil, errors.New("automatic request forbidden")
+	}
+	scheduler := f.scheduler()
+	for _, action := range []string{"started", "created", "stopped", "deleted", "sync"} {
+		scheduler.handle(sbx.LifecycleEvent{Type: "sandbox.lifecycle", Action: action, SandboxID: "old", SandboxName: "demo"})
+	}
+	scheduler.processDeletes()
+	scheduler.processPluginDefaults()
+	scheduler.processCatchup(true)
+	scheduler.recoverMissedDeletes()
+	if scheduler.removeDeleted(sbx.LifecycleEvent{SandboxID: "old"}) {
+		t.Fatal("OFF reported deletion complete")
+	}
+	if err := f.service.watchContext(context.Background(), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	f.assertCount(1)
+}
+
+func TestStopReportsCancellingUntilWorkerSettles(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	unlock, err := store.LockWorker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	if err := store.RecordWorkerStatus("running", "following events", false); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := (&Service{}).StopWorker(ctx); !errors.Is(err, ErrDaemonStopUnconfirmed) {
+		t.Fatalf("unsettled worker reported stopped: %v", err)
+	}
+	status, err := store.ReadWorkerStatus()
+	if err != nil || status.State != "cancelling" || status.Detail != "Cancelling" {
+		t.Fatalf("cancellation status=%+v err=%v", status, err)
+	}
+	unlock()
+	status, err = store.ReadWorkerStatus()
+	if err != nil || status.State != "stopped" {
+		t.Fatalf("settled status=%+v err=%v", status, err)
+	}
+}
+
+func TestUnreadableBaselineDefersAutomaticWork(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.save(ownedRegistration())
+	f.run = func(ctx context.Context, cmd process.Command) (string, error) {
+		if cmd.Name == "herdr" && strings.Join(cmd.Args, " ") == "machine list --json" {
+			return "catalog offline", errors.New("unavailable")
+		}
+		return f.defaultRun(ctx, cmd)
+	}
+	f.request = func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/sandbox" {
+			return lifecycleResponse(200, `[]`), nil
+		}
+		t.Errorf("automatic work before fresh baseline: %s", r.URL)
+		return nil, errors.New("forbidden")
+	}
+	err := f.service.watchContext(context.Background(), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "baseline") {
+		t.Fatalf("baseline failure not reported: %v", err)
+	}
+	f.assertCount(1)
+	if len(f.removed) != 0 {
+		t.Fatalf("removed registration without baseline: %v", f.removed)
+	}
+}
+
+func TestNewOffSupersedesPendingStart(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	if err := store.SetWorkerControl(true); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := store.ReadStatusStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	generation := saved.WorkerControl.Generation
+	unlock, err := store.LockWorker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	started := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	go func() { started <- prepareWorkerStartAtGeneration(ctx, generation) }()
+	if err := store.SetWorkerControl(true); err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	if err := <-started; !errors.Is(err, context.Canceled) {
+		t.Fatalf("superseded ON was accepted: %v", err)
+	}
+	saved, err = store.ReadStatusStore()
+	if err != nil || !saved.WorkerControl.Stopped || saved.WorkerControl.Generation != generation+1 {
+		t.Fatalf("newer OFF was overwritten: %+v %v", saved.WorkerControl, err)
+	}
+}
+
+func TestStopConfirmationDoesNotInvalidateQueuedOn(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	if err := store.SetWorkerControl(true); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := store.ReadStatusStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	generation := saved.WorkerControl.Generation
+	if err := (&Service{}).WaitWorkerStopped(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareWorkerStartAtGeneration(context.Background(), generation); err != nil {
+		t.Fatalf("queued ON rejected after stop confirmation: %v", err)
+	}
+	saved, err = store.ReadStatusStore()
+	if err != nil || saved.WorkerControl.Stopped || saved.WorkerControl.Generation != generation+1 {
+		t.Fatalf("queued ON not accepted: %+v %v", saved.WorkerControl, err)
+	}
+}
+
+func TestNewScopeRequiresFreshBaseline(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.save(ownedRegistration())
+	catalogReads := 0
+	f.run = func(ctx context.Context, cmd process.Command) (string, error) {
+		if cmd.Name == "herdr" && strings.Join(cmd.Args, " ") == "machine list --json" {
+			catalogReads++
+			return "catalog unavailable", errors.New("unavailable")
+		}
+		return f.defaultRun(ctx, cmd)
+	}
+	f.request = func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/sandbox" {
+			return lifecycleResponse(200, `[]`), nil
+		}
+		t.Errorf("automatic work before new scope baseline: %s", r.URL)
+		return nil, errors.New("forbidden")
+	}
+	baseline := managementBaseline{scope: "previous-scope", socket: "/tmp/previous-daemon.sock"}
+	err := f.service.watchManaged(context.Background(), io.Discard, nil, &baseline)
+	if err == nil || !strings.Contains(err.Error(), "baseline") || catalogReads != 1 {
+		t.Fatalf("new scope reused old baseline: reads=%d err=%v", catalogReads, err)
+	}
+	if baseline.scope != "previous-scope" || len(f.removed) != 0 {
+		t.Fatalf("unverified new scope was accepted: baseline=%+v removed=%v", baseline, f.removed)
+	}
+}
+
+func TestScopeChangeStopsWatchBeforeFurtherAutomaticWork(t *testing.T) {
+	f := newLifecycleFixture(t)
+	var changed atomic.Bool
+	catalogReads := 0
+	f.run = func(ctx context.Context, cmd process.Command) (string, error) {
+		switch cmd.Name + " " + strings.Join(cmd.Args, " ") {
+		case "sbx daemon status --json":
+			if changed.Load() {
+				return `{"status":"running","socket":"/tmp/another-daemon.sock"}`, nil
+			}
+		case "herdr machine list --json":
+			catalogReads++
+		}
+		return f.defaultRun(ctx, cmd)
+	}
+	f.request = func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/events" {
+			changed.Store(true)
+			return lifecycleResponse(200, ""), nil
+		}
+		if r.URL.Path == "/sandbox" {
+			return lifecycleResponse(200, `[]`), nil
+		}
+		t.Errorf("unexpected work during scope transition: %s", r.URL)
+		return nil, errors.New("forbidden")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	baseline := managementBaseline{}
+	err := f.service.watchManaged(ctx, io.Discard, nil, &baseline)
+	if err == nil || !strings.Contains(err.Error(), "scope changed") {
+		t.Fatalf("watch continued across scope change: %v", err)
+	}
+	if catalogReads != 1 || baseline.scope != f.scope || len(f.removed) != 0 {
+		t.Fatalf("new scope mutated before old watch settled: reads=%d baseline=%+v removed=%v", catalogReads, baseline, f.removed)
 	}
 }

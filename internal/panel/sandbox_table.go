@@ -8,89 +8,60 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/store"
 )
 
-// sandboxColumns describes terminal cells inside the surrounding section.
-// One calculation serves every row, heading, and inline label editor.
-type sandboxColumns struct {
-	management, name, runtime, label, readiness int
-	compactRuntime, compactManagement           bool
-}
+// sandboxColumns is shared by heading, rows, inline editing and mouse targets.
+type sandboxColumns struct{ enabled, name, label, status int }
 
 func (m *model) sandboxColumns(rows []registration.SandboxRow) sandboxColumns {
-	c := sandboxColumns{management: 10, name: 7, runtime: 7, label: 11, readiness: 9}
+	c := sandboxColumns{enabled: 7, name: 7, label: 11, status: 9}
+	if m.width < 72 {
+		c.status = 0
+	}
+	if m.width < 60 {
+		c.enabled, c.label = 1, 5
+	}
 	for _, r := range rows {
+		if c.status > 0 {
+			c.status = max(c.status, min(24, ansi.StringWidth(statusDescription(r))))
+			if m.pending[r.Sandbox.ID] {
+				c.status = max(c.status, ansi.StringWidth(m.sandboxProgress(r.Sandbox.ID)))
+			}
+		}
 		c.name = max(c.name, ansi.StringWidth(safeText(r.Sandbox.Name)))
 		label := r.Label
 		if m.input != nil && m.input.kind == "rename" && m.input.target == r.Sandbox.ID {
 			label = m.input.text
 		}
 		c.label = max(c.label, ansi.StringWidth(safeText(label)))
-		c.runtime = max(c.runtime, ansi.StringWidth(runtimeDescription(r)))
-		c.readiness = max(c.readiness, min(22, ansi.StringWidth(readinessDescription(r))))
 	}
-	if m.width < 72 {
-		c.readiness = 0
+	gaps := 2
+	if c.status > 0 {
+		gaps++
 	}
-	if m.width < 60 {
-		c.management, c.compactManagement = 2, true
-		c.runtime, c.compactRuntime = 1, true
-	}
-	// Outer outline, selection/disclosure prefix, and inter-column spaces.
-	gaps := 4
-	if c.readiness == 0 {
-		gaps--
-	}
-	available := max(2, m.width-4-4-gaps-c.management)
-	if !c.compactManagement && c.name+c.label+c.runtime+c.readiness > available {
-		available += c.management - 2
-		c.management, c.compactManagement = 2, true
-	}
-	if c.name+c.label+c.runtime+c.readiness > available {
-		c.compactRuntime = true
-		c.runtime = 1
-	}
-	c.readiness = min(c.readiness, max(0, available-c.runtime-14))
-	remaining := max(2, available-c.runtime-c.readiness)
-	// Preserve the sandbox name first, leaving a useful label cell beside it.
-	c.name = min(c.name, max(1, remaining-min(c.label, 7)))
-	c.label = remaining - c.name
+	available := max(2, m.width-4-4-c.enabled-gaps-c.status)
+	// Retain a useful label cell, shortening it before the sandbox name.
+	c.name = min(c.name, max(1, available-min(c.label, 5)))
+	c.label = max(1, available-c.name)
 	return c
 }
-func (c sandboxColumns) render(prefix, management, name, runtime, label, readiness string) string {
-	text := prefix + padded(management, c.management) + " " + padded(name, c.name) + " " + padded(runtime, c.runtime) + " " + padded(label, c.label)
-	if c.readiness > 0 {
-		text += " " + padded(readiness, c.readiness)
+func (c sandboxColumns) render(prefix, enabled, name, label, status string) string {
+	text := prefix + padded(enabled, c.enabled) + " " + padded(name, c.name) + " " + padded(label, c.label)
+	if c.status > 0 {
+		text += " " + padded(status, c.status)
 	}
 	return text
 }
-func (c sandboxColumns) managementText(choice store.ManagementChoice) string {
-	if c.compactManagement {
-		switch choice {
-		case store.Watched:
-			return "W"
-		case store.Unmanaged:
-			return "UM"
-		case store.Unwatched:
-			return "UW"
-		case store.Disabled:
-			return "D"
-		case store.Untracked:
-			return "UT"
-		default:
-			return "?"
-		}
-	}
-	text := string(choice)
-	return strings.ToUpper(text[:min(1, len(text))]) + text[min(1, len(text)):]
-}
 func (c sandboxColumns) header() string {
-	runtime, management, label := "RUNTIME", "MANAGEMENT", "HERDR LABEL"
-	if c.compactRuntime {
-		runtime = "S"
+	enabled, label := "ENABLED", "HERDR LABEL"
+	if c.enabled == 1 {
+		enabled, label = "E", "HERDR"
 	}
-	if c.compactManagement {
-		management, label = "M", "HERDR"
+	return c.render("    ", enabled, "SANDBOX", label, "STATUS")
+}
+func enabledMark(r registration.SandboxRow) string {
+	if r.EntryPresent && r.Enabled == store.Enabled {
+		return ink(colorAccent, "✓")
 	}
-	return c.render("    ", management, "SANDBOX", runtime, label, "READINESS")
+	return ink(colorMuted, "·")
 }
 func runtimeDescription(r registration.SandboxRow) string {
 	state := safeText(r.Sandbox.Status)
@@ -102,7 +73,13 @@ func runtimeDescription(r registration.SandboxRow) string {
 	}
 	return state
 }
-func readinessDescription(r registration.SandboxRow) string {
+func statusDescription(r registration.SandboxRow) string {
+	if r.Status.Stale {
+		return "? Stale observation"
+	}
+	if r.AssociationIssue != "" {
+		return "Entry ambiguous"
+	}
 	if r.Status.Connection == "" {
 		return "? Unknown"
 	}

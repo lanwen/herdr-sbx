@@ -45,7 +45,7 @@ func TestJSONStatusIsReadOnlyWithNoToolsOrState(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if report.SchemaVersion != 3 || report.Worker.State != "stopped" || report.Sandboxes == nil || report.Errors == nil || report.Warnings == nil {
+	if report.SchemaVersion != 4 || report.Daemon.State != "stopped" || report.Sandboxes == nil || report.Errors == nil || report.Warnings == nil {
 		t.Fatalf("invalid report: %+v", report)
 	}
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
@@ -62,10 +62,15 @@ func TestStatusReportsSavedChoicesLabelsAndErrors(t *testing.T) {
 	if err := store.ObserveSandbox("scope", sbx.Sandbox{ID: "id", Name: "demo", Status: "stopped"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetManagement("scope", "id", store.Unwatched); err != nil {
+	if err := store.SetEnabled("scope", "id", store.Disabled); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{"scope": {{SandboxID: "id", Label: "My workspace", ProfileID: "machine"}}}}); err != nil {
+	if err := store.UpdateStatusStore(func(saved *store.StatusStore) {
+		row := saved.Sandboxes[store.StatusKey("scope", "id")]
+		native := false
+		row.Label, row.ProfileID, row.EntryPresent, row.NativeEnabled = "My workspace", "machine", true, &native
+		saved.Sandboxes[store.StatusKey("scope", "id")] = row
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.RecordError(store.CodeRename, "scope/id", "Rename failed"); err != nil {
@@ -75,7 +80,7 @@ func TestStatusReportsSavedChoicesLabelsAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Sandboxes) != 1 || report.Sandboxes[0].Management != store.Unwatched || report.Sandboxes[0].Label != "My workspace" {
+	if len(report.Sandboxes) != 1 || report.Sandboxes[0].Enabled != store.Disabled || report.Sandboxes[0].Label != "My workspace" {
 		t.Fatalf("rows: %+v", report.Sandboxes)
 	}
 	if len(report.Errors) != 1 || report.Errors[0].Code != store.CodeRename {
@@ -90,15 +95,12 @@ func TestStatusReportsSavedChoicesLabelsAndErrors(t *testing.T) {
 	}
 }
 
-func TestStatusDoesNotConfirmUnresolvedOwnershipOrRemoval(t *testing.T) {
+func TestStatusPreservesMissingEntryIntentAndUnknownNativeState(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
-	if err := store.ObserveSandbox("scope", sbx.Sandbox{ID: "id", Name: "demo", Status: "running"}); err != nil {
+	if err := store.ObserveSandbox("scope", sbx.Sandbox{ID: "id", Name: "demo", Status: "stopped"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{"scope": {{SandboxID: "id", Label: "pending", Pending: true}}}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SetManagement("scope", "id", store.Disabled); err != nil {
+	if err := store.SetEnabled("scope", "id", store.Disabled); err != nil {
 		t.Fatal(err)
 	}
 	report, err := readStatusReport()
@@ -106,8 +108,15 @@ func TestStatusDoesNotConfirmUnresolvedOwnershipOrRemoval(t *testing.T) {
 		t.Fatal(err)
 	}
 	row := report.Sandboxes[0]
-	if row.Owned || row.Label != "" || row.Management != store.Unwatched || row.DesiredManagement != store.Disabled {
+	if row.EntryPresent || row.Label != "" || row.NativeEnabled != nil || row.Enabled != store.Disabled {
 		t.Fatalf("unconfirmed state: %+v", row)
+	}
+	var out bytes.Buffer
+	if err := printStatus(&out, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "unknown") || !strings.Contains(out.String(), "Disabled") {
+		t.Fatalf("output: %s", out.String())
 	}
 }
 
@@ -203,7 +212,7 @@ func TestStatusSeparatesWarningsWithoutChangingSavedIssues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.SchemaVersion != 3 || len(report.Errors) != 2 || len(report.Warnings) != 1 || report.Warnings[0].Code != store.CodeOwnershipConflict {
+	if report.SchemaVersion != 4 || len(report.Errors) != 2 || len(report.Warnings) != 1 || report.Warnings[0].Code != store.CodeOwnershipConflict {
 		t.Fatalf("incorrect severity split: %+v", report)
 	}
 	var jsonOut bytes.Buffer
@@ -227,5 +236,66 @@ func TestStatusSeparatesWarningsWithoutChangingSavedIssues(t *testing.T) {
 	saved, err := store.ReadStatusStore()
 	if err != nil || len(saved.Errors) != 3 {
 		t.Fatalf("saved issue identity changed: %+v, %v", saved.Errors, err)
+	}
+}
+
+func TestStatusKeepsEnabledIntentSeparateFromNativeHoldAndDoesNotWrite(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", root)
+	t.Setenv("PATH", t.TempDir())
+	if err := store.SetEnabled("scope", "id", store.Enabled); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetWorkerControl(true); err != nil {
+		t.Fatal(err)
+	}
+	observed := time.Now().Add(-time.Hour).UTC()
+	if err := store.UpdateStatusStore(func(saved *store.StatusStore) {
+		native := false
+		saved.Sandboxes[store.StatusKey("scope", "id")] = store.SandboxStatus{
+			Scope: "scope", SandboxID: "id", Name: "claude", Label: "saved label", ProfileID: "stable-machine",
+			EntryPresent: true, NativeEnabled: &native, Observed: "stopped", ObservedAt: observed,
+			Connection: "Waiting for start", Stale: true,
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path, err := store.StatePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path + ".status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := readStatusReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := report.Sandboxes[0]
+	if report.Management.Enabled || row.Enabled != store.Enabled || !row.EntryPresent || row.NativeEnabled == nil || *row.NativeEnabled || row.ProfileID != "stable-machine" || !row.ObservedAt.Equal(observed) {
+		t.Fatalf("lost distinct saved and observed state: %+v %+v", report.Management, row)
+	}
+	var out bytes.Buffer
+	if err := printStatus(&out, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Management: OFF") || !strings.Contains(out.String(), "saved label (last known)") || !strings.Contains(out.String(), "(stale)") {
+		t.Fatalf("output: %s", out.String())
+	}
+	after, err := os.ReadFile(path + ".status")
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("status mutated journal: %v", err)
+	}
+}
+
+func TestDaemonSummaryShowsSavedChoiceDuringCancellation(t *testing.T) {
+	report := daemonReport(store.WorkerStatus{State: "cancelling", Detail: "Cancelling"}, store.StatusStore{WorkerControl: &store.WorkerControl{Initialized: true, Stopped: true}})
+	var out bytes.Buffer
+	printDaemonSummary(&out, report, func(value, tone string) string { return tone + ":" + value })
+	for _, want := range []string{"Management: 2:OFF", "Daemon: 2:Cancelling"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing %q: %s", want, out.String())
+		}
 	}
 }

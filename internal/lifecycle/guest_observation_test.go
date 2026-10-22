@@ -24,7 +24,7 @@ func TestGuestObservationRefreshesAfterLifecycleChanges(t *testing.T) {
 				t.Fatal(err)
 			}
 			checked := time.Now().Add(-time.Minute)
-			item.GuestSync = &store.GuestSyncObservation{Fingerprint: item.ProfileID + "\x00" + item.Target + "\x00" + item.SandboxID + "\x00" + fingerprint, CheckedAt: checked, Status: "ready", Detail: "saved observation"}
+			item.GuestSync = &store.GuestSyncObservation{Fingerprint: item.Target + "\x00" + item.SandboxID + "\x00" + fingerprint, CheckedAt: checked, Status: "ready", Detail: "saved observation"}
 			f.save(item)
 			scheduler := f.scheduler()
 			scheduler.beginStream()

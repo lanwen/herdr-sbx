@@ -30,7 +30,7 @@ func commands() *cli.Command {
 	}
 	return &cli.Command{
 		Name:      "herdr-sbx",
-		Usage:     "Manage Herdr registrations for Docker Sandboxes",
+		Usage:     "Manage herdr registrations for Docker Sandboxes",
 		Writer:    os.Stdout,
 		ErrWriter: os.Stderr,
 		Action: func(_ context.Context, cmd *cli.Command) error {
@@ -61,7 +61,7 @@ func commands() *cli.Command {
 				},
 				Commands: []*cli.Command{
 					{
-						Name: "start", Usage: "Start the daemon",
+						Name: "start", Usage: "Turn Management ON and start the daemon",
 						Flags: []cli.Flag{&cli.BoolFlag{Name: "automatic", Hidden: true}},
 						Action: func(_ context.Context, cmd *cli.Command) error {
 							if cmd.Args().Len() != 0 {
@@ -74,7 +74,7 @@ func commands() *cli.Command {
 						},
 					},
 					{
-						Name: "stop", Usage: "Stop the daemon and prevent automatic startup",
+						Name: "stop", Usage: "Turn Management OFF, cancel automatic work, and stop the daemon",
 						Action: func(ctx context.Context, cmd *cli.Command) error {
 							if cmd.Args().Len() != 0 {
 								return errors.New("usage: herdr-sbx daemon stop")

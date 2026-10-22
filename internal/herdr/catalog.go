@@ -18,6 +18,8 @@ type Machine struct {
 	Label   string `json:"label"`
 	Target  string `json:"target"`
 	Session string `json:"session"`
+	// Enabled is nil when the catalog does not report the native connection flag.
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 // ListMachines reads the local machine catalog.
@@ -52,6 +54,20 @@ func (c *Client) RenameMachine(ctx context.Context, id, label string) (string, e
 // RemoveMachine removes the specified catalog profile.
 func (c *Client) RemoveMachine(ctx context.Context, id string) (string, error) {
 	return c.command(ctx, 15*time.Second, true, "machine", "remove", id)
+}
+
+// SetMachineEnabled changes the saved native connection flag without opening SSH.
+// Callers must verify the profile identity and re-read the catalog afterward.
+// Disabling does not provide a barrier against clients' already-started reconnects.
+func (c *Client) SetMachineEnabled(ctx context.Context, id string, enabled bool) (string, error) {
+	if id == "" || strings.TrimSpace(id) != id || strings.HasPrefix(id, "-") {
+		return "", errors.New("a saved herdr machine ID is required")
+	}
+	action := "disable"
+	if enabled {
+		action = "enable"
+	}
+	return c.command(ctx, 5*time.Second, true, "machine", action, id)
 }
 
 // MachineStatus checks whether the selected remote machine's server responds.

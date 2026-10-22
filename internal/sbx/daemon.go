@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -90,7 +91,12 @@ func workspaceNeedsProbe(item map[string]any) bool {
 	return workingDirectory != "" && workingDirectory != item["workspace"]
 }
 
-// SandboxAbsent proves that the named sandbox no longer has the expected ID.
+// ErrSandboxIdentityChanged means a verified named lookup found a different UUID.
+// It does not authorize removal of an entry using that sandbox target.
+var ErrSandboxIdentityChanged = errors.New("sandbox identity changed")
+
+// SandboxAbsent proves that the sandbox name is not found. A replacement is
+// an identity conflict, never permission to remove an entry using that target.
 func (c *Client) SandboxAbsent(ctx context.Context, socket, name, expectedID string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -180,7 +186,10 @@ func sandboxAbsence(status int, body []byte, name, expectedID string) (bool, err
 	if sandbox.Name != name {
 		return false, fmt.Errorf("sandbox daemon returned a different sandbox name")
 	}
-	return sandbox.ID != expectedID, nil
+	if sandbox.ID != expectedID {
+		return false, fmt.Errorf("sandbox name %q now belongs to another identity; deletion is not confirmed: %w", name, ErrSandboxIdentityChanged)
+	}
+	return false, nil
 }
 
 func parseSandbox(raw string) (Sandbox, error) {

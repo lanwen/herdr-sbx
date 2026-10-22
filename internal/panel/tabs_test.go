@@ -15,19 +15,17 @@ import (
 
 func TestBrowsingKeysCycleTabsAndMouseSelects(t *testing.T) {
 	m := modelFixture(t)
-	m.expanded = "a"
-	m.focus = "actions"
 	for _, step := range []struct {
 		key  rune
 		page string
-	}{{tea.KeyRight, "Status"}, {tea.KeyTab, "Plugins"}, {tea.KeyRight, "Sandboxes"}, {tea.KeyLeft, "Plugins"}} {
+	}{{tea.KeyLeft, "Sandboxes"}, {tea.KeyTab, "Status"}, {tea.KeyRight, "Status"}, {tea.KeyLeft, "Status"}, {tea.KeyTab, "Plugins"}, {tea.KeyTab, "Sandboxes"}} {
 		m.key(keyMsg(step.key, ""))
 		if m.page != step.page || m.focus != "table" {
 			t.Fatalf("key %v -> %s/%s", step.key, m.page, m.focus)
 		}
 	}
 	m.key(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if m.page != "Status" {
+	if m.page != "Plugins" {
 		t.Fatal("Shift+Tab did not reverse")
 	}
 	m.View()
@@ -75,7 +73,7 @@ func TestStatusStartsAndStopsThroughOperationCommands(t *testing.T) {
 	m.stopWorkerFn = func(context.Context) error { stopped++; return nil }
 	m.key(keyMsg('b', "b"))
 	if m.page != "Status" || m.dialog != "" {
-		t.Fatal("auto-sync shortcut must open Status")
+		t.Fatal("Management shortcut must open Status")
 	}
 	command := m.key(keyMsg(tea.KeyEnter, ""))
 	if started != 0 || command == nil {
@@ -101,7 +99,7 @@ func TestStatusStartsAndStopsThroughOperationCommands(t *testing.T) {
 	}
 	m.key(keyMsg(tea.KeyEnd, ""))
 	if action := m.statusActions()[m.button]; action.id != "refresh" {
-		t.Fatal("End did not select refresh while auto-sync is off")
+		t.Fatal("End did not select refresh while Management is off")
 	}
 	m.key(keyMsg(tea.KeyUp, ""))
 	if action := m.statusActions()[m.button]; action.id != "ssh" {
@@ -109,7 +107,7 @@ func TestStatusStartsAndStopsThroughOperationCommands(t *testing.T) {
 	}
 	m.key(keyMsg(tea.KeyUp, ""))
 	if m.button != 0 {
-		t.Fatal("Up did not select Auto-sync")
+		t.Fatal("Up did not select Management")
 	}
 }
 func TestTopTabsAndStatusControlsFitAndReveal(t *testing.T) {
@@ -128,7 +126,7 @@ func TestTopTabsAndStatusControlsFitAndReveal(t *testing.T) {
 		for _, h := range m.hits {
 			if h.action == "status-action" && h.id == "2" {
 				found = true
-				if !strings.Contains(ansi.Cut(lines[h.y], h.x, h.x+h.w), "Refresh observations") {
+				if !strings.Contains(ansi.Cut(lines[h.y], h.x, h.x+h.w), "Refresh") {
 					t.Fatal("status mouse bounds differ from control")
 				}
 			}
@@ -144,37 +142,62 @@ func TestTopTabsAndStatusControlsFitAndReveal(t *testing.T) {
 	}
 }
 
-func TestSectionTabsRotateActiveToLeftAndArrowsCycle(t *testing.T) {
-	for _, width := range []int{60, 110} {
+func TestSectionTabsRotateActiveToLeftAndNamesRemainClickable(t *testing.T) {
+	for _, width := range []int{30, 60, 110} {
 		m := modelFixture(t)
 		m.width = width
 		for _, page := range []string{"Sandboxes", "Status", "Plugins"} {
 			m.openTab(page)
-			header := strings.Split(ansi.Strip(m.View().Content), "\n")[0]
-			if !strings.HasPrefix(header, "╭─ ← ") || !strings.HasSuffix(header, "╮") || ansi.StringWidth(header) != width {
+			strip := m.tabStrip()
+			header := ansi.Strip(strip.text)
+			if !strings.HasPrefix(header, "╭─ ") || !strings.HasSuffix(header, "╮") || ansi.StringWidth(header) != width {
 				t.Fatalf("invalid border: %q", header)
 			}
-			if !strings.HasPrefix(header, "╭─ ←   "+page+"  ") {
+			if !strings.HasPrefix(strings.TrimPrefix(header, "╭─ "), func() string {
+				if width >= 45 {
+					return "  " + page + "  "
+				}
+				return page
+			}()) {
 				t.Fatalf("active tab not leftmost: %q", header)
 			}
-			for _, action := range []string{"tab-next", "tab-prev"} {
-				m.View()
-				found := false
-				for _, h := range m.hits {
-					if h.action == action {
-						m.click(h.x, h.y)
-						found = true
-						break
-					}
-				}
-				if !found {
-					t.Fatalf("missing arrow %s", action)
-				}
+			if strings.ContainsAny(header, "←→") {
+				t.Fatalf("tab strip suggests arrow keys: %q", header)
 			}
+			count := 0
+			for _, h := range strip.hits {
+				if h.action != "page" {
+					t.Fatalf("non-tab control remains: %#v", h)
+				}
+				if !strings.Contains(ansi.Cut(header, h.x, h.x+h.w), h.id) {
+					t.Fatal("tab hit does not cover its name")
+				}
+				m.hitAction(h)
+				if m.page != h.id {
+					t.Fatal("tab name click did not select tab")
+				}
+				count++
+			}
+			if width < 32 && count != 1 || width >= 32 && count != 3 {
+				t.Fatal("wrong visible tab count", count)
+			}
+			m.openTab(page)
+			m.key(keyMsg(tea.KeyTab, ""))
+			if m.page == page {
+				t.Fatal("Tab cannot reach hidden pages")
+			}
+			m.key(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 			if m.page != page {
-				t.Fatal("opposite arrows did not restore tab")
+				t.Fatal("Shift+Tab did not return")
 			}
 		}
+	}
+}
+
+func TestWideHelpShowsTabNavigation(t *testing.T) {
+	m := modelFixture(t)
+	if got := ansi.Strip(m.renderHelp(110, false)); !strings.Contains(got, "tab/shift+tab tabs") {
+		t.Fatal(got)
 	}
 }
 
@@ -191,31 +214,23 @@ func TestTabsUseTextColorsWithoutFill(t *testing.T) {
 	}
 }
 
-func TestStatusToggleUsesObservedStateAndBlocksDuplicateRequests(t *testing.T) {
-	unsetNoColor(t)
+func TestManagementChoiceAndObservedStateStaySeparate(t *testing.T) {
 	m := modelFixture(t)
 	m.worker.State = "stopped"
 	m.workerLoaded = true
 	m.startWorkerFn = func() error { return nil }
-	m.openTab("Status")
-	command := m.activate()
-	if command == nil || m.activate() != nil {
-		t.Fatal("toggle must queue only one operation")
+	command := m.setWorkerEnabled(true)
+	if command == nil || m.setWorkerEnabled(true) != nil || m.worker.State != "stopped" {
+		t.Fatal("duplicate start or false running observation")
 	}
-	if m.worker.State != "stopped" || !strings.Contains(m.statusFooter().text, colorMuted+"OFF") {
-		t.Fatal("start request must not claim worker is running")
+	if !strings.Contains(ansi.Strip(m.statusFooter().text), "Management ON") {
+		t.Fatal("footer hid requested ON")
 	}
-	m.Update(workerMsg{status: store.WorkerStatus{State: "running"}, initialized: true})
-	if !strings.Contains(m.statusFooter().text, colorSuccess+"ON") {
-		t.Fatal("footer ignored observed running worker")
-	}
-	m.Update(workerMsg{status: store.WorkerStatus{State: "reconnecting"}, initialized: true})
-	if !strings.Contains(m.statusFooter().text, colorError+"ERROR") {
-		t.Fatal("footer ignored observed reconnect error")
-	}
-	m.Update(workerMsg{err: errors.New("status unreadable")})
-	if !strings.Contains(m.statusFooter().text, colorError+"ERROR") {
-		t.Fatal("status read failure must not keep healthy status")
+	for _, state := range []string{"running", "reconnecting", "stopped"} {
+		m.Update(workerMsg{status: store.WorkerStatus{State: state}, initialized: true})
+		if !m.workerEnabled || !strings.Contains(ansi.Strip(m.statusFooter().text), "Management ON") {
+			t.Fatal("observation overwrote choice")
+		}
 	}
 }
 
@@ -226,7 +241,7 @@ func TestStatusShowsWorkerSyncTimeOnlyWhileRunning(t *testing.T) {
 	for _, state := range []string{"running", "starting", "stopped", "reconnecting", "error"} {
 		m.worker.State = state
 		m.refreshing = true
-		text := ansi.Strip(m.autoSyncStatus())
+		text := ansi.Strip(m.managementStatus())
 		if strings.Contains(text, "last at") != (state == "running") {
 			t.Fatalf("timestamp state %s: %s", state, text)
 		}
@@ -239,24 +254,24 @@ func TestStatusShowsWorkerSyncTimeOnlyWhileRunning(t *testing.T) {
 	}
 	m.worker.State = "running"
 	m.refreshing = false
-	if text := ansi.Strip(m.autoSyncStatus()); !strings.Contains(text, "last at "+stamp) || strings.Contains(text, "*") {
+	if text := ansi.Strip(m.managementStatus()); !strings.Contains(text, "last at "+stamp) || strings.Contains(text, "*") {
 		t.Fatal(text)
 	}
 	m.checksPending = true
-	if !strings.Contains(ansi.Strip(m.autoSyncStatus()), stamp+"*") {
+	if !strings.Contains(ansi.Strip(m.managementStatus()), stamp+"*") {
 		t.Fatal("pending prerequisite refresh needs marker")
 	}
 	m.worker.LastSync = time.Now().Add(-29 * time.Second)
-	if text := ansi.Strip(m.autoSyncStatus()); strings.Contains(text, "last at") || !strings.Contains(text, "*") {
+	if text := ansi.Strip(m.managementStatus()); strings.Contains(text, "last at") || !strings.Contains(text, "*") {
 		t.Fatalf("recent sync needs only pending marker: %s", text)
 	}
 	m.checksPending = false
-	if text := ansi.Strip(m.autoSyncStatus()); strings.Contains(text, "last at") || strings.Contains(text, "*") {
+	if text := ansi.Strip(m.managementStatus()); strings.Contains(text, "last at") || strings.Contains(text, "*") {
 		t.Fatalf("recent completed sync should be compact: %s", text)
 	}
 	m.checksPending = true
 	m.worker.LastSync = time.Time{}
-	if text := ansi.Strip(m.autoSyncStatus()); strings.Contains(text, "last at") || !strings.Contains(text, "*") {
+	if text := ansi.Strip(m.managementStatus()); strings.Contains(text, "last at") || !strings.Contains(text, "*") {
 		t.Fatal("unknown sync time must hide time but keep pending marker")
 	}
 }
@@ -372,21 +387,14 @@ func TestStatusOffersSSHSetupUntilReady(t *testing.T) {
 	}
 }
 
-func TestStatusOmitsRedundantStoppedDetail(t *testing.T) {
+func TestStatusUsesStoppedDetailAsHint(t *testing.T) {
 	for _, detail := range []string{"Daemon is not running.", "Stopped after losing the herdr connection."} {
 		m := modelFixture(t)
+		m.openTab("Status")
 		m.worker.State, m.worker.Detail = "stopped", detail
-		found := false
-		for _, line := range m.statusLines() {
-			if strings.Contains(ansi.Strip(line.text), detail) {
-				found = true
-			}
-		}
-		if found != (detail != "Daemon is not running.") {
-			t.Fatalf("detail %q visible=%v", detail, found)
-		}
-		if m.worker.Detail != detail {
-			t.Fatal("rendering changed daemon status data")
+		hint, _ := m.contextHint()
+		if hint != detail || m.worker.Detail != detail {
+			t.Fatalf("detail=%q hint=%q", detail, hint)
 		}
 	}
 }
@@ -398,7 +406,7 @@ func TestStatusRefreshFollowsPrerequisitesWithBlankLine(t *testing.T) {
 	m.openTab("Status")
 	m.key(keyMsg(tea.KeyEnd, ""))
 	lines := m.statusLines()
-	if len(lines) < 3 || lines[len(lines)-2].text != "" || !strings.Contains(ansi.Strip(lines[len(lines)-3].text), "SSH configured") || !strings.Contains(ansi.Strip(lines[len(lines)-1].text), "Refresh observations") {
+	if len(lines) < 3 || lines[len(lines)-2].text != "" || !strings.Contains(ansi.Strip(lines[len(lines)-3].text), "SSH configured") || !strings.Contains(ansi.Strip(lines[len(lines)-1].text), "Refresh") {
 		t.Fatalf("refresh must follow prerequisite content and a blank line: %#v", lines)
 	}
 	last := lines[len(lines)-1]
@@ -518,7 +526,7 @@ func TestFailedOffKeepsChoiceAndObservedRunning(t *testing.T) {
 	m.worker.State = "running"
 	m.stopWorkerFn = func(context.Context) error { return errors.New("cannot save stop request") }
 	command := m.setWorkerEnabled(false)
-	if command == nil || m.workerEnabled || !strings.Contains(ansi.Strip(m.autoSyncStatus()), "Running → Stopping") {
+	if command == nil || m.workerEnabled || !strings.Contains(ansi.Strip(m.managementStatus()), "Cancelling") {
 		t.Fatal("OFF did not show the stopping transition")
 	}
 	m.Update(command())
@@ -526,7 +534,7 @@ func TestFailedOffKeepsChoiceAndObservedRunning(t *testing.T) {
 	if m.workerEnabled || !strings.Contains(line, "ERROR") || !strings.Contains(line, "Running") {
 		t.Fatalf("failed OFF lost the choice or runtime: %q", line)
 	}
-	if !strings.Contains(m.statusLines()[0].text, ink(colorError, "OFF")) {
+	if !strings.Contains(m.statusLines()[1].text, ink(colorError, "OFF")) {
 		t.Fatal("failed OFF choice is not red")
 	}
 	if !strings.Contains(ansi.Strip(m.View().Content), store.CodeDaemonStop+" · worker") {
@@ -538,7 +546,7 @@ func TestFailedOffKeepsChoiceAndObservedRunning(t *testing.T) {
 	}
 	m.stopWorkerFn = func(context.Context) error { return nil }
 	m.button = 0
-	if retry := m.statusAction(); retry == nil || !strings.Contains(ansi.Strip(m.autoSyncStatus()), "Running → Stopping") {
+	if retry := m.statusAction(); retry == nil || !strings.Contains(ansi.Strip(m.managementStatus()), "Cancelling") {
 		t.Fatal("failed OFF could not be retried with Enter")
 	}
 }

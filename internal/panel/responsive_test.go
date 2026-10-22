@@ -21,7 +21,7 @@ func TestPhoneFramesFitAndControlsRemainReachable(t *testing.T) {
 				} else {
 					unsetNoColor(t)
 				}
-				m.width, m.height = width, 12
+				m.width, m.height = width, 10
 				m.rows[0].Status.Detail = strings.Repeat("Long status explanation. ", 20)
 				m.plugins = []guestplugins.Choice{{ID: "example.very-long-plugin-name"}}
 				check := func() {
@@ -84,35 +84,22 @@ func TestPhoneFramesFitAndControlsRemainReachable(t *testing.T) {
 	}
 }
 
-func TestPhoneTablePreservesBothNamesAndManagement(t *testing.T) {
+func TestPhoneTablePreservesEnabledAndNames(t *testing.T) {
 	for _, width := range []int{30, 32, 36, 40, 59, 60, 71, 72, 110} {
 		m := modelFixture(t)
 		m.width = width
 		c := m.sandboxColumns(m.rows)
-		if got := ansi.StringWidth(c.header()); got != width-4 {
-			t.Fatalf("width %d table %d", width, got)
+		if ansi.StringWidth(c.header()) != width-4 || (c.status == 0) != (width < 72) || c.name < 1 || c.label < 1 {
+			t.Fatalf("invalid columns at %d: %+v", width, c)
 		}
-		if (c.readiness == 0) != (width < 72) {
-			t.Fatalf("readiness at %d: %+v", width, c)
-		}
-		if c.name < 1 || c.label < 1 {
-			t.Fatalf("names lost: %+v", c)
-		}
-		if width < 60 {
-			if !c.compactRuntime {
-				t.Fatal("runtime did not compact")
-			}
-			for choice, want := range map[store.ManagementChoice]string{store.Watched: "W", store.Unmanaged: "UM", store.Unwatched: "UW", store.Disabled: "D", store.Untracked: "UT", "other": "?"} {
-				if got := c.managementText(choice); got != want {
-					t.Fatalf("%s=%s", choice, got)
-				}
-			}
+		if width < 60 && c.enabled != 1 {
+			t.Fatal("enabled symbol column not compact")
 		}
 	}
 }
 
 func TestOverflowHintRemainsReadableByKeyboardScrolling(t *testing.T) {
-	for _, size := range [][2]int{{32, 12}, {60, 18}} {
+	for _, size := range [][2]int{{30, 10}, {32, 12}, {60, 18}} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
 			m := modelFixture(t)
 			m.width, m.height = size[0], size[1]
@@ -148,7 +135,7 @@ func TestOverflowHintRemainsReadableByKeyboardScrolling(t *testing.T) {
 }
 
 func TestNarrowDiagnosticsSwitchRemainsVisibleAndClickable(t *testing.T) {
-	for _, size := range [][2]int{{32, 12}, {40, 12}, {60, 18}} {
+	for _, size := range [][2]int{{30, 10}, {32, 12}, {40, 12}, {60, 18}} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
 			m := modelFixture(t)
 			m.width, m.height = size[0], size[1]
@@ -190,7 +177,7 @@ func TestNarrowPluginHintIdentifiesSamePrefixPlugins(t *testing.T) {
 		for _, page := range []string{"Plugins", "Sandboxes"} {
 			t.Run(fmt.Sprintf("%d/%s", width, page), func(t *testing.T) {
 				m := modelFixture(t)
-				m.width, m.height = width, 12
+				m.width, m.height = width, 10
 				m.plugins = []guestplugins.Choice{{ID: "same.plugin.prefix.first"}, {ID: "same.plugin.prefix.second"}}
 				m.openTab(page)
 				if page == "Sandboxes" {

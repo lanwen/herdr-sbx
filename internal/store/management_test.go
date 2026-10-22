@@ -66,3 +66,31 @@ func TestErrorsDeduplicateAndRecoveryResolves(t *testing.T) {
 		t.Fatalf("errors=%+v err=%v", status.Errors, err)
 	}
 }
+
+func TestEnabledChoiceAndControlGenerationPersist(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	if err := SetEnabled("scope", "sandbox", Disabled); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetWorkerControl(true); err != nil {
+		t.Fatal(err)
+	}
+	first, err := ReadStatusStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.EnabledChoices[StatusKey("scope", "sandbox")] != Disabled {
+		t.Fatal("disabled choice lost")
+	}
+	if err := SetWorkerControl(true); err != nil {
+		t.Fatal(err)
+	}
+	applied, err := SetWorkerControlIfGeneration(false, first.WorkerControl.Generation)
+	if err != nil || applied {
+		t.Fatalf("stale ON overwrote later OFF: %v %v", applied, err)
+	}
+	final, err := ReadStatusStore()
+	if err != nil || !final.WorkerControl.Stopped || final.WorkerControl.Generation <= first.WorkerControl.Generation {
+		t.Fatalf("control=%+v err=%v", final.WorkerControl, err)
+	}
+}

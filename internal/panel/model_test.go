@@ -19,7 +19,9 @@ func modelFixture(t *testing.T) *model {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	m := newModel(nil)
 	m.loading = false
-	m.rows = []registration.SandboxRow{{Sandbox: sbx.Sandbox{ID: "a", Name: "alpha", Status: "running"}, Scope: "scope", Management: store.Watched, Owned: true, Label: "API desk"}, {Sandbox: sbx.Sandbox{ID: "b", Name: "beta", Status: "stopped"}, Scope: "scope", Management: store.Unmanaged, Label: "Release desk"}}
+	m.workerEnabled = false
+	disabled := false
+	m.rows = []registration.SandboxRow{{Sandbox: sbx.Sandbox{ID: "a", Name: "alpha", Status: "running"}, Scope: "scope", Enabled: store.Enabled, EntryPresent: true, Label: "API desk"}, {Sandbox: sbx.Sandbox{ID: "b", Name: "beta", Status: "stopped"}, Scope: "scope", Enabled: store.Disabled, EntryPresent: true, NativeEnabled: &disabled, Label: "Release desk"}}
 	m.ensureSelection()
 	return m
 }
@@ -37,7 +39,7 @@ func TestExpansionSelectionAndFiltering(t *testing.T) {
 	}
 	m.key(keyMsg('/', "/"))
 	m.key(keyMsg('A', "API"))
-	if m.selected != "a" || m.expanded != "b" || len(m.visibleRows()) != 1 {
+	if m.selected != "a" || m.expanded != "a" || len(m.visibleRows()) != 1 {
 		t.Fatalf("selection=%s expansion=%s", m.selected, m.expanded)
 	}
 	m.key(keyMsg(tea.KeyEscape, ""))
@@ -106,25 +108,31 @@ func TestStoppedWorkerPromptDefaultsToKeepStopped(t *testing.T) {
 		t.Fatal("configuration unavailable while stopped")
 	}
 }
-func TestMouseSelectionAndDisclosureShareLayout(t *testing.T) {
+func TestMouseSelectionAndPreviewShareLayout(t *testing.T) {
 	m := modelFixture(t)
 	m.View()
-	var selectHit, expandHit hit
+	var target hit
 	for _, h := range m.hits {
 		if h.id == "b" && h.action == "select" {
-			selectHit = h
-		}
-		if h.id == "b" && h.action == "expand" {
-			expandHit = h
+			target = h
 		}
 	}
-	m.click(selectHit.x, selectHit.y)
-	if m.selected != "b" || m.expanded != "b" {
-		t.Fatal("row click did not open details")
+	if target.w == 0 {
+		t.Fatal("missing sandbox selection hit")
 	}
-	m.click(expandHit.x, expandHit.y)
-	if m.expanded != "" {
-		t.Fatal("same-row disclosure did not close details")
+	m.click(target.x, target.y)
+	if m.selected != "b" || m.expanded != "b" || m.focus != "table" {
+		t.Fatal("row click did not preview without entering details")
+	}
+	m.View()
+	for _, h := range m.hits {
+		if h.id == "b" && h.action == "select" {
+			target = h
+		}
+	}
+	m.click(target.x, target.y)
+	if m.expanded != "b" || m.focus != "table" {
+		t.Fatal("same-card click removed preview")
 	}
 }
 func TestSmallViewPreservesWorkerErrorsAndState(t *testing.T) {
@@ -134,7 +142,7 @@ func TestSmallViewPreservesWorkerErrorsAndState(t *testing.T) {
 	m.expanded = "b"
 	m.addError(store.CodeSSHSetup, "Host", errors.New("missing configuration"))
 	view := m.View()
-	for _, want := range []string{"Auto-sync OFF", "beta → Release desk", "? help"} {
+	for _, want := range []string{"Management OFF", "beta (stopped)", "Release desk", "? help"} {
 		if !strings.Contains(view.Content, want) {
 			t.Fatalf("missing %q in %s", want, view.Content)
 		}
@@ -156,29 +164,27 @@ func TestPluginOverrideShowsLiveDefaultAndSavedChoice(t *testing.T) {
 	}
 }
 
-func TestArrowSelectionRetainsExpandedDetails(t *testing.T) {
+func TestArrowSelectionKeepsPreviewWithSelection(t *testing.T) {
 	m := modelFixture(t)
-	m.expanded = "a"
 	m.key(keyMsg(tea.KeyEnd, ""))
-	if m.selected != "b" || m.expanded != "a" {
-		t.Fatal("arrow selection closed expanded details")
+	if m.selected != "b" || m.expanded != "b" || m.focus != "table" {
+		t.Fatal("End did not preview last sandbox")
 	}
 	m.ensureSelection()
-	if m.expanded != "a" {
-		t.Fatal("refresh closed surviving expansion")
-	}
-	m.hitAction(hit{action: "select", id: "b"})
 	if m.expanded != "b" {
-		t.Fatal("new-row click did not replace details")
-	}
-	m.hitAction(hit{action: "select", id: "b"})
-	if m.expanded != "" {
-		t.Fatal("same-row click did not close details")
+		t.Fatal("refresh lost preview")
 	}
 	m.hitAction(hit{action: "select", id: "a"})
+	m.key(keyMsg(tea.KeyEnter, ""))
 	m.key(keyMsg(tea.KeyEscape, ""))
-	if m.expanded != "" {
-		t.Fatal("Escape did not close details")
+	if m.expanded != "a" || m.focus != "table" {
+		t.Fatal("Escape removed selected preview")
+	}
+	m.focus = "actions"
+	m.mergeRows(m.rows[1:])
+	m.ensureSelection()
+	if m.selected != "b" || m.expanded != "b" || m.focus != "table" {
+		t.Fatal("deleted selection did not preview replacement")
 	}
 }
 func TestMouseCannotNavigateAwayFromActiveInput(t *testing.T) {
@@ -239,7 +245,7 @@ func TestRemovalErrorRecoverySelectsDisable(t *testing.T) {
 	}
 }
 func TestNarrowActiveInputsRemainVisible(t *testing.T) {
-	for _, kind := range []string{"rename"} {
+	for _, kind := range []string{"rename", "filter"} {
 		t.Run(kind, func(t *testing.T) {
 			m := modelFixture(t)
 			m.width, m.height = 60, 18
@@ -247,7 +253,11 @@ func TestNarrowActiveInputsRemainVisible(t *testing.T) {
 			m.plugins = make([]guestplugins.Choice, 30)
 			m.input = &inputState{kind: kind, target: "a", text: "editable", cursor: 8}
 			view := m.View()
-			if !strings.Contains(view.Content, "editable│") {
+			caret := "│"
+			if kind == "rename" {
+				caret = "█"
+			}
+			if !strings.Contains(view.Content, "editable"+caret) {
 				t.Fatalf("input hidden: %s", view.Content)
 			}
 		})
@@ -261,7 +271,7 @@ func TestMouseRenameRevealsInlineEditor(t *testing.T) {
 	m.focus = "actions"
 	m.hitAction(hit{action: "action", id: "rename"})
 	view := m.View()
-	if m.input == nil || !strings.Contains(view.Content, "API desk│") {
+	if m.input == nil || !strings.Contains(view.Content, "API desk█") {
 		t.Fatalf("inline editor hidden: %s", view.Content)
 	}
 }
@@ -281,26 +291,59 @@ func TestErrorKeyboardSelectionRevealsRecoveryTarget(t *testing.T) {
 	}
 }
 
-func TestPanelActivationSchedulesPolicyCleanupOnceWithoutWorker(t *testing.T) {
+func TestPanelObservationWhileOffDoesNotScheduleWork(t *testing.T) {
 	m := modelFixture(t)
 	m.worker = store.WorkerStatus{State: "stopped"}
 	m.workerLoaded = true
-	_, cmd := m.Update(observationMsg{})
-	if m.policyCleanupRequested || cmd != nil {
-		t.Fatal("cleanup scheduled without daemon identity")
+	_, cmd := m.Update(observationMsg{checks: precheck.Result{Scope: "scope", Socket: "/tmp/test.sock"}})
+	if cmd != nil || len(m.pending) != 0 {
+		t.Fatal("read-only observation scheduled work while OFF")
 	}
-	observation := observationMsg{checks: precheck.Result{Scope: "scope", Socket: "/tmp/test.sock"}}
-	_, cmd = m.Update(observation)
-	if cmd == nil || !m.policyCleanupRequested || !m.pending["policy-cleanup"] {
-		t.Fatal("stopped worker prevented activation cleanup")
+}
+
+func TestPollingPreservesFocusedActionAndPreview(t *testing.T) {
+	m := modelFixture(t)
+	m.focus = "actions"
+	for i, a := range m.sandboxActions(m.rows[0]) {
+		if a.id == "rename" {
+			m.button = i
+		}
 	}
-	_, cmd = m.Update(observation)
-	if cmd != nil {
-		t.Fatal("activation cleanup scheduled more than once")
+	fresh := m.rows[0]
+	fresh.Status.Connection = "ready"
+	m.mergeRows([]registration.SandboxRow{fresh, m.rows[1]})
+	m.ensureSelection()
+	if m.focus != "actions" || m.sandboxActions(m.rows[0])[m.button].id != "rename" || m.expanded != m.selected {
+		t.Fatal("poll moved focused action or preview")
 	}
-	m.refreshing = true
-	_, cmd = m.Update(operationMsg{target: "policy-cleanup", code: store.CodePolicyCleanup, err: errors.New("rules need manual cleanup")})
-	if cmd == nil || len(m.errors) != 1 || m.errors[0].code != store.CodePolicyCleanup {
-		t.Fatal("cleanup failure was not surfaced")
+	m.page, m.focus, m.button = "Status", "table", len(m.statusActions())-1
+	last := m.button
+	m.ensureSelection()
+	if m.button != last {
+		t.Fatal("sandbox poll changed Status action")
+	}
+}
+
+func TestRenameSubmissionSkipsUnchangedLabel(t *testing.T) {
+	for _, test := range []struct {
+		name, text string
+		changed    bool
+	}{
+		{"unchanged", "API desk", false},
+		{"surrounding whitespace", "  API desk  ", false},
+		{"changed", "New desk", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := modelFixture(t)
+			m.beginRename()
+			m.input.text = test.text
+			cmd := m.inputKey(keyMsg(tea.KeyEnter, ""))
+			if (cmd != nil) != test.changed || m.pending["a"] != test.changed || (m.input != nil) != test.changed {
+				t.Fatalf("changed=%t command=%t pending=%t editor=%+v", test.changed, cmd != nil, m.pending["a"], m.input)
+			}
+			if m.rows[0].Label != "API desk" {
+				t.Fatal("submission replaced observed label before a confirmed change")
+			}
+		})
 	}
 }

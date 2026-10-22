@@ -2,7 +2,7 @@
 set -eu
 
 case "${1:-}" in
-  --version)
+  version|--version)
     printf '%s\n' 'sbx 0.45.1'
     ;;
   daemon)

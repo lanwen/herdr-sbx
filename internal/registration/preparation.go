@@ -33,6 +33,9 @@ func (s *Service) observeGuestServer(ctx context.Context, scope string, sb sbx.S
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+	if CheckAutomaticWork(ctx) != nil || !current() {
+		return
+	}
 	running, actual, err := s.herdr.GuestServerVersion(probeCtx, sb.Name+".sbx")
 	if ctx.Err() != nil || !current() {
 		return

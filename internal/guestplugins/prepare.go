@@ -110,6 +110,18 @@ func prepare(ctx context.Context, client *herdr.Client, target, scope, sandboxID
 	} else if err != nil {
 		return errors.New("cannot read local herdr shortcuts")
 	}
+	checkCurrent := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if current == nil || !current() {
+			return context.Canceled
+		}
+		return nil
+	}
+	if err := checkCurrent(); err != nil {
+		return err
+	}
 	guest, err := client.InspectGuestPlugin(ctx, target, local.ID)
 	if err != nil {
 		return err
@@ -171,8 +183,8 @@ func prepare(ctx context.Context, client *herdr.Client, target, scope, sandboxID
 	if repaired && bytes.Equal(merged, guest.Config) && guest.AppliedConfigSHA == digest(guest.Config) {
 		return store.FinishGuestPluginAttempt(scope, sandboxID, local.ID, revision, "")
 	}
-	if ctx.Err() != nil || current == nil || !current() {
-		return errors.New("sandbox identity or plugin selection changed before plugin preparation")
+	if err := checkCurrent(); err != nil {
+		return err
 	}
 	if repaired {
 		commands = nil
@@ -204,10 +216,13 @@ func prepare(ctx context.Context, client *herdr.Client, target, scope, sandboxID
 	if err != nil {
 		return err
 	}
-	if ctx.Err() != nil || !current() {
-		return errors.New("sandbox identity or plugin selection changed before plugin transfer")
+	if err := checkCurrent(); err != nil {
+		return err
 	}
 	if err := client.InstallGuestPlugin(ctx, target, local.ID, bytes.NewReader(bundle), digest(bundle), digest(guest.Config), revision, guest.ConfigExists, commands...); err != nil {
+		return err
+	}
+	if err := checkCurrent(); err != nil {
 		return err
 	}
 	verified, err := client.InspectGuestPlugin(ctx, target, local.ID)
