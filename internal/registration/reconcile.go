@@ -336,7 +336,7 @@ func (s *Service) reconcileWithInstallation(ctx context.Context, out io.Writer, 
 			trackedByID[sb.ID] = *saved
 		}
 	}
-	if len(results) == 0 {
+	if len(results) == 0 && s.printResult == nil {
 		fmt.Fprintln(out, "No running sandboxes to register.")
 	}
 	for _, item := range results {
@@ -352,7 +352,11 @@ func (s *Service) reconcileWithInstallation(ctx context.Context, out io.Writer, 
 				s.notifyResult(ctx, out, p.Scope, sb.ID, item)
 			}
 		}
-		fmt.Fprintf(out, "%-24s %-18s %s\n", item.Name, strings.ToUpper(item.Status), item.Detail)
+		if s.printResult != nil {
+			s.printResult(out, ResultObservation{SandboxID: resultSandboxes[item.Name].ID, Name: item.Name, Status: item.Status, Detail: item.Detail, DiagnosticCode: resultDiagnosticCode(item)})
+		} else {
+			fmt.Fprintf(out, "%-24s %-18s %s\n", item.Name, strings.ToUpper(item.Status), item.Detail)
+		}
 	}
 	return nil
 }
@@ -600,9 +604,6 @@ func deterministicAddFailure(output string) bool {
 
 // Save the diagnostic before advertising its reference in a notification.
 func saveResultError(scope string, item result) error {
-	if (item.Status == "stopped" || item.Status == "waiting for start" || item.Status == "disabled in herdr" || item.Status == "enable not confirmed" || item.Status == "disabled" || item.Status == "pending" || item.Status == "runtime unknown" || item.Status == "runtime failed") && item.DiagnosticCode == "" {
-		return store.SetRegistrationError("", scope, "")
-	}
 	if item.Status == "ready" {
 		if err := store.SetRegistrationError("", scope, ""); err != nil {
 			return err
@@ -611,6 +612,9 @@ func saveResultError(scope string, item result) error {
 	}
 	if item.Status == "stale" || item.Status == "retrying" {
 		return nil
+	}
+	if resultDiagnosticCode(item) == "" {
+		return store.SetRegistrationError("", scope, "")
 	}
 	if item.Status == "plugin setup required" || item.Status == "manual intervention required" {
 		if err := store.SetRegistrationError("", scope, ""); err != nil {
@@ -622,17 +626,31 @@ func saveResultError(scope string, item result) error {
 		}
 		return store.SetGuestPluginFailures(scope, item.PluginFailures)
 	}
-	code := store.CodeRegistration
-	switch item.Status {
-	case "association warning":
-		code = store.CodeOwnershipConflict
-	case "workspace setup required":
-		code = store.CodeWorkspaceSetup
-	case "setup required":
-		code = store.CodeSandboxSetup
+	code := resultDiagnosticCode(item)
+	return store.SetRegistrationError(code, scope, item.Detail)
+}
+
+// resultDiagnosticCode classifies the actual reconciliation outcome for both
+// saved diagnostics and non-table result presentations.
+func resultDiagnosticCode(item result) string {
+	if item.Status == "ready" || item.Status == "stale" || item.Status == "retrying" {
+		return ""
 	}
 	if item.DiagnosticCode != "" {
-		code = item.DiagnosticCode
+		return item.DiagnosticCode
 	}
-	return store.SetRegistrationError(code, scope, item.Detail)
+	switch item.Status {
+	case "stopped", "waiting for start", "disabled in herdr", "enable not confirmed", "disabled", "pending", "runtime unknown", "runtime failed":
+		return ""
+	case "association warning":
+		return store.CodeOwnershipConflict
+	case "workspace setup required":
+		return store.CodeWorkspaceSetup
+	case "setup required":
+		return store.CodeSandboxSetup
+	case "plugin setup required", "manual intervention required":
+		return store.CodeGuestPluginSync
+	default:
+		return store.CodeRegistration
+	}
 }

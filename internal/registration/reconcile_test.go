@@ -1,6 +1,7 @@
 package registration
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -59,9 +60,23 @@ func TestReconcilePersistsOnlyVerifiedMachineAndDoesNotAddTwice(t *testing.T) {
 	}
 	fixture.rebuildClients()
 
-	for range 2 {
-		require.NoError(t, fixture.service.Reconcile(io.Discard))
+	var output bytes.Buffer
+	var observations []ResultObservation
+	for scan := range 2 {
+		if scan == 1 {
+			fixture.service.SetResultPrinter(func(_ io.Writer, observation ResultObservation) { observations = append(observations, observation) })
+		}
+		require.NoError(t, fixture.service.Reconcile(&output))
+		if scan == 0 {
+			require.Contains(t, output.String(), "READY")
+			output.Reset()
+		}
 	}
+	require.NotContains(t, output.String(), "READY", "custom result printer still emitted table rows")
+	require.Len(t, observations, 1)
+	require.Equal(t, "sandbox-1", observations[0].SandboxID)
+	require.Equal(t, "ready", observations[0].Status)
+	require.Empty(t, observations[0].DiagnosticCode)
 	require.Equal(t, 0, readinessChecks, "machine add already confirmed readiness; post-add checks=%d", readinessChecks)
 	state, err := store.LoadState()
 	require.NoError(t, err)

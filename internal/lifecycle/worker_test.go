@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -20,51 +19,6 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/store"
 	"github.com/stretchr/testify/require"
 )
-
-func TestWorkerLogCompactionKeepsInheritedOutput(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.json.worker.log")
-	log, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	require.NoError(t, err)
-	defer log.Close()
-	// Keep using the same inherited descriptor across multiple compactions,
-	// just like a long-lived detached daemon's stdout and stderr.
-	for _, marker := range []string{"first", "second", "third"} {
-		command := exec.Command("sh", "-c", "cat; printf stderr-tail >&2")
-		command.Stdin = strings.NewReader(strings.Repeat(marker, workerLogLimit/len(marker)+1))
-		command.Stdout, command.Stderr = log, log
-		require.NoError(t, command.Run())
-		before, err := os.ReadFile(path)
-		require.NoError(t, err)
-		require.NoError(t, compactWorkerLog(path))
-		after, err := os.ReadFile(path)
-		require.NoError(t, err)
-		require.Len(t, after, workerLogRetained)
-		require.Equal(t, before[len(before)-workerLogRetained:], after)
-		require.True(t, bytes.HasSuffix(after, []byte("stderr-tail")), "inherited stderr output was lost")
-	}
-}
-
-func TestWorkerLogCompactionHandlesMissingSmallAndUnreadableFiles(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.json.worker.log")
-	require.NoError(t, compactWorkerLog(path))
-	{
-		_, err := os.Stat(path)
-		require.ErrorIs(t, err, os.ErrNotExist, "missing log was created: %v", err)
-	}
-	require.NoError(t, os.WriteFile(path, []byte("recent output"), 0600))
-	require.NoError(t, compactWorkerLog(path))
-	{
-		data, err := os.ReadFile(path)
-		require.NoError(t, err)
-		require.EqualValues(t, "recent output", string(data))
-	}
-	badPath := path + ".bad"
-	require.NoError(t, os.Symlink(badPath, badPath))
-	{
-		err := compactWorkerLog(badPath)
-		require.ErrorIs(t, err, syscall.ELOOP, "unreadable log error = %v", err)
-	}
-}
 
 func TestWorkerStartIsNoopWhileActive(t *testing.T) {
 	dir := t.TempDir()
@@ -250,12 +204,12 @@ func TestStopWorkerStopsCooperativeWorker(t *testing.T) {
 	for {
 		info, err := os.Stat(logPath)
 		require.NoError(t, err)
-		if info.Size() == workerLogRetained {
+		if info.Size() == 1 {
 			break
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatal("running daemon did not compact its log")
+			t.Fatal("running daemon did not rotate its log")
 		case <-logPoll.C:
 		}
 	}

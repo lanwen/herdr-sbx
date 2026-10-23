@@ -165,7 +165,14 @@ Without project metadata, workspace setup stays unchanged.
 
 State uses `HERDR_PLUGIN_STATE_DIR`, or `${XDG_STATE_HOME:-$HOME/.local/state}/herdr/plugins/lanwen.herdr-sbx` by default.
 The directory holds stable association and enabled-choice records, daemon status, `state.json.worker.log`, and `guest-plugins.json`.
-When the daemon log exceeds 1 MiB, the daemon retains its most recent 512 KiB in the same file.
+The daemon writes timestamped text events with severity and short details, including startup, reconnects, shutdown, prerequisite changes, and sandbox outcomes.
+Identical prerequisite reports and sandbox outcomes are suppressed until their state or detail changes; foreground prerequisite and reconciliation tables stay unchanged.
+Full command output and multiline reports are omitted from the daemon log; saved diagnostics remain separate.
+The daemon retains three log files total: the active `state.json.worker.log`, the newest archive `.worker.log.1`, and the oldest archive `.worker.log.2`.
+Each file has a nominal 1 MiB limit and private permissions.
+Rotation checks run every 100 milliseconds, so active output can exceed the limit briefly.
+Large bursts discard the oldest chunks beyond the retained history.
+Rotation preserves the active file descriptor by copying and truncating the file; unsynchronized direct writes to stdout or stderr can race that final rewrite.
 For a custom Herdr state location, provide its plugin state directory explicitly.
 After a binary update, reopen the panel and restart the daemon to load it.
 An already-running daemon keeps its earlier executable and `daemon start` alone does not replace it; use `daemon stop` followed by `daemon start`.

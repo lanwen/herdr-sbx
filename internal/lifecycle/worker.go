@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,8 +21,7 @@ import (
 // not be confirmed. Its wrapped cause distinguishes timeouts from read failures.
 var ErrDaemonStopUnconfirmed = errors.New("Cannot confirm that the daemon stopped")
 
-const workerLogLimit = 1 << 20               // Compact daemon output after it exceeds 1 MiB.
-const workerLogRetained = workerLogLimit / 2 // Keep the latest 512 KiB after compaction.
+const workerLogLimit = 1 << 20 // Rotate daemon output after it exceeds 1 MiB.
 
 // StartWorker starts a detached plugin worker and writes its output beside the
 // registration journal. An already active worker is a successful no-op.
@@ -58,12 +59,12 @@ func (s *Service) StartWorker() error {
 	if err := os.MkdirAll(filepath.Dir(statePath), 0700); err != nil {
 		return err
 	}
-	log, err := os.OpenFile(statePath+".worker.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	log, err := openWorkerLog(statePath+".worker.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY)
 	if err != nil {
 		return err
 	}
 	defer log.Close()
-	if err := compactWorkerLog(log.Name()); err != nil {
+	if err := rotateWorkerLog(log.Name()); err != nil {
 		return err
 	}
 	command := exec.Command(executable, "worker")
@@ -81,7 +82,8 @@ func (s *Service) StartWorker() error {
 // and the local Herdr server remains available across handoffs.
 func (s *Service) Worker(out io.Writer) error {
 	output := &lockedWriter{out: out}
-	out = output
+	logger := slog.New(slog.NewTextHandler(output, nil))
+	out = &workerOutput{logger: logger}
 	unlock, err := store.LockWorker()
 	if errors.Is(err, store.ErrWorkerActive) {
 		return nil
@@ -97,11 +99,23 @@ func (s *Service) Worker(out io.Writer) error {
 	if control.WorkerControl != nil && control.WorkerControl.Stopped {
 		return nil
 	}
+	var reportMu sync.Mutex
+	lastState, lastDetail := "", ""
 	report := func(state, detail string, synced bool) {
+		reportMu.Lock()
+		defer reportMu.Unlock()
 		// Completion of an old operation must not overwrite OFF cancellation
 		// with a late Running/reconnecting report.
 		if state != "stopped" && !automaticAllowed(context.Background()) {
 			state, detail, synced = "cancelling", "Cancelling", false
+		}
+		if state != lastState || detail != lastDetail {
+			level := slog.LevelInfo
+			if state == "reconnecting" {
+				level = slog.LevelWarn
+			}
+			logger.LogAttrs(context.Background(), level, "Daemon state changed", slog.String("state", state), slog.String("detail", workerLogDetail(detail)))
+			lastState, lastDetail = state, detail
 		}
 		if err := store.RecordWorkerStatus(state, detail, synced); err != nil {
 			fmt.Fprintln(out, "Worker status was not saved:", err)
@@ -114,6 +128,13 @@ func (s *Service) Worker(out io.Writer) error {
 	if !s.workerAlive() {
 		return errors.New("no participating local Herdr server is running")
 	}
+	// Worker owns this dedicated process; foreground commands keep their panel
+	// printers and do not share these service instances.
+	checks := &workerChecks{logger: logger}
+	s.SetCheckPrinter(checks.print)
+	s.registrations.SetCheckPrinter(checks.print)
+	results := &workerResults{logger: logger}
+	s.registrations.SetResultPrinter(results.print)
 	logPath, err := store.StatePath()
 	if err != nil {
 		return err
@@ -129,10 +150,10 @@ func (s *Service) Worker(out io.Writer) error {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				// Compact the inherited file, including direct stdout/stderr writes.
+				// Rotate the inherited file, including direct stdout/stderr writes.
 				// Output can exceed the cap briefly between checks.
 				output.mu.Lock()
-				logErr := compactWorkerLog(logPath + ".worker.log")
+				logErr := rotateWorkerLog(logPath + ".worker.log")
 				output.mu.Unlock()
 				if logErr != nil {
 					if !logErrorReported {
@@ -160,7 +181,7 @@ func (s *Service) Worker(out io.Writer) error {
 		cancel()
 		<-livenessDone
 	}()
-	fmt.Fprintln(out, "Docker Sandboxes daemon started. It stops when the local herdr server stops.")
+	logger.Info("Daemon started")
 	baseline := managementBaseline{}
 	for {
 		err := s.watchManaged(ctx, out, report, &baseline)
@@ -172,7 +193,6 @@ func (s *Service) Worker(out io.Writer) error {
 		}
 		if err != nil {
 			report("reconnecting", err.Error(), false)
-			fmt.Fprintln(out, "Docker Sandboxes worker reconnecting:", err)
 		}
 		select {
 		case <-ctx.Done():
@@ -180,31 +200,6 @@ func (s *Service) Worker(out io.Writer) error {
 		case <-time.After(s.workerReconnect):
 		}
 	}
-}
-
-// compactWorkerLog keeps the current inode so a detached daemon's inherited
-// stdout and stderr keep appending to the bounded file after compaction.
-func compactWorkerLog(path string) error {
-	log, err := os.OpenFile(path, os.O_RDWR, 0)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	defer log.Close()
-	info, err := log.Stat()
-	if err != nil || info.Size() <= workerLogLimit {
-		return err
-	}
-	tail := make([]byte, workerLogRetained)
-	if _, err := log.ReadAt(tail, info.Size()-int64(len(tail))); err != nil {
-		return err
-	}
-	if _, err := log.WriteAt(tail, 0); err != nil {
-		return err
-	}
-	return log.Truncate(int64(len(tail)))
 }
 
 func (s *Service) stopWhenServerEnds(ctx context.Context, stop context.CancelFunc) {
