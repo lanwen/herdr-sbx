@@ -25,6 +25,7 @@ type Service struct {
 	releaseTransport      http.RoundTripper
 	preparationRetryDelay time.Duration
 	printChecks           func(io.Writer, precheck.Result)
+	printResult           func(io.Writer, ResultObservation)
 }
 
 // New wires the operation clients used by registration. The same clients can
@@ -63,4 +64,20 @@ func (s *Service) runSSH(ctx context.Context, timeout time.Duration, target, com
 		Name: "ssh", Timeout: timeout,
 		Args: []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=8", target, command},
 	})
+}
+
+// ResultObservation describes a reconciled sandbox outcome for a non-table
+// presentation. DiagnosticCode is empty for healthy and deferred outcomes.
+type ResultObservation struct {
+	SandboxID      string
+	Name           string
+	Status         string
+	Detail         string
+	DiagnosticCode string
+}
+
+// SetResultPrinter replaces reconciliation table rows with domain observations.
+// An empty reconciliation produces no observation.
+func (s *Service) SetResultPrinter(printer func(io.Writer, ResultObservation)) {
+	s.printResult = printer
 }
