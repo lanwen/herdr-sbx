@@ -130,6 +130,8 @@ type model struct {
 	stopRequestedAt                                                                 time.Time
 	stopDelayReported                                                               bool
 	closing                                                                         bool
+	popup                                                                           bool
+	quitUntil                                                                       time.Time
 	effects                                                                         []errorWrite
 	writingErrors                                                                   bool
 	errorRevision                                                                   int
@@ -147,6 +149,7 @@ type model struct {
 
 func newModel(s *Service) *model {
 	m := &model{service: s, page: "Sandboxes", focus: "table", width: 110, height: 32, queries: map[string]string{}, pending: map[string]bool{}, pendingChoices: map[string]pluginChoiceChange{}, workerEnabled: true, loading: true, worker: store.WorkerStatus{State: "starting"}}
+	m.popup = popupManager()
 	if saved, err := store.ReadStatusStore(); err == nil {
 		if saved.WorkerControl != nil {
 			m.workerEnabled = !saved.WorkerControl.Stopped
@@ -429,6 +432,10 @@ func (m *model) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 	}()
 
 	switch msg := msg.(type) {
+	case quitTimeoutMsg:
+		if m.quitUntil.Equal(time.Time(msg)) {
+			m.quitUntil = time.Time{}
+		}
 	case tea.WindowSizeMsg:
 		m.textSelection = nil
 		m.renderedFrame = ""

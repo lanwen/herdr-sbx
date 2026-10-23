@@ -54,6 +54,9 @@ func (m *model) helpKeys() panelKeys {
 		return panelKeys{short, [][]key.Binding{short, {binding("←/→", "focus"), binding("shift+tab", "previous choice"), binding("ctrl+c", "cancel")}}}
 	}
 	helpKey, closeKey := binding("?", "help"), binding("q", "close")
+	if m.popupQuitKey("esc") {
+		closeKey = binding("esc/q", "close")
+	}
 	back := binding("esc", "back")
 	if m.helpOpen {
 		helpKey = binding("?", "close help")

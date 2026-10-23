@@ -65,6 +65,9 @@ Distinguish features available in those versions from later releases and unrelea
 Run `herdr-sbx` to open the interactive sandbox manager.
 The `open-status` plugin action opens the manager in a popup that requests 110 columns and 32 rows within terminal limits.
 The `open-status-tab` and `open-status-split` actions open the same manager in a tab or split.
+The manager detects its popup context from `HERDR_ENV=1`, `HERDR_PLUGIN_ID=lanwen.herdr-sbx`, `HERDR_PLUGIN_ENTRYPOINT_ID=status`, and an empty `HERDR_PANE_ID`.
+Herdr gives tiled plugin panes a pane ID; popup pane commands have entrypoint context without a pane ID, as described in the [plugin environment documentation](https://herdr.dev/docs/plugins/#commands-and-environment).
+Only the popup uses the [two-step quit prompt](tui-spec.md#popup-closing); closing it exits the manager process without closing a tiled pane or stopping the daemon.
 `herdr-sbx status` reads saved daemon and sandbox observations without contacting Docker, starting work, or changing choices.
 Its compact human summary includes Management, daemon health, sandbox choices, runtime, labels, status, and outstanding errors.
 Use text and symbols alongside color, honor `NO_COLOR`, and disable terminal styling when redirected.
