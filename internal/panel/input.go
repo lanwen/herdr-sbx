@@ -14,6 +14,9 @@ import (
 func (m *model) key(key tea.KeyPressMsg) tea.Cmd {
 	m.diagnosticClickGroup = ""
 	k := key.String()
+	if !m.popupQuitKey(k) {
+		m.quitUntil = time.Time{}
+	}
 	cancelDrag := k == "esc" && m.textSelection != nil && m.textSelection.pressed
 	m.clearTextSelection()
 	if cancelDrag {
@@ -44,14 +47,12 @@ func (m *model) key(key tea.KeyPressMsg) tea.Cmd {
 	if m.dialog != "" {
 		return m.dialogKey(k)
 	}
+	if m.popupQuitKey(k) {
+		return m.confirmQuit()
+	}
 	switch k {
 	case "q", "ctrl+c":
-		if len(m.pending) > 0 {
-			m.closing = true
-			m.notice = "Finishing active work and cleanup before closing…"
-			return nil
-		}
-		return tea.Quit
+		return m.quit()
 	case "e":
 		m.focusErrors()
 		return nil

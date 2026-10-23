@@ -157,7 +157,9 @@ func (m *model) View() tea.View {
 		hint, hintColor = m.contextHint()
 	}
 	var hintLines []line
-	if inlineConfirmation {
+	if !m.quitUntil.IsZero() {
+		hintLines = m.quitHintLines(time.Now())
+	} else if inlineConfirmation {
 		hintLines = m.dialogLines()
 	} else {
 		if hint != "" {
@@ -208,8 +210,8 @@ func (m *model) View() tea.View {
 		}
 	}
 	// Long hints and confirmations scroll with the body instead of consuming
-	// the selected control viewport. Keep the complete explanation available.
-	if len(notices) > m.height-7 {
+	// the selected control viewport. The quit prompt stays visible until disarmed.
+	if m.quitUntil.IsZero() && len(notices) > m.height-7 {
 		m.hintInBody = true
 		body = append(body, notices...)
 		notices = nil

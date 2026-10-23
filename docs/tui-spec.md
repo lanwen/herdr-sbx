@@ -88,9 +88,24 @@ The Management indicator and the sbx indicator open the Status tab.
 | `d` | Dismiss the selected diagnostic group. |
 | `c` | Request read-only observations. |
 | Page Up/Page Down | Scroll long content or Hint without changing the selected sandbox or action. |
-| Escape | Leave input, cancel confirmation, or return from card controls to list navigation. |
+| Escape | Leave input, cancel confirmation, or return from card controls to list navigation; at the popup's Sandboxes list with no filter, request closing. |
 | `?` | Expand or close contextual help in place. |
-| `q` | Close the TUI. |
+| `q` or Ctrl+C | Close the TUI; popup closing requires a second quit key within five seconds. Inputs and confirmations keep their local handling. |
+
+### Popup closing
+
+Popup detection follows the [Herdr environment contract](reference.md#commands-and-panel).
+Tab, split, and ordinary terminal invocations keep their existing closing behavior.
+The popup uses this confirmation sequence:
+
+| Starting state | Action | Immediate feedback | External effect | Settlement and failure |
+| --- | --- | --- | --- | --- |
+| Popup with no quit prompt; no input or confirmation owns the key | Press `q`, Ctrl+C, or Escape at the Sandboxes list with no active filter | Show `Press esc, q or ctrl+c again to quit` followed by muted `...5s` in the framed Hint area, replacing its displayed contents temporarily | None | Arm closing for five seconds; preserve notice and context data and keep the quit Hint outside the scrolling body at compact sizes. |
+| Quit prompt active | Each second passes before the deadline | Count down the muted suffix through `...4s`, `...3s`, `...2s`, and `...1s` | None | Keep the main phrase in the information color and wrap the suffix with it at compact widths; never display zero or negative seconds. |
+| Quit prompt active, before its deadline | Press any of Escape, `q`, or Ctrl+C where it requests closing | Remove the prompt; close, or show the existing finishing-work notice | Exit only the manager process after pending work settles | The daemon continues running. |
+| Quit prompt active | Press any other key | Restore normal Hint content and perform the key's normal action | Only the key's normal effect | A later quit key starts a new five-second window. |
+| Quit prompt active | Five seconds pass | Restore normal Hint content | None | A later quit key starts over, even if the timeout message was delayed. Old timeout messages cannot cancel a newer prompt. |
+| Input, confirmation, help, card controls, another section or tab, active filter, or text drag owns Escape | Press Escape | Perform the existing cancel, back, clear-filter, or drag-cancel action | None | Do not arm closing. |
 
 ## Navigation and filtering
 
