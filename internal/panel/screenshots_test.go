@@ -61,7 +61,7 @@ func TestCaptureScreenshots(t *testing.T) {
 	m.height = 16
 	write("plugins", m)
 	m = screenshotModel()
-	m.width, m.height = 40, 20
+	m.width, m.height = 40, 29
 	write("compact", m)
 }
 
