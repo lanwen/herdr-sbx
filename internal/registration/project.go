@@ -18,7 +18,8 @@ import (
 
 // Project setup is part of registration, including upgrades of already associated
 // machines. Its failure must not discard the association or add another machine.
-func (s *Service) projectReadiness(ctx context.Context, scope string, st *store.State, sb sbx.Sandbox, item *store.Tracked, known bool, current func() bool) result {
+func (s *Service) projectReadiness(ctx context.Context, work registrationWork, item *store.Tracked, known bool) result {
+	scope, st, sb, current := work.Scope, work.State, work.Sandbox, work.Current
 	s.observeGuestServer(ctx, scope, sb, current)
 	p := projectPreparation{service: s, ctx: ctx, scope: scope, state: st, sandbox: sb, item: item, known: known, current: current, outcome: result{Name: sb.Name, Status: "ready", Detail: "already registered"}}
 	if !known {
@@ -37,7 +38,7 @@ func (s *Service) projectReadiness(ctx context.Context, scope string, st *store.
 	if cached := p.cached(); cached != nil {
 		return *cached
 	}
-	if err := guestplugins.ApplySandbox(ctx, s.herdr, item.Target, scope, sb.ID, current, p.beginAttempt); err != nil {
+	if err := guestplugins.ApplySandbox(ctx, s.herdr, guestplugins.SandboxTarget{Address: item.Target, Scope: scope, SandboxID: sb.ID}, guestplugins.ApplyOptions{Current: current, Attempts: []guestplugins.BeginAttempt{p.beginAttempt}}); err != nil {
 		return p.save(p.failed(err))
 	}
 	return p.save(p.outcome)
@@ -60,7 +61,7 @@ type projectPreparation struct {
 
 func (p *projectPreparation) prepareWorkspace() *result {
 	if !p.item.ProjectWorkspaceDone && (p.sandbox.Workspace != "" || p.item.ProjectWorkspacePending != "") {
-		if err := p.service.prepareProjectWorkspace(p.ctx, p.scope, p.state, p.sandbox, p.item, p.current); err != nil {
+		if err := p.service.prepareProjectWorkspace(p.ctx, registrationWork{Scope: p.scope, State: p.state, Sandbox: p.sandbox, Current: p.current}, p.item); err != nil {
 			if herdr.MachineForwardingUnsupported(err) {
 				return &result{Name: p.sandbox.Name, Status: "workspace setup required", DiagnosticCode: store.CodeHerdrCompatibility, Detail: "herdr in this sandbox could not provide machine API forwarding. Choose Fix herdr in Details to match the host release. If the installation cannot be replaced safely, update herdr inside the sandbox with its original installation method, then choose Re-sync."}
 			}
@@ -129,7 +130,7 @@ func (p *projectPreparation) beginAttempt(id, revision string) (func(error) erro
 	}
 	p.attemptStarted = true
 	return func(installErr error) error {
-		return p.finishAttempt(id, revision, before, beforeErr, started, installErr)
+		return p.finishAttempt(id, revision, networkAttempt{Before: before, ReadErr: beforeErr, Started: started}, installErr)
 	}, nil
 }
 
@@ -154,7 +155,8 @@ func (p *projectPreparation) blockedAttempt(id, revision string) error {
 	return manualPluginAttemptError(previous, id)
 }
 
-func (p *projectPreparation) finishAttempt(id, revision string, before []sbx.NetworkPolicyLog, beforeErr error, started time.Time, installErr error) error {
+func (p *projectPreparation) finishAttempt(id, revision string, attempt networkAttempt, installErr error) error {
+	before, beforeErr, started := attempt.Before, attempt.ReadErr, attempt.Started
 
 	if installErr == nil {
 		return store.FinishGuestPluginAttempt(p.scope, p.sandbox.ID, id, revision, "")
@@ -302,7 +304,8 @@ type workspaceSetup struct {
 	cwd     string
 }
 
-func (s *Service) prepareProjectWorkspace(ctx context.Context, scope string, st *store.State, sb sbx.Sandbox, item *store.Tracked, current func() bool) error {
+func (s *Service) prepareProjectWorkspace(ctx context.Context, work registrationWork, item *store.Tracked) error {
+	scope, st, sb, current := work.Scope, work.State, work.Sandbox, work.Current
 	w := workspaceSetup{service: s, ctx: ctx, scope: scope, state: st, sandbox: sb, item: item, current: current, cwd: item.ProjectWorkspacePending}
 	if err := w.check(); err != nil {
 		return err
@@ -508,4 +511,11 @@ func (s *Service) initialProjectDirectory(ctx context.Context, scope string, st 
 		return "", err
 	}
 	return cwd, nil
+}
+
+// networkAttempt binds the pre-build policy observation to that attempt's start time.
+type networkAttempt struct {
+	Before  []sbx.NetworkPolicyLog
+	ReadErr error
+	Started time.Time
 }

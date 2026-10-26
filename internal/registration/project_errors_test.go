@@ -37,7 +37,7 @@ func TestProjectWorkspaceHerdrFailures(t *testing.T) {
 			item := store.Tracked{SandboxID: "sb1", ProfileID: "machine-1", Label: "original label", Target: "demo.sbx", ProjectWorkspacePending: "/project"}
 			st := store.State{Version: 1, Scopes: map[string][]store.Tracked{"scope": {item}}}
 			require.NoError(t, store.SaveState(st))
-			got := f.service.projectReadiness(context.Background(), "scope", &st, sbx.Sandbox{ID: "sb1", Name: "demo", Status: "running"}, &item, true, func() bool { return true })
+			got := f.service.projectReadiness(context.Background(), registrationWork{Scope: "scope", State: &st, Sandbox: sbx.Sandbox{ID: "sb1", Name: "demo", Status: "running"}, Current: func() bool { return true }}, &item, true)
 			require.EqualValues(t, "workspace setup required", got.Status)
 			require.Contains(t, got.Detail, tc.detail)
 			require.NoError(t, saveResultError("scope/sb1", got))

@@ -259,7 +259,10 @@ Use `mise run fmt` to format Go files and `mise run build` to rebuild the linked
 Use `mise run lint` for Go, POSIX shell, and source vocabulary checks.
 Run `mise run go-lint`, `mise run shellcheck`, and `mise run source-words-check` separately when needed.
 Go linting uses the explicit checks in `.golangci.yml`, including correctness, ineffective assignments, unused code, global variables, `init` functions, structured logging, and selected go-critic diagnostics.
-Every Go function, including tests, must have cognitive complexity at most 10.
+Every Go function, including tests, must pass both gocognit and revive cognitive complexity checks with a maximum of 15.
+Function and method declarations, including tests, must have at most five named input parameters, excluding the receiver.
+Related required values belong in a cohesive input type; optional settings can use an options type.
+The revive `argument-limit` rule counts named declaration parameters; it does not count unnamed parameters or inspect anonymous functions or function types.
 Structured logging uses owned loggers, capitalized messages, typed attributes, and constant attribute keys.
 Use context-aware logging when a context is available.
 `mise run source-words-check` rejects `legacy` in Go, Python, shell, Ruby, and Swift source, including identifiers, comments, and strings.

@@ -36,7 +36,7 @@ func TestCatalogDiscoveryDoesNotOptIn(t *testing.T) {
 		t.Fatal("opt-out contacted a guest or local Herdr")
 		return "", nil
 	}})
-	require.NoError(t, ApplySandbox(context.Background(), noCommands, "unused", "fixture-scope", "fixture-sandbox", nil))
+	require.NoError(t, ApplySandbox(context.Background(), noCommands, SandboxTarget{Address: "unused", Scope: "fixture-scope", SandboxID: "fixture-sandbox"}, ApplyOptions{Current: nil}))
 }
 
 func TestUnsupportedReasonExplainsLocalPlugin(t *testing.T) {
@@ -71,7 +71,7 @@ func TestUnsupportedSelectionSkipsGuest(t *testing.T) {
 		require.NotEqual(t, "ssh", command.Name, "unsupported plugin contacted guest")
 		return `{"result":{"plugins":[{"plugin_id":"example.plugin","version":"1.0.0","plugin_root":"/missing/plugin"}]}}`, nil
 	}})
-	err := ApplySandbox(context.Background(), client, "unused", "fixture-scope", "fixture-sandbox", func() bool { return true })
+	err := ApplySandbox(context.Background(), client, SandboxTarget{Address: "unused", Scope: "fixture-scope", SandboxID: "fixture-sandbox"}, ApplyOptions{Current: func() bool { return true }})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unsupported: Cannot read the local plugin manifest")
 }

@@ -43,7 +43,7 @@ func TestFixGuestHerdrValidatesOwnershipAndIdentityBeforeSSH(t *testing.T) {
 				expected = "0.9.2"
 			}
 			{
-				err := f.service.FixGuestHerdr(context.Background(), io.Discard, scope, socket, "sandbox-1", "demo", expected)
+				err := f.service.FixGuestHerdr(context.Background(), io.Discard, SandboxSelection{Scope: scope, Socket: socket, ID: "sandbox-1", Name: "demo"}, expected)
 				require.Error(t, err, "unsafe fix accepted")
 			}
 			require.Equal(t, 0, *sshCalls, "SSH before guard: %d", *sshCalls)
@@ -57,7 +57,7 @@ func TestFixGuestHerdrHandoffAndReconcile(t *testing.T) {
 			f, scope, _, handoffs := newFixHerdrFixture(t, fails)
 			key := store.StatusKey(scope, "sandbox-1")
 			require.NoError(t, store.SetRegistrationError(store.CodeHerdrCompatibility, key, "existing incompatibility"))
-			err := f.service.FixGuestHerdr(context.Background(), io.Discard, scope, "/tmp/fix-herdr.sock", "sandbox-1", "demo", "herdr 0.9.3")
+			err := f.service.FixGuestHerdr(context.Background(), io.Discard, SandboxSelection{Scope: scope, Socket: "/tmp/fix-herdr.sock", ID: "sandbox-1", Name: "demo"}, "herdr 0.9.3")
 			require.Equal(t, fails, (err != nil), "error=%v", err)
 			require.Equal(t, 1, *handoffs, "handoffs=%d", *handoffs)
 			status, readErr := store.ReadStatusStore()
@@ -91,7 +91,7 @@ func TestFixGuestHerdrRejectsReplacementBeforeHandoff(t *testing.T) {
 				return output, err
 			}
 			f.rebuildClients()
-			err := f.service.FixGuestHerdr(context.Background(), io.Discard, scope, "/tmp/fix-herdr.sock", "sandbox-1", "demo", "0.9.3")
+			err := f.service.FixGuestHerdr(context.Background(), io.Discard, SandboxSelection{Scope: scope, Socket: "/tmp/fix-herdr.sock", ID: "sandbox-1", Name: "demo"}, "0.9.3")
 			require.ErrorIs(t, err, context.Canceled)
 			require.EqualValues(t, 0, *handoffs)
 		})
@@ -109,7 +109,7 @@ func TestFixGuestHerdrRejectsReplacementDuringHandoffVerification(t *testing.T) 
 		return output, err
 	}
 	f.rebuildClients()
-	err := f.service.FixGuestHerdr(context.Background(), io.Discard, scope, "/tmp/fix-herdr.sock", "sandbox-1", "demo", "0.9.3")
+	err := f.service.FixGuestHerdr(context.Background(), io.Discard, SandboxSelection{Scope: scope, Socket: "/tmp/fix-herdr.sock", ID: "sandbox-1", Name: "demo"}, "0.9.3")
 	require.ErrorIs(t, err, context.Canceled)
 	require.EqualValues(t, 1, *handoffs)
 }

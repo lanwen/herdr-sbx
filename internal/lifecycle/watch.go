@@ -42,26 +42,33 @@ type managementBaseline struct{ scope, socket string }
 func (svc *Service) watchManaged(ctx context.Context, out io.Writer, report func(string, string, bool), baseline *managementBaseline) error {
 	out = &lockedWriter{out: out}
 	schedulerCtx, stopScheduler := context.WithCancel(ctx)
-	var scheduler *lifecycleScheduler
+	session := managedWatchSession{schedulerContext: schedulerCtx, report: report, baseline: baseline}
 	defer func() {
 		stopScheduler()
-		if scheduler != nil {
-			scheduler.wait()
+		if session.scheduler != nil {
+			session.scheduler.wait()
 		}
 	}()
 	for {
-		again, err := svc.watchManagedOnce(ctx, out, schedulerCtx, &scheduler, report, baseline)
+		again, err := svc.watchManagedOnce(ctx, out, &session)
 		if err != nil || !again {
 			return err
 		}
 	}
 }
 
-func (svc *Service) watchManagedOnce(ctx context.Context, out io.Writer, schedulerCtx context.Context, scheduler **lifecycleScheduler, report func(string, string, bool), baseline *managementBaseline) (bool, error) {
+type managedWatchSession struct {
+	schedulerContext context.Context
+	scheduler        *lifecycleScheduler
+	report           func(string, string, bool)
+	baseline         *managementBaseline
+}
+
+func (svc *Service) watchManagedOnce(ctx context.Context, out io.Writer, session *managedWatchSession) (bool, error) {
 	if !automaticAllowed(ctx) {
 		return false, nil
 	}
-	p, err := svc.prepareWatch(ctx, out, *scheduler, baseline)
+	p, err := svc.prepareWatch(ctx, out, session.scheduler, session.baseline)
 	if err != nil {
 		return false, err
 	}
@@ -75,11 +82,11 @@ func (svc *Service) watchManagedOnce(ctx context.Context, out io.Writer, schedul
 		fmt.Fprintln(out, "Sandbox warning state was not saved:", err)
 	}
 	fmt.Fprintln(out, "Watching sandbox lifecycle. Press Ctrl-C to stop.")
-	if *scheduler == nil {
-		*scheduler = svc.newScheduler(schedulerCtx, p.Scope, p.Socket, out, report)
+	if session.scheduler == nil {
+		session.scheduler = svc.newScheduler(session.schedulerContext, p.Scope, p.Socket, out, session.report)
 	}
-	err = svc.readManagedStream(ctx, p.Socket, *scheduler, report)
-	return svc.reconnectStream(ctx, out, *scheduler, report, err), nil
+	err = svc.readManagedStream(ctx, p.Socket, session.scheduler, session.report)
+	return svc.reconnectStream(ctx, out, session.scheduler, session.report, err), nil
 }
 
 func (svc *Service) prepareWatch(ctx context.Context, out io.Writer, scheduler *lifecycleScheduler, baseline *managementBaseline) (precheck.Result, error) {

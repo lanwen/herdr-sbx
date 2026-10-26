@@ -45,7 +45,7 @@ func (c *Client) ListPolicyRules(ctx context.Context, socket, sandbox string) ([
 		Rules *[]PolicyRule `json:"rules"`
 	}
 	path := "/policy/network/rules?type=all&sandbox=" + url.QueryEscape(sandbox)
-	if err := c.policyRequest(ctx, socket, http.MethodGet, path, nil, &response); err != nil {
+	if err := c.policyRequest(ctx, socket, policyEndpoint{method: http.MethodGet, path: path}, nil, &response); err != nil {
 		return nil, err
 	}
 	if response.Rules == nil {
@@ -90,7 +90,7 @@ func (c *Client) mutatePolicy(ctx context.Context, socket, name, sandbox string,
 			Error string `json:"error"`
 		} `json:"results"`
 	}
-	if err := c.policyRequest(ctx, socket, http.MethodPost, "/policy/network/rules", struct {
+	if err := c.policyRequest(ctx, socket, policyEndpoint{method: http.MethodPost, path: "/policy/network/rules"}, struct {
 		Actions []any `json:"actions"`
 	}{[]any{action}}, &response); err != nil {
 		return PolicyMutation{}, err
@@ -109,7 +109,9 @@ func (c *Client) mutatePolicy(ctx context.Context, socket, name, sandbox string,
 	return mutation, nil
 }
 
-func (c *Client) policyRequest(ctx context.Context, socket, method, path string, body any, result any) error {
+type policyEndpoint struct{ method, path string }
+
+func (c *Client) policyRequest(ctx context.Context, socket string, endpoint policyEndpoint, body any, result any) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var input io.Reader
@@ -120,7 +122,7 @@ func (c *Client) policyRequest(ctx context.Context, socket, method, path string,
 		}
 		input = bytes.NewReader(data)
 	}
-	request, err := http.NewRequestWithContext(ctx, method, "http://sandboxd"+path, input)
+	request, err := http.NewRequestWithContext(ctx, endpoint.method, "http://sandboxd"+endpoint.path, input)
 	if err != nil {
 		return err
 	}

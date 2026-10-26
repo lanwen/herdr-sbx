@@ -37,7 +37,7 @@ func (m *model) sandboxDetails(r registration.SandboxRow) []line {
 	}
 	result := outline(lines, title, width, indent, border)
 	if len(result) > 0 {
-		result[0] = line{text: detailBorder(title, observed, badge, width, indent, border), hits: []hit{{x: indent + 3, w: 1, action: "enabled", id: id}, {x: indent + 5, w: max(1, titleWidth-2), action: "select", id: id}}}
+		result[0] = line{text: detailBorder(detailHeadingText{title: title, observed: observed, badge: badge}, width, indent, border), hits: []hit{{x: indent + 3, w: 1, action: "enabled", id: id}, {x: indent + 5, w: max(1, titleWidth-2), action: "select", id: id}}}
 	}
 	return result
 }
@@ -99,15 +99,13 @@ func (m *model) detailPluginLines(r registration.SandboxRow) []line {
 	if m.width < 60 {
 		nameWidth = max(1, inner-2)
 	}
-	render := func(prefix, name, choice, effective string) string {
-		return prefix + padded(name, nameWidth) + " " + padded(choice, choiceWidth) + " " + padded(effective, effectiveWidth)
-	}
-	lines := []line{textLine(ink(colorMuted, render("  ", "PLUGIN", "CHOICE", "EFFECTIVE")))}
+	columns := detailPluginColumns{inner: inner, name: nameWidth, choice: choiceWidth, effective: effectiveWidth}
+	lines := []line{textLine(ink(colorMuted, columns.render("  ", "PLUGIN", "CHOICE", "EFFECTIVE")))}
 	if m.width < 60 {
 		lines = nil
 	}
 	for i, p := range m.plugins {
-		lines = append(lines, m.detailPluginRow(r, p, i, inner, nameWidth, render)...)
+		lines = append(lines, m.detailPluginRow(r, p, i, columns)...)
 	}
 	if len(m.plugins) == 0 {
 		lines = append(lines, textLine(ink(colorMuted, "No herdr plugins available")))
@@ -127,7 +125,11 @@ func relativeTime(when time.Time) string {
 		return fmt.Sprintf("%dd ago", int(age/(24*time.Hour)))
 	}
 }
-func detailBorder(title, observed, badge string, width, indent int, border string) string {
+
+type detailHeadingText struct{ title, observed, badge string }
+
+func detailBorder(heading detailHeadingText, width, indent int, border string) string {
+	title, observed, badge := heading.title, heading.observed, heading.badge
 	if observed != "" {
 		observed = " " + observed + " "
 	}
@@ -331,12 +333,16 @@ func (m *model) detailActionButton(action detailAction, i, count int, renaming b
 	}
 	button.hits[0].w = ansi.StringWidth(button.text)
 	if ansi.StringWidth(button.text) > capacity {
-		return compactActionButton(button, label, action.id, focused, activePrimary, renaming, capacity)
+		return compactActionButton(button, label, detailActionEmphasis{focused: focused, primary: activePrimary, renaming: renaming}, capacity)
 	}
 	return button
 }
 
-func compactActionButton(button line, label, id string, focused, activePrimary, renaming bool, capacity int) line {
+type detailActionEmphasis struct{ focused, primary, renaming bool }
+
+func compactActionButton(button line, label string, emphasis detailActionEmphasis, capacity int) line {
+	focused, activePrimary, renaming := emphasis.focused, emphasis.primary, emphasis.renaming
+	id := button.hits[0].id
 	text := strings.TrimPrefix(label, "› ")
 	if focused && ansi.StringWidth(text)+2 <= capacity {
 		text += " ↵"
@@ -368,7 +374,14 @@ func (m *model) needsResync(r registration.SandboxRow) bool {
 	return false
 }
 
-func (m *model) detailPluginRow(r registration.SandboxRow, p guestplugins.Choice, i, inner, nameWidth int, render func(string, string, string, string) string) []line {
+type detailPluginColumns struct{ inner, name, choice, effective int }
+
+func (c detailPluginColumns) render(prefix, name, choice, effective string) string {
+	return prefix + padded(name, c.name) + " " + padded(choice, c.choice) + " " + padded(effective, c.effective)
+}
+
+func (m *model) detailPluginRow(r registration.SandboxRow, p guestplugins.Choice, i int, columns detailPluginColumns) []line {
+	inner, nameWidth := columns.inner, columns.name
 	var lines []line
 	choice, loading := m.pluginChoiceDisplay(r.Scope, r.Sandbox.ID, p.ID)
 	effective := m.settings.Effective(r.Scope, r.Sandbox.ID).Plugins[p.ID].Enabled
@@ -377,14 +390,14 @@ func (m *model) detailPluginRow(r registration.SandboxRow, p guestplugins.Choice
 		prefix = "> "
 	}
 	effectiveText, source := m.detailPluginState(p, choice, loading, effective)
-	l := textLine(render(prefix, p.ID, ink(colorInfo, choice), effectiveText))
+	l := textLine(columns.render(prefix, p.ID, ink(colorInfo, choice), effectiveText))
 	l.hits = []hit{{x: 0, w: inner, action: "override", id: p.ID}}
 	if m.width < 60 {
 		l.text = prefix + padded(p.ID, nameWidth)
 	}
 	lines = append(lines, l)
 	if m.width < 60 {
-		lines = append(lines, compactPluginChoice(p.ID, choice, effectiveText, source, effective, inner)...)
+		lines = append(lines, compactPluginChoice(p.ID, pluginChoicePresentation{choice: choice, effectiveText: effectiveText, source: source, effective: effective}, inner)...)
 	}
 	if p.UnsupportedReason != "" {
 		for _, part := range strings.Split(ansi.Hardwrap(safeText(p.UnsupportedReason), max(10, inner-2), true), "\n") {
@@ -413,7 +426,13 @@ func (m *model) detailPluginState(p guestplugins.Choice, choice string, loading,
 	return effectiveText, source
 }
 
-func compactPluginChoice(id, choice, effectiveText, source string, effective bool, inner int) []line {
+type pluginChoicePresentation struct {
+	choice, effectiveText, source string
+	effective                     bool
+}
+
+func compactPluginChoice(id string, presentation pluginChoicePresentation, inner int) []line {
+	choice, effectiveText, source, effective := presentation.choice, presentation.effectiveText, presentation.source, presentation.effective
 	var lines []line
 	text := "  " + ink(colorInfo, choice) + " → " + effectiveText
 	if ansi.StringWidth(text) > inner {

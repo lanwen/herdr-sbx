@@ -37,7 +37,7 @@ func run() error {
 	if len(items) != 1 || items[0].Name != os.Getenv("HERDR_SANDBOX_TEST_NAME") {
 		return errors.New("dedicated sandbox identity does not match")
 	}
-	return service.ReconcileAuthorized(context.Background(), os.Stdout, checks.Scope, checks.Socket, items[0].ID, items[0].Name)
+	return service.ReconcileAuthorized(context.Background(), os.Stdout, registration.SandboxSelection{Scope: checks.Scope, Socket: checks.Socket, ID: items[0].ID, Name: items[0].Name})
 }
 
 func main() {

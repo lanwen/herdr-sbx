@@ -159,7 +159,7 @@ func (r *reconciliation) load() error {
 	if err != nil {
 		return err
 	}
-	rows, err := observeEntries(r.prerequisites.Scope, r.sandboxes, r.machines, r.state, true, beforeCatalog.EnabledRevisions)
+	rows, err := (entryObservation{Scope: r.prerequisites.Scope, State: r.state, Complete: true, Revisions: []map[string]uint64{beforeCatalog.EnabledRevisions}}).entries(r.sandboxes, r.machines)
 	if err != nil {
 		return err
 	}
@@ -352,10 +352,10 @@ func (r *reconciliation) known(sb sbx.Sandbox, item store.Tracked, current func(
 	if err != nil || outcome != nil {
 		return outcome, err
 	}
-	if err := r.service.recoverMachineLabel(r.ctx, r.prerequisites.Scope, &r.state, r.machines, sb, &item, current); err != nil {
+	if err := r.service.recoverMachineLabel(r.ctx, registrationWork{Scope: r.prerequisites.Scope, State: &r.state, Sandbox: sb, Current: current}, r.machines, &item); err != nil {
 		return &result{Name: sb.Name, Status: "association warning", Detail: "saved machine label was not updated: " + err.Error()}, nil
 	}
-	value := r.service.projectReadiness(r.ctx, r.prerequisites.Scope, &r.state, sb, &item, true, current)
+	value := r.service.projectReadiness(r.ctx, registrationWork{Scope: r.prerequisites.Scope, State: &r.state, Sandbox: sb, Current: current}, &item, true)
 	return &value, nil
 }
 
@@ -394,7 +394,7 @@ func (r *reconciliation) recoverPending(sb sbx.Sandbox, item *store.Tracked, cur
 	if pendingCollision(r.machines, *item, sb) {
 		return &result{Name: sb.Name, Status: "association warning", Detail: "previous registration is unresolved; inspect the machine catalog before retrying"}, nil
 	}
-	if err := r.service.recoverGuestVersion(r.ctx, r.prerequisites.Scope, sb, current, nil, false); err != nil {
+	if err := r.service.recoverGuestVersion(r.ctx, sandboxWork{Scope: r.prerequisites.Scope, Sandbox: sb, Current: current}, nil, false); err != nil {
 		return &result{Name: sb.Name, Status: "setup required", Detail: "automatic Herdr alignment failed: " + err.Error()}, nil
 	}
 	item.Pending = false
@@ -406,7 +406,7 @@ func (r *reconciliation) recoverPending(sb sbx.Sandbox, item *store.Tracked, cur
 
 func (r *reconciliation) register(sb sbx.Sandbox, current func() bool) *result {
 	var progressStatusErr error
-	outcome, saved := r.service.registerWithInstallation(r.ctx, r.prerequisites.Scope, &r.state, r.machines, sb, current, r.installation, func(message string) {
+	outcome, saved := r.service.registerWithInstallation(r.ctx, registrationWork{Scope: r.prerequisites.Scope, State: &r.state, Sandbox: sb, Current: current}, r.machines, r.installation, func(message string) {
 		if err := store.RecordSandboxStatus(r.prerequisites.Scope, sb, "preparing", message, false); err != nil {
 			progressStatusErr = err
 		}
@@ -440,18 +440,19 @@ func (r *reconciliation) report(sb sbx.Sandbox, item result) {
 }
 
 func (s *Service) registerPrepared(scope string, st *store.State, machines []herdr.Machine, sb sbx.Sandbox) (result, *store.Tracked) {
-	return s.registerPreparedContext(context.Background(), scope, st, machines, sb, nil)
+	return s.registerPreparedContext(context.Background(), registrationWork{Scope: scope, State: st, Sandbox: sb, Current: nil}, machines)
 }
 
-func (s *Service) registerPreparedContext(ctx context.Context, scope string, st *store.State, machines []herdr.Machine, sb sbx.Sandbox, current func() bool) (result, *store.Tracked) {
-	return s.registerPreparedWithProgress(ctx, scope, st, machines, sb, current, nil)
+func (s *Service) registerPreparedContext(ctx context.Context, work registrationWork, machines []herdr.Machine) (result, *store.Tracked) {
+	return s.registerPreparedWithProgress(ctx, work, machines, nil)
 }
 
-func (s *Service) registerPreparedWithProgress(ctx context.Context, scope string, st *store.State, machines []herdr.Machine, sb sbx.Sandbox, current func() bool, progress func(string)) (result, *store.Tracked) {
-	return s.registerWithInstallation(ctx, scope, st, machines, sb, current, installationOptions{}, progress)
+func (s *Service) registerPreparedWithProgress(ctx context.Context, work registrationWork, machines []herdr.Machine, progress func(string)) (result, *store.Tracked) {
+	return s.registerWithInstallation(ctx, work, machines, installationOptions{}, progress)
 }
 
-func (s *Service) registerWithInstallation(ctx context.Context, scope string, st *store.State, machines []herdr.Machine, sb sbx.Sandbox, current func() bool, installation installationOptions, progress func(string)) (result, *store.Tracked) {
+func (s *Service) registerWithInstallation(ctx context.Context, work registrationWork, machines []herdr.Machine, installation installationOptions, progress func(string)) (result, *store.Tracked) {
+	scope, st, sb, current := work.Scope, work.State, work.Sandbox, work.Current
 	attempt := registrationAttempt{service: s, ctx: ctx, scope: scope, state: st, machines: machines, sandbox: sb, current: current, installation: installation, progress: progress, target: sb.Name + ".sbx"}
 	if outcome := attempt.collision(); outcome != nil {
 		return *outcome, nil
@@ -612,12 +613,12 @@ func (a *registrationAttempt) add() (result, *store.Tracked) {
 	if a.current != nil && !a.current() {
 		return result{Name: a.sandbox.Name, Status: "stale", Detail: "sandbox changed after machine registration; cleanup is pending"}, &a.pending
 	}
-	return a.service.projectReadiness(a.ctx, a.scope, a.state, a.sandbox, &a.pending, false, a.current), &a.pending
+	return a.service.projectReadiness(a.ctx, registrationWork{Scope: a.scope, State: a.state, Sandbox: a.sandbox, Current: a.current}, &a.pending, false), &a.pending
 }
 
 func (a *registrationAttempt) addFailure(addOutput string, addErr error) (result, *store.Tracked) {
 	if strings.Contains(addOutput, "remote server is not ready for saved machines") {
-		if err := a.service.recoverGuestVersion(a.ctx, a.scope, a.sandbox, a.current, a.progress, true); err != nil {
+		if err := a.service.recoverGuestVersion(a.ctx, sandboxWork{Scope: a.scope, Sandbox: a.sandbox, Current: a.current}, a.progress, true); err != nil {
 			return result{Name: a.sandbox.Name, Status: "setup required", Detail: "automatic Herdr alignment failed: " + err.Error()}, &a.pending
 		}
 		return result{Name: a.sandbox.Name, Status: "retrying", Detail: "Herdr aligned; registration will retry on the next scan"}, &a.pending

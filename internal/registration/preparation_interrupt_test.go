@@ -73,7 +73,7 @@ func runPreparationInterruptHelper(t *testing.T, action string) {
 	if action == "retry" {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
-		_ = fixture.service.RetrySelected(ctx, io.Discard, "scope", "/unused-isolated-daemon.sock", "sandbox-1", "demo")
+		_ = fixture.service.RetrySelected(ctx, io.Discard, SandboxSelection{Scope: "scope", Socket: "/unused-isolated-daemon.sock", ID: "sandbox-1", Name: "demo"})
 		return
 	}
 	_ = fixture.service.ReconcileSelected(io.Discard, nil)

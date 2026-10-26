@@ -20,9 +20,24 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/store"
 )
 
+// SandboxTarget identifies the guest connection and its durable selection.
+type SandboxTarget struct {
+	Address, Scope, SandboxID string
+}
+
+// BeginAttempt records an installation attempt and returns its completion hook.
+type BeginAttempt func(id, revision string) (finish func(error) error, err error)
+
+// ApplyOptions binds guest work to its current selection and attempt journal.
+type ApplyOptions struct {
+	Current  func() bool
+	Attempts []BeginAttempt
+}
+
 // ApplySandbox resolves live defaults for the selected sandbox before each transfer.
 // One failed plugin does not prevent the other selected plugins from applying.
-func ApplySandbox(ctx context.Context, client *herdr.Client, target, scope, sandboxID string, current func() bool, attempts ...func(id, revision string) (finish func(error) error, err error)) error {
+func ApplySandbox(ctx context.Context, client *herdr.Client, target SandboxTarget, options ApplyOptions) error {
+	scope, sandboxID := target.Scope, target.SandboxID
 	settings, err := store.ReadGuestPluginDefaults()
 	if err != nil {
 		return err
@@ -43,7 +58,8 @@ func ApplySandbox(ctx context.Context, client *herdr.Client, target, scope, sand
 	var failures Failures
 	for _, id := range ids {
 		desired := settings.Plugins[id]
-		if failure := applySelectedPlugin(ctx, client, target, scope, sandboxID, id, desired, installed, current, attempts...); failure != nil {
+		local, found := installed[id]
+		if failure := applySelectedPlugin(ctx, client, target, selectedPlugin{local: local, id: id, desired: desired, installed: found}, options); failure != nil {
 			failures = append(failures, *failure)
 		}
 	}
@@ -53,9 +69,16 @@ func ApplySandbox(ctx context.Context, client *herdr.Client, target, scope, sand
 	return nil
 }
 
-func applySelectedPlugin(ctx context.Context, client *herdr.Client, target, scope, sandboxID, id string, desired store.GuestPluginDefault, installed map[string]herdr.PluginInstall, current func() bool, attempts ...func(id, revision string) (func(error) error, error)) *store.PluginFailure {
-	local, ok := installed[id]
-	if !ok {
+type selectedPlugin struct {
+	local     herdr.PluginInstall
+	id        string
+	desired   store.GuestPluginDefault
+	installed bool
+}
+
+func applySelectedPlugin(ctx context.Context, client *herdr.Client, target SandboxTarget, selected selectedPlugin, options ApplyOptions) *store.PluginFailure {
+	local, id := selected.local, selected.id
+	if !selected.installed {
 		return &store.PluginFailure{PluginID: id, Code: store.CodeGuestPluginSync, Detail: "Plugin is not installed locally"}
 	}
 	if reason := unsupportedReason(local); reason != "" {
@@ -63,9 +86,9 @@ func applySelectedPlugin(ctx context.Context, client *herdr.Client, target, scop
 	}
 	stillSelected := func() bool {
 		latest, err := store.ReadGuestPluginDefaults()
-		return err == nil && latest.Effective(scope, sandboxID).Plugins[id] == desired && current != nil && current()
+		return err == nil && latest.Effective(target.Scope, target.SandboxID).Plugins[id] == selected.desired && options.Current != nil && options.Current()
 	}
-	if err := prepare(ctx, client, target, scope, sandboxID, local, stillSelected, attempts...); err != nil {
+	if err := prepare(ctx, client, target, local, ApplyOptions{Current: stillSelected, Attempts: options.Attempts}); err != nil {
 		failure := FailureFor(local, "", err)
 		return &failure
 	}
@@ -95,8 +118,8 @@ type pluginPlan struct {
 	version, revision string
 }
 
-func prepare(ctx context.Context, client *herdr.Client, target, scope, sandboxID string, local herdr.PluginInstall, current func() bool, attempts ...func(id, revision string) (func(error) error, error)) (result error) {
-	p := pluginPreparation{ctx: ctx, client: client, target: target, scope: scope, sandboxID: sandboxID, local: local, current: current}
+func prepare(ctx context.Context, client *herdr.Client, target SandboxTarget, local herdr.PluginInstall, options ApplyOptions) (result error) {
+	p := pluginPreparation{ctx: ctx, client: client, target: target.Address, scope: target.Scope, sandboxID: target.SandboxID, local: local, current: options.Current}
 	defer func() { result = p.failure(result) }()
 	if !store.ValidPluginID(local.ID) || local.ID == "lanwen.herdr-sbx" {
 		return errors.New("invalid guest plugin")
@@ -110,7 +133,7 @@ func prepare(ctx context.Context, client *herdr.Client, target, scope, sandboxID
 	if err := p.checkCurrent(); err != nil {
 		return err
 	}
-	guest, err := client.InspectGuestPlugin(ctx, target, local.ID)
+	guest, err := client.InspectGuestPlugin(ctx, target.Address, local.ID)
 	if err != nil {
 		return err
 	}
@@ -123,7 +146,7 @@ func prepare(ctx context.Context, client *herdr.Client, target, scope, sandboxID
 		return err
 	}
 	p.revision = plan.revision
-	return p.apply(guest, plan, attempts)
+	return p.apply(guest, plan, options.Attempts)
 }
 
 func (p *pluginPreparation) failure(err error) error {
@@ -213,7 +236,7 @@ func (p *pluginPreparation) repaired(guest herdr.GuestPluginState, plan pluginPl
 	return guest.Managed && strings.HasSuffix(guest.Plugin.Root, "/"+p.local.ID+"-"+p.revision) && guest.Plugin.Version == plan.version && guest.Plugin.Enabled && guest.Plugin.Available && noPluginWarnings(guest.Plugin)
 }
 
-func (p *pluginPreparation) apply(guest herdr.GuestPluginState, plan pluginPlan, attempts []func(id, revision string) (func(error) error, error)) (result error) {
+func (p *pluginPreparation) apply(guest herdr.GuestPluginState, plan pluginPlan, attempts []BeginAttempt) (result error) {
 	repaired := p.repaired(guest, plan)
 	if repaired && bytes.Equal(plan.config, guest.Config) && guest.AppliedConfigSHA == digest(guest.Config) {
 		return p.finish()
@@ -233,7 +256,7 @@ func (p *pluginPreparation) apply(guest herdr.GuestPluginState, plan pluginPlan,
 	return p.install(guest, plan)
 }
 
-func (p *pluginPreparation) beginAttempts(attempts []func(id, revision string) (func(error) error, error), finishers *[]func(error) error) error {
+func (p *pluginPreparation) beginAttempts(attempts []BeginAttempt, finishers *[]func(error) error) error {
 	for _, attempt := range attempts {
 		if attempt == nil {
 			continue
@@ -274,7 +297,7 @@ func (p *pluginPreparation) install(guest herdr.GuestPluginState, plan pluginPla
 	if err := p.checkCurrent(); err != nil {
 		return err
 	}
-	if err := p.client.InstallGuestPlugin(p.ctx, p.target, p.local.ID, bytes.NewReader(bundle), digest(bundle), digest(guest.Config), p.revision, guest.ConfigExists, plan.commands...); err != nil {
+	if err := p.client.InstallGuestPlugin(p.ctx, p.target, herdr.GuestPluginInstall{PluginID: p.local.ID, Bundle: bytes.NewReader(bundle), BundleSHA: digest(bundle), ConfigSHA: digest(guest.Config), Revision: p.revision, ConfigExists: guest.ConfigExists, BuildCommands: plan.commands}); err != nil {
 		return err
 	}
 	if err := p.checkCurrent(); err != nil {

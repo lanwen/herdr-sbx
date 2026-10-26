@@ -121,7 +121,7 @@ func (m *model) View() tea.View {
 	m.revealSelection(body, capacity)
 
 	m.scroll = min(max(0, len(body)-capacity), m.scroll)
-	lines = m.frameLines(lines, body, notices, footerLines, capacity, fixed)
+	lines = m.frameLines(lines, body, notices, footerLines, capacity)
 
 	var b strings.Builder
 	for i, l := range lines {
@@ -658,7 +658,8 @@ func (m *model) focusedActionHit(h hit) bool {
 	return h.action == "action" && m.button >= 0 && m.button < len(actions) && h.id == actions[m.button].id
 }
 
-func (m *model) frameLines(lines, body, notices, footerLines []line, capacity, fixed int) []line {
+func (m *model) frameLines(lines, body, notices, footerLines []line, capacity int) []line {
+	fixed := len(notices) + len(footerLines)
 	for _, l := range body[m.scroll:min(len(body), m.scroll+capacity)] {
 		y := len(lines)
 		for _, h := range l.hits {
@@ -864,7 +865,7 @@ func (m *model) managementCard() []line {
 	if m.focus == "table" && m.button == 0 && width-ansi.StringWidth(badge)-6 < ansi.StringWidth(title) {
 		title = "› Management"
 	}
-	lines[0] = line{text: detailBorder(title, "", badge, width, 0, border), hits: []hit{{x: 1, w: width - 2, action: "status-action", id: "0"}}}
+	lines[0] = line{text: detailBorder(detailHeadingText{title: title, badge: badge}, width, 0, border), hits: []hit{{x: 1, w: width - 2, action: "status-action", id: "0"}}}
 	if activity := m.managementActivity(); activity != "" {
 		activity = " " + truncate(activity, max(1, width-4)) + " "
 		lines[len(lines)-1].text = ink(border, "╰"+strings.Repeat("─", max(0, width-ansi.StringWidth(activity)-2))) + ink(colorMuted, activity) + ink(border, "╯")

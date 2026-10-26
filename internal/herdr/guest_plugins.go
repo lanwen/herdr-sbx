@@ -283,10 +283,21 @@ func (e *GuestPluginSetupError) Error() string {
 }
 func (e *GuestPluginSetupError) Unwrap() error { return e.Cause }
 
+// GuestPluginInstall describes one verified payload and expected guest configuration.
+type GuestPluginInstall struct {
+	PluginID                       string
+	Bundle                         io.Reader
+	BundleSHA, ConfigSHA, Revision string
+	ConfigExists                   bool
+	BuildCommands                  [][]string
+}
+
 // InstallGuestPlugin transfers an already verified host bundle. The remote
 // transaction refuses modified installs, backs up config and checks its digest
 // before replacement. Manifest build commands run in order inside the guest.
-func (c *Client) InstallGuestPlugin(ctx context.Context, target, id string, bundle io.Reader, bundleSHA, configSHA, revision string, exists bool, buildCommands ...[]string) error {
+func (c *Client) InstallGuestPlugin(ctx context.Context, target string, install GuestPluginInstall) error {
+	id, bundle, bundleSHA, configSHA, revision := install.PluginID, install.Bundle, install.BundleSHA, install.ConfigSHA, install.Revision
+	exists, buildCommands := install.ConfigExists, install.BuildCommands
 	if !validGuestPluginID.MatchString(id) || !regexp.MustCompile(`^[a-zA-Z0-9.-]+$`).MatchString(revision) {
 		return fmt.Errorf("invalid plugin revision")
 	}

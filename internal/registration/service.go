@@ -14,6 +14,7 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/precheck"
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
+	"github.com/lanwen/herdr-sbx/internal/store"
 )
 
 // Service coordinates sandbox identity, saved associations, guest preparation,
@@ -82,4 +83,23 @@ type ResultObservation struct {
 // An empty reconciliation produces no observation.
 func (s *Service) SetResultPrinter(printer func(io.Writer, ResultObservation)) {
 	s.printResult = printer
+}
+
+// SandboxSelection retains the exact local daemon and selected sandbox identity.
+// A later action verifies this snapshot before changing external state.
+type SandboxSelection struct{ Scope, Socket, ID, Name string }
+
+// registrationWork binds identity, saved state, and its cancellation guard for one transaction.
+type registrationWork struct {
+	Scope   string
+	State   *store.State
+	Sandbox sbx.Sandbox
+	Current func() bool
+}
+
+// sandboxWork retains identity and its freshness guard during guest operations.
+type sandboxWork struct {
+	Scope   string
+	Sandbox sbx.Sandbox
+	Current func() bool
 }

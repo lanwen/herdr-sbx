@@ -260,7 +260,7 @@ func (m *model) retry() tea.Cmd {
 		return nil
 	}
 	return m.run(r.Sandbox.ID, store.CodePreparation, "Preparation completed", func() error {
-		return m.service.registration.RetrySelected(context.Background(), io.Discard, r.Scope, m.checks.Socket, r.Sandbox.ID, r.Sandbox.Name)
+		return m.service.registration.RetrySelected(context.Background(), io.Discard, registration.SandboxSelection{Scope: r.Scope, Socket: m.checks.Socket, ID: r.Sandbox.ID, Name: r.Sandbox.Name})
 	})
 }
 func (m *model) dialogKey(k string) tea.Cmd {
@@ -798,7 +798,7 @@ func (m *model) confirmDialog() tea.Cmd {
 			return nil
 		}
 		return m.run(r.Sandbox.ID, store.CodeHerdrFix, "herdr fix completed", func() error {
-			return m.service.registration.FixGuestHerdr(context.Background(), io.Discard, r.Scope, m.checks.Socket, r.Sandbox.ID, r.Sandbox.Name, host)
+			return m.service.registration.FixGuestHerdr(context.Background(), io.Discard, registration.SandboxSelection{Scope: r.Scope, Socket: m.checks.Socket, ID: r.Sandbox.ID, Name: r.Sandbox.Name}, host)
 		})
 	}
 	return nil

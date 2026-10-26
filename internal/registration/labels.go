@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/lanwen/herdr-sbx/internal/herdr"
-	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
 )
 
@@ -42,7 +41,8 @@ func associatedTrackedMachine(machines []herdr.Machine, item store.Tracked) *her
 	return found
 }
 
-func (s *Service) recoverMachineLabel(ctx context.Context, scope string, st *store.State, machines []herdr.Machine, sb sbx.Sandbox, item *store.Tracked, current func() bool) error {
+func (s *Service) recoverMachineLabel(ctx context.Context, work registrationWork, machines []herdr.Machine, item *store.Tracked) error {
+	scope, st, sb, current := work.Scope, work.State, work.Sandbox, work.Current
 	wanted := item.PendingLabel
 	owned := associatedTrackedMachine(machines, *item)
 	if owned == nil || SandboxName(*item) != sb.Name {
@@ -60,7 +60,7 @@ func (s *Service) recoverMachineLabel(ctx context.Context, scope string, st *sto
 		return err
 	}
 	if owned.Label != wanted {
-		if err := s.renamePendingLabel(ctx, st, scope, item, wanted, current); err != nil {
+		if err := s.renamePendingLabel(ctx, work, item, wanted); err != nil {
 			return err
 		}
 	}
@@ -112,7 +112,8 @@ func availableMachineLabel(machines []herdr.Machine, profileID, wanted string) e
 	return nil
 }
 
-func (s *Service) renamePendingLabel(ctx context.Context, st *store.State, scope string, item *store.Tracked, wanted string, current func() bool) error {
+func (s *Service) renamePendingLabel(ctx context.Context, work registrationWork, item *store.Tracked, wanted string) error {
+	scope, st, current := work.Scope, work.State, work.Current
 	item.PendingLabel = wanted
 	if err := saveTracked(st, scope, *item); err != nil {
 		return err

@@ -167,7 +167,7 @@ func testHostPreparationScenario(t *testing.T, scenario string) {
 	fixture.rebuildClients()
 	fixture.service.releaseTransport = releaseTransport
 	_, err := fixture.service.prepareFromHost(ctx, "demo.sbx", func() bool { return commands.current }, nil)
-	assertHostPreparation(t, scenario, err, destination, home, binary, commands)
+	commands.assertResult(err)
 }
 
 func testHostTransferReplacement(t *testing.T, scenario string) {
@@ -196,7 +196,7 @@ func testHostTransferReplacement(t *testing.T, scenario string) {
 	service := &Service{runner: runner}
 	binary := "#!/bin/sh\necho herdr 0.9.3\n"
 	checksum := fmt.Sprintf("%x", sha256.Sum256([]byte(binary)))
-	err := service.streamHerdrReplacing(context.Background(), "fixture.sbx", strings.NewReader(binary), checksum, "0.9.3", "0.9.4")
+	err := service.streamHerdrReplacing(context.Background(), "fixture.sbx", strings.NewReader(binary), checksum, herdrVersions{Wanted: "0.9.3", Previous: "0.9.4"})
 	contents, readErr := os.ReadFile(destination)
 	require.NoError(t, readErr)
 	if scenario == "replace" {
@@ -305,7 +305,8 @@ func (f *hostPreparationCommands) transfer(ctx context.Context, remote string, b
 	}
 	return runInstallerCommand(ctx, remote, input, f.home, f.tools)
 }
-func assertHostPreparation(t *testing.T, scenario string, err error, destination, home string, binary []byte, f *hostPreparationCommands) {
+func (f *hostPreparationCommands) assertResult(err error) {
+	t, scenario, destination, home, binary := f.t, f.scenario, f.destination, f.home, f.binary
 	t.Helper()
 	success := strings.HasPrefix(scenario, "success")
 	require.Equal(t, success, (err == nil), "error=%v", err)

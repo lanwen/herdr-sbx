@@ -42,7 +42,7 @@ func TestProjectReadinessRetainsSeparatePluginAttempts(t *testing.T) {
 	sandbox := sbx.Sandbox{ID: "id", Name: "demo", Status: "running"}
 	var previous []store.PluginFailure
 	for pass := range 2 {
-		outcome := fixture.service.projectReadiness(context.Background(), "scope", &state, sandbox, &item, true, func() bool { return true })
+		outcome := fixture.service.projectReadiness(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sandbox, Current: func() bool { return true }}, &item, true)
 		require.EqualValues(t, "manual intervention required", outcome.Status)
 		require.Len(t, outcome.PluginFailures, 2)
 		require.EqualValues(t, "2 herdr plugins need manual intervention", outcome.Detail)

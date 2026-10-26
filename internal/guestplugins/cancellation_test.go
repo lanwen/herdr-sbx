@@ -48,7 +48,7 @@ func testPreparationCancellation(t *testing.T, phase string) {
 		}
 		return guestInspectionResponse(t, []herdr.PluginInstall{}, "external", ""), nil
 	}})
-	err := prepare(ctx, client, "fixture.sbx", "scope", "sandbox", local, func() bool { return allowed })
+	err := prepare(ctx, client, SandboxTarget{Address: "fixture.sbx", Scope: "scope", SandboxID: "sandbox"}, local, ApplyOptions{Current: func() bool { return allowed }})
 	wantCalls := map[string]int{"before inspection": 0, "after inspection": 1, "after transfer": 2, "cancelled context": 0}[phase]
 	require.ErrorIs(t, err, context.Canceled)
 	require.False(t, calls != wantCalls)

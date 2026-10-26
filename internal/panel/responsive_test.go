@@ -145,7 +145,7 @@ func testNarrowPluginHint(t *testing.T, width int, page string) {
 		m.focus = "plugins"
 	}
 	for index, plugin := range m.plugins {
-		assertNarrowPluginFocus(t, m, width, page, index, plugin.ID)
+		assertNarrowPluginFocus(t, m, index, plugin.ID)
 	}
 
 }
@@ -169,8 +169,9 @@ func assertPhoneFrame(t *testing.T, m *model, width int) {
 	require.NotContains(t, content, "Resize", "phone was rejected")
 }
 
-func assertNarrowPluginFocus(t *testing.T, m *model, width int, page string, index int, pluginID string) {
+func assertNarrowPluginFocus(t *testing.T, m *model, index int, pluginID string) {
 	t.Helper()
+	width, page := m.width, m.page
 
 	if index > 0 {
 		m.key(keyMsg(tea.KeyDown, ""))

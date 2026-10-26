@@ -8,12 +8,13 @@ linters:
     - gocognit
     - gocritic
     - ineffassign
+    - revive
     - sloglint
     - staticcheck
     - unused
   settings:
     gocognit:
-      min-complexity: 10
+      min-complexity: 15
     gocritic:
       disable-all: true
       enabled-checks:
@@ -27,6 +28,13 @@ linters:
         - dupSubExpr
         - exitAfterDefer
         - offBy1
+    revive:
+      enable-default-rules: false
+      rules:
+        - name: argument-limit
+          arguments: [5]
+        - name: cognitive-complexity
+          arguments: [15]
     sloglint:
       no-global: all
       msg-style: capitalized

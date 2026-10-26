@@ -57,7 +57,7 @@ func (s *Service) SandboxRows(ctx context.Context, socket string) ([]SandboxRow,
 	if err != nil {
 		return nil, err
 	}
-	return observeEntries(scope, sandboxes, machines, state, true, beforeCatalog.EnabledRevisions)
+	return (entryObservation{Scope: scope, State: state, Complete: true, Revisions: []map[string]uint64{beforeCatalog.EnabledRevisions}}).entries(sandboxes, machines)
 }
 
 // associatedMachine verifies immutable catalog identity; labels never establish identity.
@@ -93,14 +93,15 @@ func savedSandboxAssociation(scope, id, target string, state store.State) (*stor
 	var saved *store.Tracked
 	for otherScope, entries := range state.Scopes {
 		var issue string
-		saved, issue = inspectSavedAssociations(scope, otherScope, id, target, entries, saved)
+		saved, issue = (savedAssociationQuery{Scope: scope, ID: id, Target: target}).inspect(otherScope, entries, saved)
 		if issue != "" {
 			return nil, issue
 		}
 	}
 	return saved, ""
 }
-func inspectSavedAssociations(scope, otherScope, id, target string, entries []store.Tracked, saved *store.Tracked) (*store.Tracked, string) {
+func (query savedAssociationQuery) inspect(otherScope string, entries []store.Tracked, saved *store.Tracked) (*store.Tracked, string) {
+	scope, id, target := query.Scope, query.ID, query.Target
 	for i := range entries {
 		entry := &entries[i]
 		if otherScope != scope || entry.SandboxID != id {
@@ -144,15 +145,16 @@ func machineClaimedElsewhere(scope, id, profileID string, state store.State) boo
 }
 
 func observeManagement(scope string, sandboxes []sbx.Sandbox, machines []herdr.Machine, state store.State) ([]SandboxRow, error) {
-	return observeEntries(scope, sandboxes, machines, state, true)
+	return (entryObservation{Scope: scope, State: state, Complete: true, Revisions: nil}).entries(sandboxes, machines)
 }
-func observeEntries(scope string, sandboxes []sbx.Sandbox, machines []herdr.Machine, state store.State, complete bool, observedRevisions ...map[string]uint64) ([]SandboxRow, error) {
+func (observation entryObservation) entries(sandboxes []sbx.Sandbox, machines []herdr.Machine) ([]SandboxRow, error) {
+	scope, complete := observation.Scope, observation.Complete
 	var rows []SandboxRow
 	err := store.UpdateStatusStore(func(status *store.StatusStore) {
 		markMissingInventory(status, scope, sandboxes, complete)
 		for _, sb := range sandboxes {
 			if sb.ID != "" {
-				rows = append(rows, observeSandboxEntry(status, scope, sb, machines, state, observedRevisions))
+				rows = append(rows, observation.sandboxEntry(status, sb, machines))
 			}
 		}
 	})
@@ -171,7 +173,8 @@ func markMissingInventory(status *store.StatusStore, scope string, sandboxes []s
 		}
 	}
 }
-func observeSandboxEntry(status *store.StatusStore, scope string, sb sbx.Sandbox, machines []herdr.Machine, state store.State, revisions []map[string]uint64) SandboxRow {
+func (observation entryObservation) sandboxEntry(status *store.StatusStore, sb sbx.Sandbox, machines []herdr.Machine) SandboxRow {
+	scope, state, revisions := observation.Scope, observation.State, observation.Revisions
 	key := store.StatusKey(scope, sb.ID)
 	choice := status.EnabledChoices[key]
 	if choice == "" {
@@ -184,7 +187,7 @@ func observeSandboxEntry(status *store.StatusStore, scope string, sb sbx.Sandbox
 	row := SandboxRow{Scope: scope, Sandbox: sb, Enabled: choice}
 	machine, issue := associatedMachine(scope, sb, machines, state)
 	row.AssociationIssue = issue
-	row.Enabled = settleObservedEnabled(status, key, choice, machine, issue, revisions)
+	row.Enabled = observation.settleEnabled(status, key, choice, machine, issue)
 	row.ObservationPending = status.EnabledObservationPending[key]
 	if issue == "" && machine == nil && strings.EqualFold(sb.Status, "stopped") {
 		row.Enabled = store.Disabled
@@ -206,7 +209,8 @@ func supersededSandboxRow(status *store.StatusStore, scope string, sb sbx.Sandbo
 	cached.Enabled, cached.Stale = choice, true
 	return SandboxRow{Scope: scope, Sandbox: sb, Enabled: choice, EntryPresent: cached.EntryPresent, NativeEnabled: cached.NativeEnabled, Label: cached.Label, ProfileID: cached.ProfileID, AssociationIssue: cached.AssociationIssue, ObservationPending: true, Status: cached}
 }
-func settleObservedEnabled(status *store.StatusStore, key string, choice store.EnabledChoice, machine *herdr.Machine, issue string, revisions []map[string]uint64) store.EnabledChoice {
+func (observation entryObservation) settleEnabled(status *store.StatusStore, key string, choice store.EnabledChoice, machine *herdr.Machine, issue string) store.EnabledChoice {
+	revisions := observation.Revisions
 	fresh := false
 	if len(revisions) > 0 {
 		before, known := revisions[0][key]
@@ -344,7 +348,7 @@ func (c *enabledChange) settle() error {
 	if !applied || !c.observed {
 		return settleErr
 	}
-	_, observeErr := observeEntries(c.scope, []sbx.Sandbox{c.sb}, c.machines, c.state, false)
+	_, observeErr := (entryObservation{Scope: c.scope, State: c.state, Complete: false, Revisions: nil}).entries([]sbx.Sandbox{c.sb}, c.machines)
 	return errors.Join(settleErr, observeErr)
 }
 func (c *enabledChange) commandCurrent() bool {
@@ -373,7 +377,7 @@ func (c *enabledChange) run() error {
 		}
 	}
 	if !c.commandCurrent() {
-		_, _ = observeEntries(c.scope, []sbx.Sandbox{c.sb}, c.machines, c.state, false)
+		_, _ = (entryObservation{Scope: c.scope, State: c.state, Complete: false, Revisions: nil}).entries([]sbx.Sandbox{c.sb}, c.machines)
 		return supersededEnabledChange()
 	}
 	return c.saveEntry()
@@ -389,7 +393,7 @@ func (c *enabledChange) observeBeforeChange() error {
 		}
 	}
 	// Keep a last-confirmed entry observation if the mutation outcome is lost.
-	if _, err := observeEntries(c.scope, []sbx.Sandbox{c.sb}, c.machines, c.state, false); err != nil {
+	if _, err := (entryObservation{Scope: c.scope, State: c.state, Complete: false, Revisions: nil}).entries([]sbx.Sandbox{c.sb}, c.machines); err != nil {
 		return err
 	}
 
@@ -412,7 +416,7 @@ func (c *enabledChange) addEntry() error {
 		return c.service.sandboxRunning(c.service.Inspect().Socket, c.sb) && sandboxWorkAllowed(c.ctx, c.scope, c.id) && c.commandCurrent()
 	}
 	c.pending = true
-	outcome, _ := c.service.registerWithInstallation(c.ctx, c.scope, &c.state, c.machines, c.sb, current, installationOptions{}, nil)
+	outcome, _ := c.service.registerWithInstallation(c.ctx, registrationWork{Scope: c.scope, State: &c.state, Sandbox: c.sb, Current: current}, c.machines, installationOptions{}, nil)
 	if err := store.RecordSandboxStatus(c.scope, c.sb, outcome.Status, outcome.Detail, false); err != nil {
 		return err
 	}
@@ -520,7 +524,7 @@ func (c *enabledChange) saveEntry() error {
 	if err := store.SaveState(c.state); err != nil {
 		return err
 	}
-	_, err := observeEntries(c.scope, []sbx.Sandbox{c.sb}, c.machines, c.state, false)
+	_, err := (entryObservation{Scope: c.scope, State: c.state, Complete: false, Revisions: nil}).entries([]sbx.Sandbox{c.sb}, c.machines)
 	return err
 }
 
@@ -554,13 +558,13 @@ func (s *Service) RemoveEntry(ctx context.Context, scope, id string) error {
 		return fmt.Errorf("removal outcome is unknown; saved label was kept: %w", readErr)
 	}
 	if machineByID(after, machine.ID) != nil {
-		return unconfirmedEntryRemoval(scope, sb, after, state, removeErr, output)
+		return unconfirmedEntryRemoval(registrationWork{Scope: scope, State: &state, Sandbox: sb, Current: nil}, after, removeErr, output)
 	}
 	clearAbsentProfile(&state, scope, id)
 	if err := store.SaveState(state); err != nil {
 		return err
 	}
-	_, err = observeEntries(scope, []sbx.Sandbox{sb}, after, state, false)
+	_, err = (entryObservation{Scope: scope, State: state, Complete: false, Revisions: nil}).entries([]sbx.Sandbox{sb}, after)
 	return err
 }
 
@@ -640,7 +644,7 @@ func (s *Service) Rename(ctx context.Context, scope, id, label string) error {
 	if machineLabelTaken(machines, machine.ID, label) {
 		return errors.New("another herdr entry already uses this label")
 	}
-	return s.renameMachineEntry(ctx, scope, id, label, state, sb, machine)
+	return s.renameMachineEntry(ctx, registrationWork{Scope: scope, State: &state, Sandbox: sb, Current: nil}, id, label, machine)
 }
 
 // clearAbsentProfile abandons only an authoritatively absent catalog linkage.
@@ -849,8 +853,9 @@ func machineLabelTaken(machines []herdr.Machine, id, label string) bool {
 	return false
 }
 
-func unconfirmedEntryRemoval(scope string, sb sbx.Sandbox, after []herdr.Machine, state store.State, removeErr error, output string) error {
-	_, _ = observeEntries(scope, []sbx.Sandbox{sb}, after, state, false)
+func unconfirmedEntryRemoval(work registrationWork, after []herdr.Machine, removeErr error, output string) error {
+	scope, sb, state := work.Scope, work.Sandbox, *work.State
+	_, _ = (entryObservation{Scope: scope, State: state, Complete: false, Revisions: nil}).entries([]sbx.Sandbox{sb}, after)
 	if removeErr != nil {
 		return fmt.Errorf("remove herdr entry: %s", commandError(removeErr, output))
 	}
@@ -910,7 +915,8 @@ func applyRegisteredObservation(cached *store.SandboxStatus, row SandboxRow) {
 	}
 }
 
-func (s *Service) renameMachineEntry(ctx context.Context, scope, id, label string, state store.State, sb sbx.Sandbox, machine *herdr.Machine) error {
+func (s *Service) renameMachineEntry(ctx context.Context, work registrationWork, id, label string, machine *herdr.Machine) error {
+	scope, state, sb := work.Scope, *work.State, work.Sandbox
 	output, renameErr := s.herdr.RenameMachine(ctx, machine.ID, label)
 	after, _, readErr := s.herdr.ListMachines(ctx)
 	if readErr != nil {
@@ -924,7 +930,7 @@ func (s *Service) renameMachineEntry(ctx context.Context, scope, id, label strin
 	if err := store.SaveState(state); err != nil {
 		return err
 	}
-	if _, err := observeEntries(scope, []sbx.Sandbox{sb}, after, state, false); err != nil {
+	if _, err := (entryObservation{Scope: scope, State: state, Complete: false, Revisions: nil}).entries([]sbx.Sandbox{sb}, after); err != nil {
 		return err
 	}
 	if observed.Label == label {
@@ -935,3 +941,13 @@ func (s *Service) renameMachineEntry(ctx context.Context, scope, id, label strin
 	}
 	return errors.New("herdr label change is not confirmed; retry rename")
 }
+
+// entryObservation keeps one catalog snapshot and the revisions captured before it was read.
+type entryObservation struct {
+	Scope     string
+	State     store.State
+	Complete  bool
+	Revisions []map[string]uint64
+}
+
+type savedAssociationQuery struct{ Scope, ID, Target string }

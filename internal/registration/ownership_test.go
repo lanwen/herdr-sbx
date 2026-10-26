@@ -36,10 +36,10 @@ func TestRegistrationIdentityChangesKeepSafeJournalState(t *testing.T) {
 		}
 		fixture.rebuildClients()
 		state := store.State{Version: 1, Scopes: map[string][]store.Tracked{}}
-		result, saved := fixture.service.registerPreparedContext(context.Background(), "scope", &state, nil, sbx.Sandbox{ID: "old", Name: "demo", Status: "running"}, func() bool {
+		result, saved := fixture.service.registerPreparedContext(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sbx.Sandbox{ID: "old", Name: "demo", Status: "running"}, Current: func() bool {
 			checks++
 			return checks == 1
-		})
+		}}, nil)
 		require.EqualValues(t, "stale", result.Status)
 		require.Nil(t, saved)
 		require.EqualValues(t, 0, adds)
@@ -64,10 +64,10 @@ func TestRegistrationIdentityChangesKeepSafeJournalState(t *testing.T) {
 		fixture.rebuildClients()
 		checks := 0
 		state := store.State{Version: 1, Scopes: map[string][]store.Tracked{}}
-		result, saved := fixture.service.registerPreparedContext(context.Background(), "scope", &state, nil, sbx.Sandbox{ID: "old", Name: "demo", Status: "running"}, func() bool {
+		result, saved := fixture.service.registerPreparedContext(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sbx.Sandbox{ID: "old", Name: "demo", Status: "running"}, Current: func() bool {
 			checks++
 			return checks < 4
-		})
+		}}, nil)
 		items := state.Scopes["scope"]
 		require.EqualValues(t, "stale", result.Status)
 		require.NotNil(t, saved)
@@ -96,10 +96,10 @@ func TestRegistrationIdentityChangesKeepSafeJournalState(t *testing.T) {
 		fixture.rebuildClients()
 		checks := 0
 		state := store.State{Version: 1, Scopes: map[string][]store.Tracked{}}
-		result, _ := fixture.service.registerPreparedContext(context.Background(), "scope", &state, nil, sbx.Sandbox{ID: "old", Name: "demo", Status: "running"}, func() bool {
+		result, _ := fixture.service.registerPreparedContext(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sbx.Sandbox{ID: "old", Name: "demo", Status: "running"}, Current: func() bool {
 			checks++
 			return checks < 5
-		})
+		}}, nil)
 		require.EqualValues(t, "stale", result.Status)
 		require.Contains(t, result.Detail, "sandbox changed")
 	})
@@ -124,7 +124,7 @@ func TestCatalogCapacityFailureClearsIntentForRetry(t *testing.T) {
 	sandbox := sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"}
 	for range 2 {
 		state := store.State{Version: 1, Scopes: map[string][]store.Tracked{}}
-		result, _ := fixture.service.registerPreparedContext(context.Background(), "scope", &state, nil, sandbox, func() bool { return true })
+		result, _ := fixture.service.registerPreparedContext(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sandbox, Current: func() bool { return true }}, nil)
 		require.EqualValues(t, "catalog full", result.Status)
 		require.Contains(t, result.Detail, "Remove an unused machine")
 		require.Len(t, state.Scopes["scope"], 0, "capacity failure left intent: %#v", state.Scopes["scope"])
@@ -253,7 +253,7 @@ func TestRemoteHerdrVersionAndBrokenPathAreLeftUnchanged(t *testing.T) {
 			}
 			fixture.rebuildClients()
 			state := store.State{Version: 1, Scopes: map[string][]store.Tracked{}}
-			result, saved := fixture.service.registerPreparedContext(context.Background(), "scope", &state, nil, sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"}, func() bool { return true })
+			result, saved := fixture.service.registerPreparedContext(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"}, Current: func() bool { return true }}, nil)
 			require.EqualValues(t, "setup required", result.Status)
 			require.Nil(t, saved)
 			require.Len(t, state.Scopes["scope"], 0)
@@ -287,10 +287,10 @@ func TestCooldownRetainsInstallationFailure(t *testing.T) {
 	})
 	sandbox := sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"}
 	state := store.State{Version: 1, Scopes: map[string][]store.Tracked{}}
-	first, _ := fixture.service.registerPreparedContext(context.Background(), "scope", &state, nil, sandbox, func() bool { return true })
+	first, _ := fixture.service.registerPreparedContext(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sandbox, Current: func() bool { return true }}, nil)
 	require.EqualValues(t, "setup required", first.Status)
 	require.Contains(t, first.Detail, "HTTP 403")
-	second, _ := fixture.service.registerPreparedContext(context.Background(), "scope", &state, nil, sandbox, func() bool { return true })
+	second, _ := fixture.service.registerPreparedContext(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sandbox, Current: func() bool { return true }}, nil)
 	require.EqualValues(t, "setup required", second.Status)
 	require.Contains(t, second.Detail, "on cooldown")
 	require.Contains(t, second.Detail, "HTTP 403")
@@ -336,7 +336,7 @@ func testFailedRecreationRetainsCompletedGuestStateScenario(t *testing.T, scenar
 		require.NoError(t, err)
 		return !saved.Scopes["scope"][0].Pending
 	}
-	outcome, _ := f.service.registerPreparedContext(context.Background(), "scope", &state, nil, sbx.Sandbox{ID: "one", Name: "demo", Status: "running", Workspace: "/workspace/demo"}, current)
+	outcome, _ := f.service.registerPreparedContext(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sbx.Sandbox{ID: "one", Name: "demo", Status: "running", Workspace: "/workspace/demo"}, Current: current}, nil)
 	require.False(t, scenario == "cancel before add" && (outcome.Status != "stale" || adds != 0), "cancel=%+v adds=%d", outcome, adds)
 	require.False(t, scenario == "deterministic add failure" && (outcome.Status != "catalog full" || adds != 1), "failure=%+v adds=%d", outcome, adds)
 	saved, err := store.LoadState()

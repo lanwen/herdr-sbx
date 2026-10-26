@@ -37,12 +37,13 @@ func (s *Service) prepareFromHost(ctx context.Context, target string, current fu
 	if strings.TrimSpace(local) != "herdr "+wanted || wanted == "" {
 		return "", fmt.Errorf("local Herdr must report an exact stable release version")
 	}
-	return s.prepareHostVersion(ctx, target, wanted, "", current, progress)
+	return s.prepareHostVersion(ctx, target, hostPreparation{Wanted: wanted, Previous: "", Current: current, Progress: progress})
 }
 
 // An expected old version permits atomic replacement of only the user-local
 // executable we just inspected. Other paths and symlinks are left untouched.
-func (s *Service) prepareHostVersion(ctx context.Context, target, wanted, old string, current func() bool, progress func(string)) (string, error) {
+func (s *Service) prepareHostVersion(ctx context.Context, target string, preparation hostPreparation) (string, error) {
+	wanted, old, current, progress := preparation.Wanted, preparation.Previous, preparation.Current, preparation.Progress
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	if err := checkGuestCurrent(ctx, current); err != nil {
@@ -76,7 +77,7 @@ func (s *Service) prepareHostVersion(ctx context.Context, target, wanted, old st
 	}
 	defer os.Remove(file.Name())
 	defer file.Close()
-	return s.transferPreparedHerdr(ctx, target, file, checksum, release.Version, old, current, progress)
+	return s.transferPreparedHerdr(ctx, target, file, checksum, hostPreparation{Wanted: release.Version, Previous: old, Current: current, Progress: progress})
 }
 
 func (s *Service) sandboxPlatform(ctx context.Context, target string) (string, error) {
@@ -195,7 +196,8 @@ func verifyHerdrDownload(file *os.File, body io.Reader, expected string) (string
 	return checksum, nil
 }
 
-func (s *Service) transferPreparedHerdr(ctx context.Context, target string, file *os.File, checksum, wanted, old string, current func() bool, progress func(string)) (string, error) {
+func (s *Service) transferPreparedHerdr(ctx context.Context, target string, file *os.File, checksum string, preparation hostPreparation) (string, error) {
+	wanted, old, current, progress := preparation.Wanted, preparation.Previous, preparation.Current, preparation.Progress
 	if err := checkGuestCurrent(ctx, current); err != nil {
 		return "", err
 	}
@@ -205,7 +207,7 @@ func (s *Service) transferPreparedHerdr(ctx context.Context, target string, file
 	if progress != nil {
 		progress("Copying verified Herdr into the sandbox over SSH.")
 	}
-	if err := s.streamHerdrReplacing(ctx, target, file, checksum, wanted, old); err != nil {
+	if err := s.streamHerdrReplacing(ctx, target, file, checksum, herdrVersions{Wanted: wanted, Previous: old}); err != nil {
 		return "", err
 	}
 	if err := checkGuestCurrent(ctx, current); err != nil {
@@ -238,10 +240,11 @@ func releaseGet(ctx context.Context, client *http.Client, address string) (io.Re
 }
 
 func (s *Service) streamHerdr(ctx context.Context, target string, binary io.Reader, checksum, version string) error {
-	return s.streamHerdrReplacing(ctx, target, binary, checksum, version, "")
+	return s.streamHerdrReplacing(ctx, target, binary, checksum, herdrVersions{Wanted: version, Previous: ""})
 }
 
-func (s *Service) streamHerdrReplacing(ctx context.Context, target string, binary io.Reader, checksum, version, old string) error {
+func (s *Service) streamHerdrReplacing(ctx context.Context, target string, binary io.Reader, checksum string, versions herdrVersions) error {
+	version, old := versions.Wanted, versions.Previous
 	if err := CheckAutomaticWork(ctx); err != nil {
 		return err
 	}
@@ -264,3 +267,13 @@ func (s *Service) streamHerdrReplacing(ctx context.Context, target string, binar
 func transferredInstallCommand(checksum, version string) string {
 	return `set -eu; umask 077; mkdir -p "$HOME/.local/share" "$HOME/.local/bin"; stage=$(mktemp -d "$HOME/.local/share/herdr-sbx-install.XXXXXX"); trap 'rm -rf "$stage"' EXIT; trap 'exit 1' HUP INT TERM; cat > "$stage/herdr"; printf '%s  %s\n' '` + checksum + `' "$stage/herdr" | sha256sum -c -; chmod 755 "$stage/herdr"; installed_version=$("$stage/herdr" --version); [ "$installed_version" = 'herdr ` + version + `' ]; [ ! -e "$HOME/.local/bin/herdr" ] && [ ! -L "$HOME/.local/bin/herdr" ]; ln -T "$stage/herdr" "$HOME/.local/bin/herdr"`
 }
+
+// hostPreparation keeps one verified release transition and its operation callbacks.
+type hostPreparation struct {
+	Wanted, Previous string
+	Current          func() bool
+	Progress         func(string)
+}
+
+// herdrVersions identifies the requested release and the inspected replacement precondition.
+type herdrVersions struct{ Wanted, Previous string }

@@ -124,7 +124,8 @@ func (s *Service) Worker(out io.Writer) error {
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	go monitorWorker(ctx, cancel, output, out, logPath, report)
+	monitor := workerMonitor{rotation: workerLogRotation{output: output, out: out, path: logPath + ".worker.log"}, report: report}
+	go monitor.run(ctx, cancel)
 	livenessDone := make(chan struct{})
 	go func() {
 		defer close(livenessDone)
@@ -193,18 +194,22 @@ func (r *workerStatusReporter) report(state, detail string, synced bool) {
 	}
 }
 
-func monitorWorker(ctx context.Context, cancel context.CancelFunc, output *lockedWriter, out io.Writer, logPath string, report func(string, string, bool)) {
+type workerMonitor struct {
+	rotation workerLogRotation
+	report   func(string, string, bool)
+}
+
+func (m *workerMonitor) run(ctx context.Context, cancel context.CancelFunc) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
-	rotation := workerLogRotation{output: output, out: out, path: logPath + ".worker.log"}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			rotation.check()
+			m.rotation.check()
 			if workerControlStopped() {
-				report("cancelling", "Cancelling", false)
+				m.report("cancelling", "Cancelling", false)
 				cancel()
 				return
 			}

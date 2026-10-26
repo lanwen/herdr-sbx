@@ -47,14 +47,14 @@ func testPendingLabelOwnershipAndRecoveryScenario(t *testing.T, scenario string)
 	fixture.rebuildClients()
 	current := func() bool { return scenario != "stale" }
 	sandbox := sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"}
-	err := fixture.service.recoverMachineLabel(context.Background(), "scope", &state, machines, sandbox, &item, current)
+	err := fixture.service.recoverMachineLabel(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sandbox, Current: current}, machines, &item)
 	require.Error(t, err, "expected rename refusal or failure")
 	if scenario == "lost acknowledgement" {
 		saved, err := store.LoadState()
 		require.NoError(t, err)
 		item = saved.Scopes["scope"][0]
 		require.Equal(t, "Release desk", item.PendingLabel, "rename intent lost")
-		require.NoError(t, fixture.service.recoverMachineLabel(context.Background(), "scope", &saved, machines, sandbox, &item, current))
+		require.NoError(t, fixture.service.recoverMachineLabel(context.Background(), registrationWork{Scope: "scope", State: &saved, Sandbox: sandbox, Current: current}, machines, &item))
 		require.EqualValues(t, "Release desk", item.Label)
 		require.EqualValues(t, "", item.PendingLabel)
 		require.EqualValues(t, 1, renames)

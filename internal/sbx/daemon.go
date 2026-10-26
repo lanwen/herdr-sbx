@@ -28,7 +28,7 @@ func (c *Client) Inventory(ctx context.Context, socket string) ([]Sandbox, error
 	if socket == "" {
 		return nil, fmt.Errorf("sandbox daemon did not report a socket")
 	}
-	body, err := c.request(ctx, socket, http.MethodGet, "/sandbox", nil, 5*time.Second)
+	body, err := c.inventoryResponse(ctx, socket)
 	if err != nil {
 		return nil, err
 	}
@@ -141,10 +141,10 @@ func (c *Client) ReadLifecycle(ctx context.Context, socket string, deliver func(
 	return readLifecycleLines(response.Body, deliver)
 }
 
-func (c *Client) request(ctx context.Context, socket, method, path string, body io.Reader, timeout time.Duration) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+func (c *Client) inventoryResponse(ctx context.Context, socket string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, method, "http://sandboxd"+path, body)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://sandboxd/sandbox", nil)
 	if err != nil {
 		return nil, err
 	}

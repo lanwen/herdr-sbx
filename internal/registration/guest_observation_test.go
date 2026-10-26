@@ -79,7 +79,7 @@ func testOwnedGuestObservationDoesNotRepeatUnchangedWork(t *testing.T, connectio
 	require.NoError(t, store.SaveState(state))
 	sandbox := sbx.Sandbox{ID: "sandbox", Name: "demo", Status: "running"}
 	for range 3 {
-		got := f.service.projectReadiness(context.Background(), "scope", &state, sandbox, &item, true, func() bool { return true })
+		got := f.service.projectReadiness(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sandbox, Current: func() bool { return true }}, &item, true)
 		require.False(t, connectionFails && (got.Status == "failed" || !strings.Contains(got.Detail, "plugin")), "misleading registration failure: %+v", got)
 		if connectionFails {
 			require.Len(t, got.PluginFailures, 1, "missing actionable plugin connection cause: %+v", got)
@@ -97,28 +97,28 @@ func testOwnedGuestObservationDoesNotRepeatUnchangedWork(t *testing.T, connectio
 	state, err := store.LoadState()
 	require.NoError(t, err)
 	item = state.Scopes["scope"][0]
-	f.service.projectReadiness(context.Background(), "scope", &state, sandbox, &item, true, func() bool { return true })
+	f.service.projectReadiness(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sandbox, Current: func() bool { return true }}, &item, true)
 	require.Equal(t, 1, commands.inspections, "daemon restart repeated unchanged guest inspection")
 	for _, ctx := range []context.Context{WithFreshGuestObservation(context.Background()), context.WithValue(context.Background(), guestPluginRetryKey{}, true)} {
 		before := commands.inspections
-		f.service.projectReadiness(ctx, "scope", &state, sandbox, &item, true, func() bool { return true })
+		f.service.projectReadiness(ctx, registrationWork{Scope: "scope", State: &state, Sandbox: sandbox, Current: func() bool { return true }}, &item, true)
 		require.Equal(t, before+1, commands.inspections, "explicit or lifecycle refresh did not inspect guest: %d -> %d", before, commands.inspections)
 	}
 	item.GuestSync.CheckedAt = time.Now().Add(-16 * time.Minute)
 	before := commands.inspections
-	f.service.projectReadiness(context.Background(), "scope", &state, sandbox, &item, true, func() bool { return true })
+	f.service.projectReadiness(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sandbox, Current: func() bool { return true }}, &item, true)
 	require.Equal(t, before+1, commands.inspections, "bounded audit did not inspect guest")
 	if connectionFails {
 		require.NoError(t, os.WriteFile(filepath.Join(root, "source.sh"), []byte("new source"), 0600))
 		before = commands.inspections
-		f.service.projectReadiness(context.Background(), "scope", &state, sandbox, &item, true, func() bool { return true })
+		f.service.projectReadiness(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sandbox, Current: func() bool { return true }}, &item, true)
 		require.Equal(t, before+1, commands.inspections, "source change did not invalidate guest observation")
 		require.NoError(t, store.SetGuestPluginDefault(local.ID, false))
-		got := f.service.projectReadiness(context.Background(), "scope", &state, sandbox, &item, true, func() bool { return true })
+		got := f.service.projectReadiness(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sandbox, Current: func() bool { return true }}, &item, true)
 		require.False(t, commands.inspections != before+1)
 		require.EqualValues(t, "ready", got.Status)
 		require.NoError(t, store.SetGuestPluginDefault(local.ID, true))
-		f.service.projectReadiness(context.Background(), "scope", &state, sandbox, &item, true, func() bool { return true })
+		f.service.projectReadiness(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sandbox, Current: func() bool { return true }}, &item, true)
 		require.Equal(t, before+2, commands.inspections, "re-enabling synchronization did not inspect guest")
 	}
 	require.True(t, item.ProjectWorkspaceDone)
@@ -148,7 +148,7 @@ func testOwnedMachineWithTwoEnabledPluginsKeepsIndependentConnectionFailures(t *
 	item := store.Tracked{SandboxID: "sandbox", Target: "demo.sbx", ProfileID: "machine", ProjectWorkspaceDone: true}
 	state := store.State{Version: 1, Scopes: map[string][]store.Tracked{"scope": {item}}}
 	for pass := range 3 {
-		got := f.service.projectReadiness(context.Background(), "scope", &state, sbx.Sandbox{ID: "sandbox", Name: "demo", Status: "running"}, &item, true, func() bool { return true })
+		got := f.service.projectReadiness(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sbx.Sandbox{ID: "sandbox", Name: "demo", Status: "running"}, Current: func() bool { return true }}, &item, true)
 		require.False(t, changeDuringWork && pass == 0 && item.GuestSync != nil, "source changed during work but observation was cached")
 		require.Len(t, got.PluginFailures, 2)
 		require.EqualValues(t, "plugin setup required", got.Status)

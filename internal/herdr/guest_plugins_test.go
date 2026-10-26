@@ -348,7 +348,7 @@ func testCanonicalPluginDirectory(t *testing.T, kind string) {
 		return string(output), err
 	}})
 	digest := fmt.Sprintf("%x", sha256.Sum256(bundle.Bytes()))
-	err := client.InstallGuestPlugin(context.Background(), "test.sbx", "example.plugin", &bundle, digest, "", "revision", false)
+	err := client.InstallGuestPlugin(context.Background(), "test.sbx", GuestPluginInstall{PluginID: "example.plugin", Bundle: &bundle, BundleSHA: digest, ConfigSHA: "", Revision: "revision", ConfigExists: false, BuildCommands: [][]string{}})
 	if kind == "directory" {
 		require.NoError(t, err)
 		{
@@ -400,7 +400,7 @@ func testGuestBuildAttempt(t *testing.T, fail bool) {
 		if exists {
 			configSHA = fmt.Sprintf("%x", sha256.Sum256(nil))
 		}
-		return client.InstallGuestPlugin(context.Background(), "fixture.sbx", "example.plugin", bytes.NewReader(payload), fmt.Sprintf("%x", sha256.Sum256(payload)), configSHA, "revision", exists, build)
+		return client.InstallGuestPlugin(context.Background(), "fixture.sbx", GuestPluginInstall{PluginID: "example.plugin", Bundle: bytes.NewReader(payload), BundleSHA: fmt.Sprintf("%x", sha256.Sum256(payload)), ConfigSHA: configSHA, Revision: "revision", ConfigExists: exists, BuildCommands: [][]string{build}})
 	}
 	err := invoke(false)
 	root := filepath.Join(home, ".local/share/herdr-sbx/plugins/example.plugin-revision")

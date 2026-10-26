@@ -66,7 +66,7 @@ func TestManuallyLinkedRetainedRevisionDoesNotRebuild(t *testing.T) {
 		return nil, errors.New("failed previous build")
 	}
 
-	err := prepare(context.Background(), client, "fixture.sbx", "scope", "sandbox", local, func() bool { return true }, block)
+	err := prepare(context.Background(), client, SandboxTarget{Address: "fixture.sbx", Scope: "scope", SandboxID: "sandbox"}, local, ApplyOptions{Current: func() bool { return true }, Attempts: []BeginAttempt{block}})
 	require.Error(t, err, "attempt unexpectedly allowed")
 
 	linked = true
@@ -74,7 +74,7 @@ func TestManuallyLinkedRetainedRevisionDoesNotRebuild(t *testing.T) {
 		t.Fatal("manual repair retried build gate")
 		return nil, nil
 	}
-	require.NoError(t, prepare(context.Background(), client, "fixture.sbx", "scope", "sandbox", local, func() bool { return true }, denied))
+	require.NoError(t, prepare(context.Background(), client, SandboxTarget{Address: "fixture.sbx", Scope: "scope", SandboxID: "sandbox"}, local, ApplyOptions{Current: func() bool { return true }, Attempts: []BeginAttempt{denied}}))
 	require.True(t, transferred, "config completion not performed")
 }
 
@@ -135,7 +135,7 @@ func TestPreparePreservesManifestForGuestBuild(t *testing.T) {
 		built = true
 		return "", stop
 	}})
-	err := prepare(context.Background(), client, "fixture.sbx", "scope", "sandbox", local, func() bool { return true })
+	err := prepare(context.Background(), client, SandboxTarget{Address: "fixture.sbx", Scope: "scope", SandboxID: "sandbox"}, local, ApplyOptions{Current: func() bool { return true }})
 	require.True(t, built)
 	require.ErrorIs(t, err, stop)
 }
@@ -180,7 +180,7 @@ func testPrepareRepairSuggestion(t *testing.T, test repairSuggestionCase, local 
 	fixture := repairAttemptFixture{t: t, scenario: test, local: local}
 	client := herdr.New(process.Runner{Execute: fixture.run})
 
-	err := prepare(context.Background(), client, "fixture.sbx", "scope", "id", local, func() bool { return true })
+	err := prepare(context.Background(), client, SandboxTarget{Address: "fixture.sbx", Scope: "scope", SandboxID: "id"}, local, ApplyOptions{Current: func() bool { return true }})
 	var failure *FailureError
 	require.True(t, errors.As(err, &failure), "missing structured failure: %v", err)
 	require.Equal(t, test.wantCommand, (failure.Failure.Command != ""), "repair command validity: %+v", failure.Failure)
@@ -249,9 +249,7 @@ func TestPreparationFinalizesStartedAttemptsWhenLaterAttemptFails(t *testing.T) 
 			}, nil
 		}
 	}
-	err := prepare(context.Background(), client, "fixture.sbx", "scope", "id", local, func() bool { return true },
-		attempt("first", firstFailure), attempt("second", secondFailure),
-		func(string, string) (func(error) error, error) { return nil, denied })
+	err := prepare(context.Background(), client, SandboxTarget{Address: "fixture.sbx", Scope: "scope", SandboxID: "id"}, local, ApplyOptions{Current: func() bool { return true }, Attempts: []BeginAttempt{attempt("first", firstFailure), attempt("second", secondFailure), func(string, string) (func(error) error, error) { return nil, denied }}})
 	require.Equal(t, []string{"second", "first"}, completed)
 	require.ErrorIs(t, err, denied)
 	require.ErrorIs(t, err, firstFailure)
@@ -267,7 +265,7 @@ func TestPreparationFinalizesStartedAttemptsWhenLaterAttemptPanics(t *testing.T)
 		}
 	}
 	require.PanicsWithValue(t, "attempt panic", func() {
-		_ = preparation.apply(herdr.GuestPluginState{}, pluginPlan{}, []func(string, string) (func(error) error, error){
+		_ = preparation.apply(herdr.GuestPluginState{}, pluginPlan{}, []BeginAttempt{
 			attempt("first"), attempt("second"), func(string, string) (func(error) error, error) { panic("attempt panic") },
 		})
 	})
@@ -289,7 +287,7 @@ func TestPreparationFinalizesEarlierAttemptsWhenACompletionPanics(t *testing.T) 
 		return func(error) error { completed = append(completed, "second"); panic("completion panic") }, nil
 	}
 	require.PanicsWithValue(t, "completion panic", func() {
-		_ = preparation.apply(herdr.GuestPluginState{}, pluginPlan{}, []func(string, string) (func(error) error, error){
+		_ = preparation.apply(herdr.GuestPluginState{}, pluginPlan{}, []BeginAttempt{
 			first, second, func(string, string) (func(error) error, error) { return nil, blocked },
 		})
 	})

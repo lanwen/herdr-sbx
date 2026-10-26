@@ -66,9 +66,10 @@ func (s *Service) removeDeletedSandbox(ctx context.Context, scope, socket, sandb
 		return DeletionResult{Detail: "Lifecycle deletion retained state: sandbox absence is not confirmed."}, nil
 	}
 
-	return s.removeDeletedEntry(ctx, &st, scope, sandboxID, name, *item)
+	return s.removeDeletedEntry(ctx, &st, scope, *item)
 }
-func (s *Service) removeDeletedEntry(ctx context.Context, st *store.State, scope, sandboxID, name string, item store.Tracked) (DeletionResult, error) {
+func (s *Service) removeDeletedEntry(ctx context.Context, st *store.State, scope string, item store.Tracked) (DeletionResult, error) {
+	sandboxID, name := item.SandboxID, SandboxName(item)
 	machines, output, err := s.herdr.ListMachines(ctx)
 	if err != nil {
 		return DeletionResult{Retry: true}, fmt.Errorf("cannot inspect Herdr machines: %s", commandError(err, output))

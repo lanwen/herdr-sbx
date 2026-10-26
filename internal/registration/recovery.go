@@ -8,14 +8,14 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
 	"github.com/lanwen/herdr-sbx/internal/version"
 )
 
 // Recovery never stops a server: live handoff preserves guest panes, and an
 // unsupported or failed handoff remains visible for the user to resolve.
-func (s *Service) recoverGuestVersion(ctx context.Context, scope string, sb sbx.Sandbox, current func() bool, progress func(string), force bool) error {
+func (s *Service) recoverGuestVersion(ctx context.Context, work sandboxWork, progress func(string), force bool) error {
+	scope, sb, current := work.Scope, work.Sandbox, work.Current
 	if err := checkGuestCurrent(ctx, current); err != nil {
 		return err
 	}
@@ -27,10 +27,11 @@ func (s *Service) recoverGuestVersion(ctx context.Context, scope string, sb sbx.
 	if wanted == "" || strings.TrimSpace(local) != "herdr "+wanted {
 		return fmt.Errorf("local Herdr must report an exact stable release version")
 	}
-	return s.recoverGuestVersionTo(ctx, scope, sb, current, progress, force, wanted)
+	return s.recoverGuestVersionTo(ctx, sandboxWork{Scope: scope, Sandbox: sb, Current: current}, progress, force, wanted)
 }
 
-func (s *Service) recoverGuestVersionTo(ctx context.Context, scope string, sb sbx.Sandbox, current func() bool, progress func(string), force bool, wanted string) error {
+func (s *Service) recoverGuestVersionTo(ctx context.Context, work sandboxWork, progress func(string), force bool, wanted string) error {
+	scope, sb, current := work.Scope, work.Sandbox, work.Current
 	if err := checkGuestCurrent(ctx, current); err != nil {
 		return err
 	}
@@ -42,7 +43,7 @@ func (s *Service) recoverGuestVersionTo(ctx context.Context, scope string, sb sb
 	if current != nil && !current() {
 		return context.Canceled
 	}
-	needed, err := s.guestNeedsHandoff(ctx, scope, sb, current, wanted, force)
+	needed, err := s.guestNeedsHandoff(ctx, sandboxWork{Scope: scope, Sandbox: sb, Current: current}, wanted, force)
 	if err != nil || !needed {
 		return err
 	}
@@ -54,7 +55,7 @@ func (s *Service) recoverGuestVersionTo(ctx context.Context, scope string, sb sb
 		return err
 	}
 	err = s.herdr.HandoffGuest(ctx, target, wanted)
-	s.recordHandoffObservation(ctx, scope, sb, current, wanted, err)
+	s.recordHandoffObservation(ctx, sandboxWork{Scope: scope, Sandbox: sb, Current: current}, wanted, err)
 	if err == nil {
 		return checkGuestCurrent(ctx, current)
 	}
@@ -71,7 +72,8 @@ func checkGuestCurrent(ctx context.Context, current func() bool) error {
 	}
 	return nil
 }
-func (s *Service) guestNeedsHandoff(ctx context.Context, scope string, sb sbx.Sandbox, current func() bool, wanted string, force bool) (bool, error) {
+func (s *Service) guestNeedsHandoff(ctx context.Context, work sandboxWork, wanted string, force bool) (bool, error) {
+	scope, sb, current := work.Scope, work.Sandbox, work.Current
 	if force {
 		return true, nil
 	}
@@ -94,7 +96,8 @@ func (s *Service) guestNeedsHandoff(ctx context.Context, scope string, sb sbx.Sa
 	}
 	return running && actual != wanted, nil
 }
-func (s *Service) recordHandoffObservation(ctx context.Context, scope string, sb sbx.Sandbox, current func() bool, wanted string, err error) {
+func (s *Service) recordHandoffObservation(ctx context.Context, work sandboxWork, wanted string, err error) {
+	scope, sb, current := work.Scope, work.Sandbox, work.Current
 	if current != nil && !current() {
 		return
 	}
@@ -173,7 +176,7 @@ func (s *Service) alignGuestExecutable(ctx context.Context, target, wanted strin
 		return fmt.Errorf("cannot verify the existing guest Herdr executable")
 	}
 	if old != wanted {
-		if _, err := s.prepareHostVersion(ctx, target, wanted, old, current, progress); err != nil {
+		if _, err := s.prepareHostVersion(ctx, target, hostPreparation{Wanted: wanted, Previous: old, Current: current, Progress: progress}); err != nil {
 			return err
 		}
 	}

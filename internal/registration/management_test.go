@@ -366,7 +366,7 @@ func TestDisableDuringFixDownloadPreventsTransferAndHandoff(t *testing.T) {
 	f.service.releaseTransport = releaseTestTransport(func(r *http.Request) (*http.Response, error) {
 		return interruptedFixDownload(t, scope, payload, digest, r)
 	})
-	err := f.service.FixGuestHerdr(context.Background(), io.Discard, scope, "/tmp/fix-herdr.sock", "sandbox-1", "demo", "herdr 0.9.3")
+	err := f.service.FixGuestHerdr(context.Background(), io.Discard, SandboxSelection{Scope: scope, Socket: "/tmp/fix-herdr.sock", ID: "sandbox-1", Name: "demo"}, "herdr 0.9.3")
 	require.ErrorIs(t, err, context.Canceled)
 	require.EqualValues(t, 0, transfers)
 	require.EqualValues(t, 0, *handoffs)

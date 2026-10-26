@@ -317,34 +317,39 @@ func TestManualReconcileRemovesDeletedSandbox(t *testing.T) {
 func TestManualReconcilePreservesUnconfirmedOrUnownedMachines(t *testing.T) {
 	for _, scenario := range []string{"stopped", "unknown absence", "changed profile", "pending intent", "other scope"} {
 		t.Run(scenario, func(t *testing.T) {
-			f := newLifecycleFixture(t)
-			item := ownedRegistration()
-			switch scenario {
-			case "stopped":
-				f.request = func(*http.Request) (*http.Response, error) {
-					return lifecycleResponse(200, `[{"uuid":"old","name":"demo","status":"stopped"}]`), nil
-				}
-			case "unknown absence":
-				original := f.request
-				f.request = func(r *http.Request) (*http.Response, error) {
-					if r.URL.Path != "/sandbox" {
-						return lifecycleResponse(404, `{}`), nil
-					}
-					return original(r)
-				}
-			case "changed profile":
-				f.catalog = `[{"id":"machine-1","label":"manual","target":"another.sbx","session":"default"}]`
-			case "pending intent":
-				item.Pending = true
-			case "other scope":
-				f.scope = "another-daemon"
-			}
-			f.save(item)
-			_ = f.service.registrations.Reconcile(io.Discard)
-			require.Len(t, f.removed, 0, "removed protected machine: %v", f.removed)
-			f.assertCount(1)
+			testManualReconcilePreservesMachine(t, scenario)
 		})
 	}
+}
+
+func testManualReconcilePreservesMachine(t *testing.T, scenario string) {
+	t.Helper()
+	f := newLifecycleFixture(t)
+	item := ownedRegistration()
+	switch scenario {
+	case "stopped":
+		f.request = func(*http.Request) (*http.Response, error) {
+			return lifecycleResponse(200, `[{"uuid":"old","name":"demo","status":"stopped"}]`), nil
+		}
+	case "unknown absence":
+		original := f.request
+		f.request = func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path != "/sandbox" {
+				return lifecycleResponse(404, `{}`), nil
+			}
+			return original(r)
+		}
+	case "changed profile":
+		f.catalog = `[{"id":"machine-1","label":"manual","target":"another.sbx","session":"default"}]`
+	case "pending intent":
+		item.Pending = true
+	case "other scope":
+		f.scope = "another-daemon"
+	}
+	f.save(item)
+	_ = f.service.registrations.Reconcile(io.Discard)
+	require.Len(t, f.removed, 0, "removed protected machine: %v", f.removed)
+	f.assertCount(1)
 }
 
 func TestLifecycleSchedulerIgnoresOtherEventTypes(t *testing.T) {

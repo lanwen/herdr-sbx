@@ -97,7 +97,7 @@ command=["sh","run.sh"]
 	}()
 	require.NoError(t, client.StartProjectServer(ctx, "fixture.sbx", root))
 	for range 2 {
-		require.NoError(t, ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true }))
+		require.NoError(t, ApplySandbox(ctx, client, SandboxTarget{Address: "fixture.sbx", Scope: "fixture-scope", SandboxID: "fixture-sandbox"}, ApplyOptions{Current: func() bool { return true }}))
 	}
 	require.Equal(t, 1, fixture.transfers, "unchanged plugin transferred again: %d transfers", fixture.transfers)
 	installed, err := client.InspectGuestPlugin(ctx, "fixture.sbx", "example.actions")
@@ -126,19 +126,19 @@ command=["sh","run.sh"]
 	require.NoError(t, err)
 	require.EqualValues(t, "", absent.Plugin.ID)
 	require.NoError(t, store.SetGuestPluginDefault("example.secondary", true))
-	require.NoError(t, ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true }))
+	require.NoError(t, ApplySandbox(ctx, client, SandboxTarget{Address: "fixture.sbx", Scope: "fixture-scope", SandboxID: "fixture-sandbox"}, ApplyOptions{Current: func() bool { return true }}))
 	secondary, err := client.InspectGuestPlugin(ctx, "fixture.sbx", "example.secondary")
 	require.NoError(t, err)
 	require.True(t, secondary.Plugin.Enabled)
 	require.NoError(t, store.SetGuestPluginDefault("example.secondary", false))
-	require.NoError(t, ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true }))
+	require.NoError(t, ApplySandbox(ctx, client, SandboxTarget{Address: "fixture.sbx", Scope: "fixture-scope", SandboxID: "fixture-sandbox"}, ApplyOptions{Current: func() bool { return true }}))
 	secondary, err = client.InspectGuestPlugin(ctx, "fixture.sbx", "example.secondary")
 	require.NoError(t, err)
 	require.True(t, secondary.Plugin.Enabled)
 
 	// A portable plugin can use its installed files directly.
 	require.NoError(t, store.SetGuestPluginDefault("example.portable", true))
-	require.NoError(t, ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true }))
+	require.NoError(t, ApplySandbox(ctx, client, SandboxTarget{Address: "fixture.sbx", Scope: "fixture-scope", SandboxID: "fixture-sandbox"}, ApplyOptions{Current: func() bool { return true }}))
 	generic, err := client.InspectGuestPlugin(ctx, "fixture.sbx", "example.portable")
 	require.NoError(t, err)
 	require.True(t, generic.Plugin.Enabled)
@@ -147,7 +147,7 @@ command=["sh","run.sh"]
 	fixture.raceConfig = true
 	require.NoError(t, os.WriteFile(hostConfig, []byte(strings.ReplaceAll(hostKeys, "prefix+ctrl+r", "prefix+ctrl+t")), 0600))
 	{
-		err := ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true })
+		err := ApplySandbox(ctx, client, SandboxTarget{Address: "fixture.sbx", Scope: "fixture-scope", SandboxID: "fixture-sandbox"}, ApplyOptions{Current: func() bool { return true }})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "config changed")
 	}
