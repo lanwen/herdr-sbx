@@ -256,6 +256,12 @@ The internal packages divide the work as follows:
 
 Run `mise run deps` before tests.
 Use `mise run fmt` to format Go files and `mise run build` to rebuild the linked binary.
+Use `mise run lint` for Go and POSIX shell checks, or run `mise run go-lint` and `mise run shellcheck` separately.
+Go linting uses golangci-lint with correctness checks, ineffective assignment detection, and unused code detection in `.golangci.yml`.
+Use `mise run vulncheck` to check reachable Go vulnerabilities against the Go vulnerability database.
+These tasks install their pinned tools on first use and need network access for installation.
+The vulnerability check also needs network access to read the database and fails when it finds reachable vulnerabilities.
+Development tools are scoped to these tasks, so normal plugin installation still installs only Go.
 Follow the [development workflow](development-workflow.md) for assignments, contract tables, review, and artifact acceptance.
 The test tasks use isolated home directories and Herdr state:
 
@@ -270,7 +276,7 @@ Repeatable verification and artifact tasks:
 
 ```sh
 mise run verify-panel  # Isolated panel tests, then build bin/herdr-sbx
-mise run verify-change # Action pins, formatting, isolated race tests, vet, then build
+mise run verify-change # Action pins, formatting, lint, vulnerabilities, isolated race tests, vet, then build
 mise run action-pins-check # Read-only GitHub Action SHA validation
 mise run capture-screenshots # macOS: simulated frames into docs/screenshots
 mise run capture-screenshots -- /tmp/herdr-sbx-contrast --terminal-background '#E8D8C8'

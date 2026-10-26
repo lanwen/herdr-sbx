@@ -25,8 +25,9 @@ esac
 
 command -v python3 >/dev/null
 test -f "$HERDR_SANDBOX_TEST_SSH_CONFIG"
-export HERDR_SANDBOX_TEST_REAL_SSH="$(command -v ssh)"
-export HERDR_SANDBOX_TEST_REAL_SCP="$(command -v scp)"
+HERDR_SANDBOX_TEST_REAL_SSH=$(command -v ssh)
+HERDR_SANDBOX_TEST_REAL_SCP=$(command -v scp)
+export HERDR_SANDBOX_TEST_REAL_SSH HERDR_SANDBOX_TEST_REAL_SCP
 python3 - "$HERDR_SANDBOX_TEST_ROOT" <<'PY'
 import pathlib, sys
 root = pathlib.Path(sys.argv[1])

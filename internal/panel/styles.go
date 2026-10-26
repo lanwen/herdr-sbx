@@ -95,16 +95,6 @@ func badgeStyle(color, text string) string {
 	}
 	return filled(fg, bg, "\x1b[1m"+text+"\x1b[22m")
 }
-func levelStyle(level precheck.Level, text string) string {
-	switch level {
-	case precheck.Ready:
-		return badgeStyle(colorSuccess, text)
-	case precheck.Blocked:
-		return badgeStyle(colorError, text)
-	default:
-		return badgeStyle(colorWarning, text)
-	}
-}
 func runtimeStyle(state, text string) string {
 	switch strings.ToLower(state) {
 	case "running":
