@@ -145,4 +145,3 @@ func diagnosticTime(at time.Time) string {
 func diagnosticIdentity(e uiError) string {
 	return errorScopeKey(e.code, e.scope, e.pluginID) + "\x00" + e.detail + "\x00" + e.output + "\x00" + e.recovery + "\x00" + e.command + "\x00" + e.firstSeen.Format(time.RFC3339Nano)
 }
-func sameDiagnostic(a, b uiError) bool { return diagnosticIdentity(a) == diagnosticIdentity(b) }

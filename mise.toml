@@ -18,6 +18,25 @@ run = "herdr plugin link . --enabled"
 description = "Format Go source"
 run = "gofmt -w cmd internal"
 
+[tasks.go-lint]
+description = "Run pinned Go linters"
+tools.golangci-lint = "2.15.0"
+run = "golangci-lint run ./..."
+
+[tasks.shellcheck]
+description = "Check POSIX shell scripts"
+tools.shellcheck = "0.11.0"
+run = "shellcheck scripts/*.sh"
+
+[tasks.lint]
+description = "Check Go and shell source"
+depends = ["go-lint", "shellcheck"]
+
+[tasks.vulncheck]
+description = "Check reachable Go vulnerabilities (requires network access)"
+tools."go:golang.org/x/vuln/cmd/govulncheck" = "1.1.4"
+run = "govulncheck ./..."
+
 [tasks.test]
 description = "Run tests with isolated HOME and Herdr state"
 run = "python3 scripts/test-go.py test -timeout 60s ./... -count=1"
@@ -61,8 +80,8 @@ description = "Run isolated panel tests, then rebuild the linked executable"
 run = ["python3 scripts/test-go.py test ./internal/panel -count=1", "mise run build"]
 
 [tasks.verify-change]
-description = "Check action pins and formatting, run isolated race tests and vet, then build"
-run = ["mise run action-pins-check", "mise run fmt-check", "mise run check", "mise run build"]
+description = "Check action pins, formatting, lint, vulnerabilities, isolated race tests and vet, then build"
+run = ["mise run action-pins-check", "mise run fmt-check", "mise run lint", "mise run vulncheck", "mise run check", "mise run build"]
 
 [tasks.capture-screenshots]
 description = "Capture simulated terminal frames (macOS; optional output directory/background)"

@@ -50,20 +50,6 @@ func symbol(level precheck.Level) string {
 		return "? Unknown"
 	}
 }
-func workerText(state string) string {
-	switch state {
-	case "running":
-		return "✓ Running"
-	case "starting":
-		return "… Starting"
-	case "reconnecting":
-		return "… Reconnecting"
-	case "stopped":
-		return "— Stopped"
-	default:
-		return "? Unknown"
-	}
-}
 func truncate(s string, w int) string {
 	if w < 1 {
 		return ""

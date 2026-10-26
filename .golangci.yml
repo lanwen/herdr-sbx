@@ -1,0 +1,12 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - ineffassign
+    - staticcheck
+    - unused
+  settings:
+    staticcheck:
+      # Keep correctness checks; style and quick fixes are not verification gates.
+      checks: ["SA*"]

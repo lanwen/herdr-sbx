@@ -426,9 +426,9 @@ func TestOldWorkerPollCannotTurnSavedOffChoiceBackOn(t *testing.T) {
 }
 
 func TestWorkerPollOnlyLoadsChoiceOnce(t *testing.T) {
-	m := modelFixture(t)
+	modelFixture(t)
 	require.NoError(t, store.SetWorkerControl(false))
-	m = newModel(nil)
+	m := newModel(nil)
 	m.Update(workerMsg{status: store.WorkerStatus{State: "running"}, control: &store.WorkerControl{Initialized: true}, initialized: true})
 	require.True(t, m.workerEnabled, "saved ON choice was not loaded when the panel opened")
 	m.Update(workerMsg{status: store.WorkerStatus{State: "running"}, control: &store.WorkerControl{Initialized: true, Stopped: true}, initialized: true})
