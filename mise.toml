@@ -88,7 +88,7 @@ run = "sh scripts/check-format.sh"
 description = "Run isolated panel tests, then rebuild the linked executable"
 run = ["python3 scripts/test-go.py test ./internal/panel -count=1", "mise run build"]
 
-[tasks.verify-change]
+[tasks.verify]
 description = "Check action pins, formatting, lint, vulnerabilities, isolated race tests and vet, then build"
 run = ["mise run action-pins-check", "mise run fmt-check", "mise run lint", "mise run vulncheck", "mise run check", "mise run build"]
 

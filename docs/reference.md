@@ -311,14 +311,14 @@ Repeatable verification and artifact tasks:
 
 ```sh
 mise run verify-panel  # Isolated panel tests, then build bin/herdr-sbx
-mise run verify-change # Action pins, formatting, lint, vulnerabilities, isolated race tests, vet, then build
+mise run verify # Action pins, formatting, lint, vulnerabilities, isolated race tests, vet, then build
 mise run action-pins-check # Read-only GitHub Action SHA validation
 mise run capture-screenshots # macOS: simulated frames into docs/screenshots
 mise run capture-screenshots -- /tmp/herdr-sbx-contrast --terminal-background '#E8D8C8'
 python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
 
-GitHub CI runs `verify-change` and the workflow helpers' network-free tests.
+GitHub CI runs `verify` and the workflow helpers' network-free tests.
 The action-pin check uses Ruby's standard YAML parser (Psych); Ruby must be available locally and on CI.
 It checks workflow and tracked action metadata, rejects mutable remote references, and permits local `./` actions.
 Use literal YAML mappings and sequences for this check; aliases, anchors, explicit tags, and duplicate keys are rejected.

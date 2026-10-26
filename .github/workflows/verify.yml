@@ -15,6 +15,6 @@ jobs:
       - name: Download pinned dependencies
         run: mise run deps
       - name: Verify action pins, formatting, isolated race tests, vet, and build
-        run: mise run verify-change
+        run: mise run verify
       - name: Test workflow helpers without network access
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
