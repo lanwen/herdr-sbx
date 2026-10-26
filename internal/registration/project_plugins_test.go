@@ -34,42 +34,15 @@ func TestProjectReadinessRetainsSeparatePluginAttempts(t *testing.T) {
 		require.NoError(t, store.SetGuestPluginDefault(id, true))
 	}
 	catalog, _ := json.Marshal(map[string]any{"result": map[string]any{"plugins": plugins}})
-	transfers := 0
-	fixture.runner.Execute = func(_ context.Context, cmd process.Command) (string, error) {
-		if cmd.Name == "herdr" {
-			if strings.Contains(strings.Join(cmd.Args, " "), "status server") {
-				return "running", nil
-			}
-			return string(catalog), nil
-		}
-		if cmd.Name == "ssh" {
-			if cmd.Stdin != nil {
-				transfers++
-				output := fmt.Sprintf("build log for attempt %d", transfers)
-				if transfers == 1 {
-					output += ": artifacts.example"
-				}
-				return output, errors.New("build failed")
-			}
-			return "HERDR_SBX_PLUGIN_V1_BEGIN\nLinux aarch64\n" + base64.StdEncoding.EncodeToString([]byte("/home/guest/config.toml")) + "\nabsent\n\n" + base64.StdEncoding.EncodeToString([]byte(`{"result":{"plugins":[]}}`)) + "\nexternal\n\nHERDR_SBX_PLUGIN_V1_END\n", nil
-		}
-		if cmd.Name == "sbx" {
-			blocked := []sbx.NetworkPolicyLog{}
-			if transfers > 0 {
-				blocked = append(blocked, sbx.NetworkPolicyLog{SandboxID: "id", Host: "artifacts.example", Reason: "default-deny", Count: 1, LastSeen: time.Now()})
-			}
-			data, _ := json.Marshal(map[string]any{"blocked": blocked})
-			return string(data), nil
-		}
-		return "", errors.New("unexpected command")
-	}
+	commands := &pluginAttemptCommands{catalog: catalog}
+	fixture.runner.Execute = commands.execute
 	fixture.rebuildClients()
 	item := store.Tracked{SandboxID: "id", ProfileID: "machine-1", Target: "demo.sbx"}
 	state := store.State{Scopes: map[string][]store.Tracked{"scope": {item}}}
 	sandbox := sbx.Sandbox{ID: "id", Name: "demo", Status: "running"}
 	var previous []store.PluginFailure
 	for pass := range 2 {
-		outcome := fixture.service.projectReadiness(context.Background(), "scope", &state, sandbox, &item, true, func() bool { return true })
+		outcome := fixture.service.projectReadiness(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sandbox, Current: func() bool { return true }}, &item, true)
 		require.EqualValues(t, "manual intervention required", outcome.Status)
 		require.Len(t, outcome.PluginFailures, 2)
 		require.EqualValues(t, "2 herdr plugins need manual intervention", outcome.Detail)
@@ -95,5 +68,43 @@ func TestProjectReadinessRetainsSeparatePluginAttempts(t *testing.T) {
 		require.EqualValues(t, "example.second", entry.PluginID)
 		require.EqualValues(t, 1, entry.Count)
 	}
-	require.Equal(t, 2, transfers, "blocked attempt rebuilt: transfers=%d", transfers)
+	require.Equal(t, 2, commands.transfers, "blocked attempt rebuilt: transfers=%d", commands.transfers)
+}
+
+type pluginAttemptCommands struct {
+	catalog   []byte
+	transfers int
+}
+
+func (f *pluginAttemptCommands) execute(_ context.Context, cmd process.Command) (string, error) {
+
+	if cmd.Name == "herdr" {
+		if strings.Contains(strings.Join(cmd.Args, " "), "status server") {
+			return "running", nil
+		}
+		return string(f.catalog), nil
+	}
+	if cmd.Name == "ssh" {
+		return f.ssh(cmd)
+	}
+	if cmd.Name == "sbx" {
+		blocked := []sbx.NetworkPolicyLog{}
+		if f.transfers > 0 {
+			blocked = append(blocked, sbx.NetworkPolicyLog{SandboxID: "id", Host: "artifacts.example", Reason: "default-deny", Count: 1, LastSeen: time.Now()})
+		}
+		data, _ := json.Marshal(map[string]any{"blocked": blocked})
+		return string(data), nil
+	}
+	return "", errors.New("unexpected command")
+}
+func (f *pluginAttemptCommands) ssh(cmd process.Command) (string, error) {
+	if cmd.Stdin != nil {
+		f.transfers++
+		output := fmt.Sprintf("build log for attempt %d", f.transfers)
+		if f.transfers == 1 {
+			output += ": artifacts.example"
+		}
+		return output, errors.New("build failed")
+	}
+	return "HERDR_SBX_PLUGIN_V1_BEGIN\nLinux aarch64\n" + base64.StdEncoding.EncodeToString([]byte("/home/guest/config.toml")) + "\nabsent\n\n" + base64.StdEncoding.EncodeToString([]byte(`{"result":{"plugins":[]}}`)) + "\nexternal\n\nHERDR_SBX_PLUGIN_V1_END\n", nil
 }

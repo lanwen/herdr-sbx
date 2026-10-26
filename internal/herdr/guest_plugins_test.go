@@ -19,13 +19,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type guestPluginOwnershipCase struct {
+	name, root, marker string
+	modified, managed  bool
+	verified           bool
+	symlink            bool
+}
+
 func TestInspectGuestPluginOwnership(t *testing.T) {
-	for _, tc := range []struct {
-		name, root, marker string
-		modified, managed  bool
-		verified           bool
-		symlink            bool
-	}{
+	for _, tc := range []guestPluginOwnershipCase{
 		{name: "canonical", root: ".local/share/herdr-sbx/plugins/example.plugin-revision", managed: true},
 		{name: "verified canonical", root: ".local/share/herdr-sbx/plugins/example.plugin-revision", marker: strings.Repeat("a", 64), managed: true, verified: true},
 		{name: "canonical invalid marker", root: ".local/share/herdr-sbx/plugins/example.plugin-revision", marker: "not-a-checksum", managed: true},
@@ -39,43 +41,7 @@ func TestInspectGuestPluginOwnership(t *testing.T) {
 		{name: "missing revision", root: ".local/share/herdr-sbx/plugins/example.plugin-"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			home := t.TempDir()
-			// Preserve traversal components in the catalog path seen by inspection.
-			root := home + "/" + tc.root
-			require.NoError(t, os.MkdirAll(filepath.Join(home, ".local/share/herdr-sbx/plugins/example.plugin-revision"), 0700))
-			files := root
-			if tc.symlink {
-				files = filepath.Join(home, "external")
-				require.NoError(t, os.RemoveAll(root))
-				require.NoError(t, os.Symlink(files, root))
-			}
-			require.NoError(t, os.MkdirAll(files, 0700))
-			payload := []byte("plugin payload")
-			for name, content := range map[string]string{
-				"payload":           string(payload),
-				".herdr-sbx-config": tc.marker,
-				".herdr-sbx-files":  fmt.Sprintf("%x  payload\n", sha256.Sum256(payload)),
-			} {
-				if name != "payload" && tc.marker == "" {
-					continue
-				}
-				require.NoError(t, os.WriteFile(filepath.Join(files, name), []byte(content), 0600))
-			}
-			if tc.modified {
-				require.NoError(t, os.WriteFile(filepath.Join(root, "payload"), []byte("changed"), 0600))
-			}
-			client := guestInspectionShell(t, home, root, "")
-			state, err := client.InspectGuestPlugin(context.Background(), "test.sbx", "example.plugin")
-			require.NoError(t, err)
-			wantSHA := ""
-			if tc.verified {
-				wantSHA = tc.marker
-			}
-			require.False(t, state.Managed != tc.managed)
-			require.False(t, state.AppliedConfigSHA != wantSHA)
-			actual, err := os.ReadFile(filepath.Join(root, "payload"))
-			require.NoError(t, err)
-			require.False(t, string(actual) != map[bool]string{false: "plugin payload", true: "changed"}[tc.modified])
+			testGuestPluginOwnership(t, tc)
 		})
 	}
 }
@@ -269,63 +235,7 @@ func TestInspectGuestPluginClassifiesMalformedFields(t *testing.T) {
 func TestInstallGuestPluginRequiresCanonicalDirectory(t *testing.T) {
 	for _, kind := range []string{"directory", "external symlink", "internal symlink", "dangling symlink"} {
 		t.Run(kind, func(t *testing.T) {
-			home := t.TempDir()
-			base := filepath.Join(home, ".local/share/herdr-sbx/plugins")
-			root := filepath.Join(base, "example.plugin-revision")
-			actual := root
-			if kind == "external symlink" || kind == "dangling symlink" {
-				actual = filepath.Join(home, "outside")
-			} else if kind == "internal symlink" {
-				actual = filepath.Join(base, "other")
-			}
-			require.NoError(t, os.MkdirAll(base, 0700))
-			if kind != "dangling symlink" {
-				require.NoError(t, os.MkdirAll(actual, 0700))
-				require.NoError(t, os.WriteFile(filepath.Join(actual, "payload"), []byte("payload"), 0600))
-			}
-			if actual != root {
-				require.NoError(t, os.Symlink(actual, root))
-			}
-			bin := filepath.Join(home, "bin")
-			require.NoError(t, os.Mkdir(bin, 0700))
-			require.NoError(t, os.WriteFile(filepath.Join(bin, "herdr"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/herdr-calls\"\n"), 0700))
-			var bundle bytes.Buffer
-			writer := tar.NewWriter(&bundle)
-			for name, data := range map[string]string{"plugin/payload": "payload", "files.sha256": fmt.Sprintf("%x  payload\n", sha256.Sum256([]byte("payload"))), "config.toml": ""} {
-				require.NoError(t, writer.WriteHeader(&tar.Header{Name: name, Mode: 0600, Size: int64(len(data))}))
-				{
-					_, err := writer.Write([]byte(data))
-					require.NoError(t, err)
-				}
-			}
-			require.NoError(t, writer.Close())
-			client := New(process.Runner{Execute: func(ctx context.Context, command process.Command) (string, error) {
-				cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command.Args[len(command.Args)-1])
-				cmd.Env = []string{"HOME=" + home, "PATH=" + bin + ":" + os.Getenv("PATH"), "HERDR_CONFIG_PATH=" + filepath.Join(home, "config.toml")}
-				cmd.Stdin = command.Stdin
-				output, err := cmd.CombinedOutput()
-				return string(output), err
-			}})
-			digest := fmt.Sprintf("%x", sha256.Sum256(bundle.Bytes()))
-			err := client.InstallGuestPlugin(context.Background(), "test.sbx", "example.plugin", &bundle, digest, "", "revision", false)
-			if kind == "directory" {
-				require.NoError(t, err)
-				{
-					_, err := os.Stat(filepath.Join(root, ".herdr-sbx-config"))
-					require.NoError(t, err)
-				}
-				return
-			}
-			require.Error(t, err, "accepted a symlink as the managed revision directory")
-			for _, marker := range []string{".herdr-sbx-files", ".herdr-sbx-config"} {
-				{
-					_, err := os.Stat(filepath.Join(actual, marker))
-					require.True(t, os.IsNotExist(err), "wrote marker outside revision directory: %s, %v", marker, err)
-				}
-			}
-			calls, _ := os.ReadFile(filepath.Join(home, "herdr-calls"))
-			require.NotContains(t, string(calls), "plugin link")
-			require.NotContains(t, string(calls), "plugin enable")
+			testCanonicalPluginDirectory(t, kind)
 		})
 	}
 }
@@ -333,57 +243,7 @@ func TestInstallGuestPluginRequiresCanonicalDirectory(t *testing.T) {
 func TestGuestBuildRunsOnceAndKeepsFailedSource(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		t.Run(fmt.Sprint(fail), func(t *testing.T) {
-			home := t.TempDir()
-			bin := filepath.Join(home, "bin")
-			os.Mkdir(bin, 0700)
-			os.WriteFile(filepath.Join(bin, "herdr"), []byte("#!/bin/sh\nexit 0\n"), 0700)
-			var archive bytes.Buffer
-			tw := tar.NewWriter(&archive)
-			for name, data := range map[string]string{"plugin/source": "source", "files.sha256": fmt.Sprintf("%x  source\n", sha256.Sum256([]byte("source"))), "config.toml": ""} {
-				tw.WriteHeader(&tar.Header{Name: name, Mode: 0600, Size: int64(len(data))})
-				tw.Write([]byte(data))
-			}
-			tw.Close()
-			payload := append([]byte(nil), archive.Bytes()...)
-			client := New(process.Runner{Execute: func(ctx context.Context, command process.Command) (string, error) {
-				cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command.Args[len(command.Args)-1])
-				cmd.Stdin = command.Stdin
-				cmd.Env = append(os.Environ(), "HOME="+home, "PATH="+bin+":"+os.Getenv("PATH"), "HERDR_CONFIG_PATH="+filepath.Join(home, "config.toml"))
-				out, err := cmd.CombinedOutput()
-				return string(out), err
-			}})
-			build := []string{"sh", "-c", "printf x >> count; cp source artifact"}
-			if fail {
-				build = []string{"sh", "-c", "printf 'TOKEN=secret-value\\nnetwork denied\\n'; exit 1"}
-			}
-			invoke := func(exists bool) error {
-				configSHA := ""
-				if exists {
-					configSHA = fmt.Sprintf("%x", sha256.Sum256(nil))
-				}
-				return client.InstallGuestPlugin(context.Background(), "fixture.sbx", "example.plugin", bytes.NewReader(payload), fmt.Sprintf("%x", sha256.Sum256(payload)), configSHA, "revision", exists, build)
-			}
-			err := invoke(false)
-			root := filepath.Join(home, ".local/share/herdr-sbx/plugins/example.plugin-revision")
-			if fail {
-				require.Error(t, err)
-				require.Contains(t, err.Error(), "build step 1 failed")
-				require.Contains(t, err.Error(), "network denied")
-				require.NotContains(t, err.Error(), "secret-value")
-				{
-					data, err := os.ReadFile(filepath.Join(root, "source"))
-					require.NoError(t, err)
-					require.EqualValues(t, "source", string(data))
-				}
-				return
-			}
-			require.NoError(t, err)
-			require.NoError(t, invoke(true))
-			{
-				data, err := os.ReadFile(filepath.Join(root, "count"))
-				require.NoError(t, err)
-				require.EqualValues(t, "x", string(data))
-			}
+			testGuestBuildAttempt(t, fail)
 		})
 	}
 }
@@ -404,4 +264,164 @@ func TestGuestPluginAvailabilityChecksRetainedRegistryPaths(t *testing.T) {
 	state, err = client.InspectGuestPlugin(context.Background(), "fixture.sbx", "example.plugin")
 	require.NoError(t, err)
 	require.False(t, state.Plugin.Available)
+}
+
+func testGuestPluginOwnership(t *testing.T, tc guestPluginOwnershipCase) {
+
+	home := t.TempDir()
+	// Preserve traversal components in the catalog path seen by inspection.
+	root := home + "/" + tc.root
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".local/share/herdr-sbx/plugins/example.plugin-revision"), 0700))
+	files := root
+	if tc.symlink {
+		files = filepath.Join(home, "external")
+		require.NoError(t, os.RemoveAll(root))
+		require.NoError(t, os.Symlink(files, root))
+	}
+	require.NoError(t, os.MkdirAll(files, 0700))
+	payload := []byte("plugin payload")
+	for name, content := range map[string]string{
+		"payload":           string(payload),
+		".herdr-sbx-config": tc.marker,
+		".herdr-sbx-files":  fmt.Sprintf("%x  payload\n", sha256.Sum256(payload)),
+	} {
+		if name != "payload" && tc.marker == "" {
+			continue
+		}
+		require.NoError(t, os.WriteFile(filepath.Join(files, name), []byte(content), 0600))
+	}
+	if tc.modified {
+		require.NoError(t, os.WriteFile(filepath.Join(root, "payload"), []byte("changed"), 0600))
+	}
+	client := guestInspectionShell(t, home, root, "")
+	state, err := client.InspectGuestPlugin(context.Background(), "test.sbx", "example.plugin")
+	require.NoError(t, err)
+	wantSHA := ""
+	if tc.verified {
+		wantSHA = tc.marker
+	}
+	require.False(t, state.Managed != tc.managed)
+	require.False(t, state.AppliedConfigSHA != wantSHA)
+	actual, err := os.ReadFile(filepath.Join(root, "payload"))
+	require.NoError(t, err)
+	require.False(t, string(actual) != map[bool]string{false: "plugin payload", true: "changed"}[tc.modified])
+
+}
+
+func testCanonicalPluginDirectory(t *testing.T, kind string) {
+
+	home := t.TempDir()
+	base := filepath.Join(home, ".local/share/herdr-sbx/plugins")
+	root := filepath.Join(base, "example.plugin-revision")
+	actual := root
+	if kind == "external symlink" || kind == "dangling symlink" {
+		actual = filepath.Join(home, "outside")
+	} else if kind == "internal symlink" {
+		actual = filepath.Join(base, "other")
+	}
+	require.NoError(t, os.MkdirAll(base, 0700))
+	if kind != "dangling symlink" {
+		require.NoError(t, os.MkdirAll(actual, 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(actual, "payload"), []byte("payload"), 0600))
+	}
+	if actual != root {
+		require.NoError(t, os.Symlink(actual, root))
+	}
+	bin := filepath.Join(home, "bin")
+	require.NoError(t, os.Mkdir(bin, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "herdr"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/herdr-calls\"\n"), 0700))
+	var bundle bytes.Buffer
+	writer := tar.NewWriter(&bundle)
+	for name, data := range map[string]string{"plugin/payload": "payload", "files.sha256": fmt.Sprintf("%x  payload\n", sha256.Sum256([]byte("payload"))), "config.toml": ""} {
+		require.NoError(t, writer.WriteHeader(&tar.Header{Name: name, Mode: 0600, Size: int64(len(data))}))
+		{
+			_, err := writer.Write([]byte(data))
+			require.NoError(t, err)
+		}
+	}
+	require.NoError(t, writer.Close())
+	client := New(process.Runner{Execute: func(ctx context.Context, command process.Command) (string, error) {
+		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command.Args[len(command.Args)-1])
+		cmd.Env = []string{"HOME=" + home, "PATH=" + bin + ":" + os.Getenv("PATH"), "HERDR_CONFIG_PATH=" + filepath.Join(home, "config.toml")}
+		cmd.Stdin = command.Stdin
+		output, err := cmd.CombinedOutput()
+		return string(output), err
+	}})
+	digest := fmt.Sprintf("%x", sha256.Sum256(bundle.Bytes()))
+	err := client.InstallGuestPlugin(context.Background(), "test.sbx", GuestPluginInstall{PluginID: "example.plugin", Bundle: &bundle, BundleSHA: digest, ConfigSHA: "", Revision: "revision", ConfigExists: false, BuildCommands: [][]string{}})
+	if kind == "directory" {
+		require.NoError(t, err)
+		{
+			_, err := os.Stat(filepath.Join(root, ".herdr-sbx-config"))
+			require.NoError(t, err)
+		}
+		return
+	}
+	require.Error(t, err, "accepted a symlink as the managed revision directory")
+	for _, marker := range []string{".herdr-sbx-files", ".herdr-sbx-config"} {
+		{
+			_, err := os.Stat(filepath.Join(actual, marker))
+			require.True(t, os.IsNotExist(err), "wrote marker outside revision directory: %s, %v", marker, err)
+		}
+	}
+	calls, _ := os.ReadFile(filepath.Join(home, "herdr-calls"))
+	require.NotContains(t, string(calls), "plugin link")
+	require.NotContains(t, string(calls), "plugin enable")
+
+}
+
+func testGuestBuildAttempt(t *testing.T, fail bool) {
+
+	home := t.TempDir()
+	bin := filepath.Join(home, "bin")
+	os.Mkdir(bin, 0700)
+	os.WriteFile(filepath.Join(bin, "herdr"), []byte("#!/bin/sh\nexit 0\n"), 0700)
+	var archive bytes.Buffer
+	tw := tar.NewWriter(&archive)
+	for name, data := range map[string]string{"plugin/source": "source", "files.sha256": fmt.Sprintf("%x  source\n", sha256.Sum256([]byte("source"))), "config.toml": ""} {
+		tw.WriteHeader(&tar.Header{Name: name, Mode: 0600, Size: int64(len(data))})
+		tw.Write([]byte(data))
+	}
+	tw.Close()
+	payload := append([]byte(nil), archive.Bytes()...)
+	client := New(process.Runner{Execute: func(ctx context.Context, command process.Command) (string, error) {
+		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command.Args[len(command.Args)-1])
+		cmd.Stdin = command.Stdin
+		cmd.Env = append(os.Environ(), "HOME="+home, "PATH="+bin+":"+os.Getenv("PATH"), "HERDR_CONFIG_PATH="+filepath.Join(home, "config.toml"))
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}})
+	build := []string{"sh", "-c", "printf x >> count; cp source artifact"}
+	if fail {
+		build = []string{"sh", "-c", "printf 'TOKEN=secret-value\\nnetwork denied\\n'; exit 1"}
+	}
+	invoke := func(exists bool) error {
+		configSHA := ""
+		if exists {
+			configSHA = fmt.Sprintf("%x", sha256.Sum256(nil))
+		}
+		return client.InstallGuestPlugin(context.Background(), "fixture.sbx", GuestPluginInstall{PluginID: "example.plugin", Bundle: bytes.NewReader(payload), BundleSHA: fmt.Sprintf("%x", sha256.Sum256(payload)), ConfigSHA: configSHA, Revision: "revision", ConfigExists: exists, BuildCommands: [][]string{build}})
+	}
+	err := invoke(false)
+	root := filepath.Join(home, ".local/share/herdr-sbx/plugins/example.plugin-revision")
+	if fail {
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "build step 1 failed")
+		require.Contains(t, err.Error(), "network denied")
+		require.NotContains(t, err.Error(), "secret-value")
+		{
+			data, err := os.ReadFile(filepath.Join(root, "source"))
+			require.NoError(t, err)
+			require.EqualValues(t, "source", string(data))
+		}
+		return
+	}
+	require.NoError(t, err)
+	require.NoError(t, invoke(true))
+	{
+		data, err := os.ReadFile(filepath.Join(root, "count"))
+		require.NoError(t, err)
+		require.EqualValues(t, "x", string(data))
+	}
+
 }

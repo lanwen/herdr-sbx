@@ -191,8 +191,9 @@ func TestPluginDiagnosticsKeepRepairsSeparateAtNarrowWidth(t *testing.T) {
 	require.EqualValues(t, 1, strings.Count(text, "Run inside"))
 	require.EqualValues(t, 1, strings.Count(text, "herdr plugin install"))
 	for _, plugin := range []string{"first.plugin", "second.plugin"} {
-		index := strings.Index(text, plugin)
-		rest := text[index:]
+		_, after, found := strings.Cut(text, plugin)
+		require.True(t, found)
+		rest := plugin + after
 		require.False(t, strings.Index(rest, "│") > strings.Index(rest, "Build output:"), "repair advice follows build output: %s", rest)
 	}
 	require.Contains(t, rendered.String(), ink(colorAccent, "│"))

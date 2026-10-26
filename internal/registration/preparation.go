@@ -20,16 +20,11 @@ func (s *Service) observeGuestServer(ctx context.Context, scope string, sb sbx.S
 	}
 	status, err := store.ReadStatusStore()
 	if err != nil {
-		slog.WarnContext(ctx, "Read guest server observation", slog.Any("error", err))
+		s.logger.WarnContext(ctx, "Read guest server observation", slog.Any(logKeyError, err))
 		return
 	}
-	explicit, _ := ctx.Value(guestPluginRetryKey{}).(bool)
-	fresh, _ := ctx.Value(freshGuestObservationKey{}).(bool)
-	if observed := status.Sandboxes[store.StatusKey(scope, sb.ID)].GuestServer; !explicit && !fresh && observed != nil {
-		age := time.Since(observed.CheckedAt)
-		if age >= 0 && age < guestObservationAuditInterval {
-			return
-		}
+	if guestObservationFresh(ctx, status.Sandboxes[store.StatusKey(scope, sb.ID)].GuestServer) {
+		return
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -46,11 +41,25 @@ func (s *Service) observeGuestServer(ctx context.Context, scope string, sb sbx.S
 	s.recordGuestServerObservation(ctx, scope, sb, running, actual)
 }
 
+func guestObservationFresh(ctx context.Context, observed *store.GuestServerObservation) bool {
+	explicit, _ := ctx.Value(guestPluginRetryKey{}).(bool)
+	fresh, _ := ctx.Value(freshGuestObservationKey{}).(bool)
+	if !explicit && !fresh && observed != nil {
+		age := time.Since(observed.CheckedAt)
+		if age >= 0 && age < guestObservationAuditInterval {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) recordGuestServerObservation(ctx context.Context, scope string, sb sbx.Sandbox, running bool, actual string) {
 	if err := store.RecordGuestServerObservation(scope, sb, running, actual); err != nil {
-		slog.WarnContext(ctx, "Save guest server observation", slog.Any("error", err))
+		s.logger.WarnContext(ctx, "Save guest server observation", slog.Any(logKeyError, err))
 	}
 }
+
+const logKeyError = "error"
 
 const missingRemoteHerdr = "__herdr_missing__"
 const remoteHerdrOnPath = "__herdr_on_path__"

@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"github.com/lanwen/herdr-sbx/internal/registration"
 	"strings"
 	"testing"
 
@@ -126,7 +127,7 @@ func TestDragFreezesDisplayedFrameWhileObservationsContinue(t *testing.T) {
 	m.Update(tea.MouseClickMsg{X: h.x, Y: h.y, Button: tea.MouseLeft})
 	m.Update(tea.MouseMotionMsg{X: h.x + 3, Y: h.y, Button: tea.MouseLeft})
 	m.Update(workerMsg{status: store.WorkerStatus{State: "running"}})
-	rows := append(m.rows[:0:0], m.rows...)
+	rows := append([]registration.SandboxRow(nil), m.rows...)
 	rows[0].Sandbox.Name = "updated alpha"
 	m.Update(observationMsg{generation: m.generation, rows: rows})
 	require.EqualValues(t, "running", m.worker.State)

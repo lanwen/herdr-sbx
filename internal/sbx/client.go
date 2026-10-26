@@ -20,7 +20,7 @@ type Sandbox struct {
 	Name      string
 	Status    string
 	Workspace string
-	// WorkspaceNeedsProbe marks legacy or contradictory workspace metadata.
+	// WorkspaceNeedsProbe marks older or contradictory workspace metadata.
 	// Keep internal inventory metadata out of status JSON.
 	WorkspaceNeedsProbe bool `json:"-"`
 }

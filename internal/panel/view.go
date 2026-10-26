@@ -10,7 +10,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/lanwen/herdr-sbx/internal/guestplugins"
 	"github.com/lanwen/herdr-sbx/internal/precheck"
+	"github.com/lanwen/herdr-sbx/internal/registration"
 	"github.com/lanwen/herdr-sbx/internal/store"
 )
 
@@ -90,38 +92,8 @@ func (m *model) View() tea.View {
 	}
 	m.hits = nil
 	m.hintInBody = false
-	pageTitle := m.page
-	if pageTitle == "Plugins" {
-		pageTitle = "Plugin defaults"
-	}
+	header, body := m.pageBody()
 	inlineConfirmation := m.dialog == "fix-herdr"
-	var body []line
-	if m.dialog != "" && !inlineConfirmation {
-		body = m.dialogLines()
-	} else if m.width < 30 || m.height < 10 {
-		body = []line{textLine("Resize to at least 30 columns × 10 rows."), textLine("b Management · e diagnostics · q close")}
-	} else {
-		switch m.page {
-		case "Sandboxes":
-			body = m.sandboxLines()
-		case "Plugins":
-			body = m.pluginLines()
-		case "Status":
-			body = m.statusLines()
-		case "Help":
-			body = m.helpLines()
-		}
-	}
-	body = outline(body, func() string {
-		if m.dialog != "" && !inlineConfirmation {
-			return "Action"
-		}
-		return pageTitle
-	}(), m.width, 0)
-	header := body[0]
-	if (m.dialog == "" || inlineConfirmation) && (m.page == "Sandboxes" || m.page == "Status" || m.page == "Plugins") {
-		header = m.tabStrip()
-	}
 	lines := []line{header}
 	for _, h := range header.hits {
 		h.y = 0
@@ -129,72 +101,8 @@ func (m *model) View() tea.View {
 	}
 	body = body[1:]
 
-	var notices []line
-	hint, hintColor := m.notice, colorInfo
-	if m.noticeTarget == "worker" && m.managementCancelling() {
-		hintColor = colorMuted
-	}
-	if hint != "" && m.width < 60 {
-		if identity, _ := m.contextHint(); strings.HasPrefix(identity, "herdr plugin: ") {
-			hint = identity + ". " + hint
-		}
-	}
-	if hint == "" {
-		hint, hintColor = m.contextHint()
-	}
-	var hintLines []line
-	if !m.quitUntil.IsZero() {
-		hintLines = m.quitHintLines(time.Now())
-	} else if inlineConfirmation {
-		hintLines = m.dialogLines()
-	} else {
-		if hint != "" {
-			hint = strings.ReplaceAll(productText(hint), "herdr-sbx", "the plugin")
-			if m.noticeTarget != "" && m.pending[m.noticeTarget] && !(m.noticeTarget == "worker" && m.managementCancelling()) {
-				hint = m.actionSpinner() + " " + hint
-			}
-			for _, part := range wrapHint(safeText(hint), max(1, m.width-4)) {
-				hintLines = append(hintLines, textLine(ink(hintColor, part)))
-			}
-		}
-	}
-	if len(hintLines) > 0 {
-
-		notices = append(notices, outline(hintLines, "Hint", m.width, 0)...)
-	}
-	if m.dialog == "" {
-		if len(m.events) > 0 {
-			var events []line
-			if m.eventsExpanded {
-				events = m.eventLines()
-			}
-			titleColor := colorSeparator
-			if m.focus == "events" && m.eventIndex < 0 {
-				titleColor = colorText
-			}
-			section := outline(events, ink(titleColor, m.eventTitle()), m.width, 0)
-			section[0].hits = []hit{{x: 0, w: m.width, action: "event-section"}}
-			body = append(body, section...)
-		}
-		if len(m.errors) > 0 {
-			title := m.diagnosticTitle()
-			details := m.errorLines()
-			if ansi.StringWidth(title) > m.width-6 {
-				// Keep the New/All switch visible when the title cannot hold it.
-				heading, selector, _ := strings.Cut(title, " · ")
-				title = heading
-				selector, hidden, _ := strings.Cut(selector, " · ")
-				controls := []line{{text: selector, hits: []hit{{x: 0, w: ansi.StringWidth(selector), action: "diagnostic-toggle"}}}}
-				if hidden != "" {
-					controls = append(controls, textLine(ink(colorMuted, hidden)))
-				}
-				details = append(controls, details...)
-			}
-			section := outline(details, title, m.width, 0)
-			section[0].hits = []hit{{x: 0, w: m.width, action: "diagnostic-toggle"}}
-			body = append(body, section...)
-		}
-	}
+	notices := m.hintSection(inlineConfirmation)
+	body = m.observationSections(body)
 	// Long hints and confirmations scroll with the body instead of consuming
 	// the selected control viewport. The quit prompt stays visible until disarmed.
 	if m.quitUntil.IsZero() && len(notices) > m.height-7 {
@@ -210,84 +118,11 @@ func (m *model) View() tea.View {
 	footerLines = append(footerLines, footer)
 	fixed := len(notices) + len(footerLines)
 	capacity := max(1, m.height-fixed-1)
-	if m.reveal || m.focus == "errors" || m.focus == "diagnostics" || m.focus == "events" {
-		target := -1
-		for i, l := range body {
-			for _, h := range l.hits {
-				match := m.dialog != "" && h.action == "dialog" && h.id == fmt.Sprint(m.button%m.dialogButtonCount())
-				if m.dialog == "" {
-					switch m.focus {
-					case "errors":
-						match = h.action == "error" && h.id == fmt.Sprint(m.errorIndex)
-					case "diagnostics":
-						match = h.action == "diagnostic-toggle"
-					case "events":
-						match = m.eventIndex < 0 && h.action == "event-section" || m.eventIndex >= 0 && h.action == "event" && h.id == fmt.Sprint(m.eventIndex)
-					case "table":
-						match = (m.page == "Sandboxes" && h.action == "select" && h.id == m.selected) || (m.page == "Plugins" && h.action == "plugin" && h.id == m.pluginSelected) || (m.page == "Status" && ((m.button == 0 && h.action == "status-choice" && h.id == "on") || (h.action == "status-action" && h.id == fmt.Sprint(m.button))))
-					case "plugins":
-						match = h.action == "override" && len(m.plugins) > 0 && h.id == m.plugins[min(m.detailIndex, len(m.plugins)-1)].ID
-					case "actions":
-						if m.page == "Sandboxes" {
-							for _, row := range m.rows {
-								if row.Sandbox.ID == m.expanded {
-									actions := m.sandboxActions(row)
-									match = h.action == "action" && m.button >= 0 && m.button < len(actions) && h.id == actions[m.button].id
-									break
-								}
-							}
-						}
-					}
-				}
-				// A diagnostic group has several clickable lines. Reveal its
-				// beginning so long details do not scroll its reference away.
-				if match && (m.focus != "errors" || target < 0) {
-					target = i
-				}
-			}
-		}
-		if target >= 0 {
-			if target < m.scroll && m.reveal {
-				m.scroll = target
-			}
-			if (m.focus == "errors" || m.focus == "events" && m.eventIndex >= 0) && target+2 >= m.scroll+capacity {
-				// Keep the selected cause and reference below its metadata,
-				// rather than revealing only its first line at the viewport edge.
-				m.scroll = max(0, target-min(2, max(0, capacity-3)))
-			} else if target >= m.scroll+capacity {
-				m.scroll = target - capacity + 1
-			}
-		}
-		m.reveal = false
-	}
+	m.revealSelection(body, capacity)
 
 	m.scroll = min(max(0, len(body)-capacity), m.scroll)
-	for _, l := range body[m.scroll:min(len(body), m.scroll+capacity)] {
-		y := len(lines)
-		for _, h := range l.hits {
-			h.y = y
-			m.hits = append(m.hits, h)
-		}
-		lines = append(lines, l)
-	}
-	for len(lines) < m.height-fixed {
-		lines = append(lines, textLine(""))
-	}
-	for _, l := range notices {
-		y := len(lines)
-		for _, h := range l.hits {
-			h.y = y
-			m.hits = append(m.hits, h)
-		}
-		lines = append(lines, l)
-	}
-	for _, footerLine := range footerLines {
-		for _, h := range footerLine.hits {
-			h.y = len(lines)
-			m.hits = append(m.hits, h)
-		}
-		lines = append(lines, footerLine)
-	}
+	lines = m.frameLines(lines, body, notices, footerLines, capacity)
+
 	var b strings.Builder
 	for i, l := range lines {
 		if i > 0 {
@@ -305,28 +140,10 @@ func (m *model) View() tea.View {
 
 func (m *model) contextHint() (string, string) {
 	if m.page == "Status" && m.dialog == "" {
-		if m.managementCancelling() {
-			return "Cancelling", colorMuted
-		}
-		if m.pending["worker"] {
-			return "Management change in progress.", colorInfo
-		}
-		if m.worker.Detail != "" {
-			return safeText(m.worker.Detail), colorInfo
-		}
-		return "Management: " + ansi.Strip(m.managementStatus()) + ".", colorInfo
+		return m.managementHint()
 	}
-	if m.dialog == "" && m.width < 60 {
-		// Compact rows reserve room for choices; retain the complete focused ID.
-		if m.page == "Plugins" && m.focus == "table" {
-			plugins := m.visiblePlugins()
-			if len(plugins) > 0 {
-				return "herdr plugin: " + safeText(plugins[min(m.pluginIndex, len(plugins)-1)].ID), colorInfo
-			}
-		}
-		if m.page == "Sandboxes" && m.focus == "plugins" && len(m.plugins) > 0 {
-			return "herdr plugin: " + safeText(m.plugins[min(m.detailIndex, len(m.plugins)-1)].ID), colorInfo
-		}
+	if text, color := m.compactPluginHint(); text != "" {
+		return text, color
 	}
 	if m.dialog != "" || m.page != "Sandboxes" || (m.focus == "errors" || m.focus == "diagnostics" || m.focus == "events") {
 		return "", ""
@@ -335,61 +152,10 @@ func (m *model) contextHint() (string, string) {
 	if !ok {
 		return "", ""
 	}
-	if m.focus == "actions" && m.expanded == m.selected {
-		actions := m.sandboxActions(row)
-		if m.button >= 0 && m.button < len(actions) {
-			switch actions[m.button].id {
-			case "enable":
-				if !row.EntryPresent && strings.EqualFold(row.Sandbox.Status, "stopped") {
-					return "Start the sandbox yourself before enabling its herdr connection.", colorMuted
-				}
-				return "Enable this sandbox's herdr connection. Herdr may start it when connecting.", colorAccent
-			case "disable":
-				return "Disable this sandbox's herdr connection and stop its plugin work. Keep its entry, label, and existing files.", colorInfo
-			case "remove":
-				return "Remove this disabled entry from herdr. Keep the sandbox and its files. Enable adds the entry again.", colorInfo
-			case "rename":
-				return "Rename changes this sandbox's label in herdr. Its sandbox name and connection stay the same.", colorInfo
-			case "resync":
-				return "Re-sync checks this sandbox and retries setup or selected herdr plugin sync. It checks for manually repaired plugins before building again.", colorInfo
-			case "fix-herdr":
-				return m.fixHerdrExplanation(row), colorInfo
-			}
-		}
+	if text, color := m.actionHint(row); text != "" {
+		return text, color
 	}
-	if row.Status.Stale {
-		detail := "Current observations are unavailable."
-		if row.Status.Detail != "" {
-			detail += " Last known status: " + safeText(row.Status.Detail)
-		}
-		if !row.Status.ObservedAt.IsZero() {
-			detail += " Last observation " + row.Status.ObservedAt.Local().Format("2006-01-02 15:04:05") + "."
-		}
-		return detail, colorWarning
-	}
-	if row.AssociationIssue != "" {
-		return row.AssociationIssue, colorWarning
-	}
-	if m.rowHasCode(row, store.CodeHerdrCompatibility) || strings.Contains(strings.ToLower(row.Status.Detail), "herdr in this sandbox") {
-		return m.herdrCompatibilityHint(row), colorError
-	}
-	if row.Enabled == store.Enabled && row.EntryPresent && strings.EqualFold(row.Sandbox.Status, "stopped") && strings.EqualFold(row.Status.Connection, "waiting for start") {
-		return "This sandbox is stopped. Its herdr entry is saved. Setup waits until it starts and Management is ON.", colorMuted
-	}
-	switch row.Status.Detail {
-	case "already registered", "registered", "already registered and reachable", "registered and reachable":
-		return "This sandbox is registered in herdr. Setup is complete.", colorSuccess
-	}
-	color := colorMuted
-	switch strings.ToLower(row.Status.Connection) {
-	case "ready", "connected", "registered":
-		color = colorSuccess
-	case "failed", "blocked", "error", "manual intervention required":
-		color = colorError
-	case "preparing", "installing", "pending":
-		color = colorWarning
-	}
-	return strings.ReplaceAll(productText(row.Status.Detail), "herdr-sbx", "the plugin"), color
+	return m.sandboxHint(row)
 }
 
 func wrapHint(s string, width int) []string {
@@ -438,12 +204,7 @@ func (m *model) filterLine(total, visible int, noun string) line {
 	} else {
 		query = truncate(query, queryWidth)
 	}
-	prompt := "/ " + query
-	if focused {
-		prompt = ink(colorAccent, "/ ") + ink(colorBright, query)
-	} else if actualQuery == "" {
-		prompt = ink(colorMuted, prompt)
-	}
+	prompt := filterPrompt(query, actualQuery, focused)
 	text := prompt + suffix
 	l := textLine(text)
 	l.hits = []hit{{x: 0, w: ansi.StringWidth(text), action: "filter"}}
@@ -474,36 +235,7 @@ func (m *model) sandboxLines() []line {
 		return append(lines, textLine(message))
 	}
 	for _, r := range rows {
-		id := r.Sandbox.ID
-		if m.expanded == id {
-			lines = append(lines, m.sandboxDetails(r)...)
-			continue
-		}
-		selected := id == m.selected
-		prefix := "  "
-		if selected {
-			prefix = "> "
-		}
-		label := r.Label
-		if m.input != nil && m.input.kind == "rename" && m.input.target == id {
-			label = m.renderedInput(columns.label)
-		}
-		status := statusStyle(r.Status.Connection, statusDescription(r))
-		if r.AssociationIssue != "" || r.Status.Stale {
-			status = ink(colorWarning, statusDescription(r))
-		}
-		if m.pending[id] {
-			status = m.sandboxProgress(id)
-		}
-		mark := enabledMark(r)
-		if choice, ok := m.pendingEnabled[id]; ok && choice == store.Enabled {
-			mark = ink(colorAccent, "✓")
-		}
-		text := columns.render(prefix+"  ", mark, highlight(m.queries["Sandboxes"], safeText(r.Sandbox.Name)), ink(colorSand, highlight(m.queries["Sandboxes"], safeText(label))), status)
-		l := textLine(text)
-		l.hits = []hit{{x: 4, w: columns.enabled, action: "enabled", id: id}, {x: 5 + columns.enabled, w: max(1, m.width-9-columns.enabled), action: "select", id: id}, {x: 2, w: 2, action: "select", id: id}}
-		lines = append(lines, l)
-
+		lines = append(lines, m.sandboxRowLines(r, columns)...)
 	}
 	return lines
 }
@@ -526,35 +258,7 @@ func (m *model) pluginLines() []line {
 	}
 	lines := []line{m.filterLine(len(m.plugins), len(plugins), "plugins"), textLine(ink(colorMuted, heading))}
 	for i, p := range plugins {
-		prefix := "  "
-		if i == m.pluginIndex {
-			prefix = "> "
-		}
-		available := "✓ Installed locally"
-		availabilityColor := colorSuccess
-		if !p.Installed {
-			available = "! Not installed locally"
-			availabilityColor = colorWarning
-		}
-		if p.UnsupportedReason != "" {
-			available = "✗ Unsupported"
-			availabilityColor = colorError
-		}
-		l := textLine(prefix + padded(highlight(m.queries["Plugins"], p.ID), nameWidth) + " " + padded(enabledStyle(p.Enabled, onOff(p.Enabled)), syncWidth) + " " + ink(availabilityColor, available))
-		choiceX := 2 + nameWidth + 1
-		l.hits = []hit{{x: 0, w: choiceX, action: "plugin", id: p.ID}, {x: choiceX, w: syncWidth, action: "default", id: p.ID}}
-		if m.width < 60 {
-			l.text = prefix + padded(highlight(m.queries["Plugins"], p.ID), nameWidth) + " " + padded(enabledStyle(p.Enabled, onOff(p.Enabled)), syncWidth)
-		}
-		lines = append(lines, l)
-		if m.width < 60 {
-			lines = append(lines, textLine("  "+ink(availabilityColor, available)))
-		}
-		if p.UnsupportedReason != "" {
-			for _, part := range strings.Split(ansi.Hardwrap(safeText(p.UnsupportedReason), max(10, m.width-8), true), "\n") {
-				lines = append(lines, textLine("    "+ink(colorWarning, part)))
-			}
-		}
+		lines = append(lines, m.pluginRowLines(i, p, nameWidth, syncWidth)...)
 	}
 	if len(plugins) == 0 {
 		message := "No herdr plugins match this filter"
@@ -594,32 +298,7 @@ func (m *model) statusActionsAt(now time.Time) []detailAction {
 }
 func (m *model) statusLines() []line {
 	actions := m.statusActions()
-	on, off := enabledStyle(m.workerEnabled, "ON"), enabledStyle(!m.workerEnabled, "OFF")
-	if m.workerControlError {
-		if m.workerEnabled {
-			on = ink(colorError, "ON")
-		} else {
-			off = ink(colorError, "OFF")
-		}
-	}
-	toggle := textLine(on + ink(colorMuted, " | ") + off)
-	toggle.hits = []hit{{x: 0, w: 2, action: "status-choice", id: "on"}, {x: 5, w: 3, action: "status-choice", id: "off"}}
-	border, title := colorSeparator, "Management"
-	if m.focus == "table" && m.button == 0 {
-		border, title = colorText, "Management ›"
-	}
-	lines := outline([]line{toggle}, title, m.width-4, 0, border)
-	state, stateColor := m.managementState()
-	width := m.width - 4
-	badge := badgeStyle(stateColor, truncate(state, max(1, width-11)))
-	if m.focus == "table" && m.button == 0 && width-ansi.StringWidth(badge)-6 < ansi.StringWidth(title) {
-		title = "› Management"
-	}
-	lines[0] = line{text: detailBorder(title, "", badge, width, 0, border), hits: []hit{{x: 1, w: width - 2, action: "status-action", id: "0"}}}
-	if activity := m.managementActivity(); activity != "" {
-		activity = " " + truncate(activity, max(1, width-4)) + " "
-		lines[len(lines)-1].text = ink(border, "╰"+strings.Repeat("─", max(0, width-ansi.StringWidth(activity)-2))) + ink(colorMuted, activity) + ink(border, "╯")
-	}
+	lines := m.managementCard()
 	var refresh line
 	for i, action := range actions[1:] {
 		label := action.label
@@ -635,18 +314,7 @@ func (m *model) statusLines() []line {
 	}
 
 	lines = append(lines, textLine(""), textLine(ink(colorMuted, padded("PREREQUISITE", 26)+padded("RESULT", 14)+"STATUS")))
-	for _, c := range statusPrerequisites(m.checks.Checks) {
-		color := colorWarning
-		if c.Level == precheck.Ready {
-			color = colorSuccess
-		} else if c.Level == precheck.Blocked {
-			color = colorError
-		}
-		lines = append(lines, textLine(padded(productText(c.Name), 26)+padded(ink(color, symbol(c.Level)), 14)+safeText(productText(c.Detail))))
-		if c.Action != "" {
-			lines = append(lines, textLine(ink(colorInfo, "  Next: "+safeText(productText(c.Action)))))
-		}
-	}
+	lines = append(lines, m.prerequisiteLines()...)
 	if refresh.text != "" {
 		lines = append(lines, textLine(""), refresh)
 	}
@@ -669,17 +337,8 @@ func (m *model) hasBlockingErrors() bool {
 }
 
 func (m *model) diagnosticTitle() string {
-	warnings, newCount, allCount := 0, 0, 0
+	warnings, newCount, allCount := m.diagnosticCounts()
 	groups := m.diagnosticGroups()
-	for _, e := range groups {
-		if store.SeverityForCode(e.code) == store.SeverityWarning {
-			warnings++
-		}
-		allCount += e.count
-		if !e.dismissed {
-			newCount += e.count
-		}
-	}
 	title := "Errors"
 	if warnings == len(groups) {
 		title = "Warnings"
@@ -691,13 +350,7 @@ func (m *model) diagnosticTitle() string {
 	if m.showAllErrors {
 		newColor, allColor = colorMuted, colorAccent
 	}
-	if colorsEnabled() {
-		if m.showAllErrors {
-			allLabel = "\x1b[1m" + allLabel + "\x1b[22m"
-		} else {
-			newLabel = "\x1b[1m" + newLabel + "\x1b[22m"
-		}
-	}
+	newLabel, allLabel = m.diagnosticSelectorLabels(newLabel, allLabel)
 	titleColor := colorSeparator
 	if m.focus == "diagnostics" {
 		titleColor = colorText
@@ -723,66 +376,7 @@ func (m *model) errorLines() []line {
 	}
 	var lines []line
 	for i, e := range entries {
-		code := e.code
-		if code == "" {
-			code = "Unknown code"
-		}
-		prefix := "  "
-		if m.focus == "errors" && i == m.errorIndex {
-			prefix = "> "
-		}
-		color := diagnosticColor(e.code)
-		header := ink(color, code) + " · " + m.diagnosticScope(e.scope, "") + diagnosticTime(e.seen)
-		if e.count > 1 {
-			header += " " + ink(colorMuted, fmt.Sprintf("×%d", e.count))
-		}
-		lines = append(lines, textLine(""))
-		for _, part := range strings.Split(ansi.Wrap(header, max(1, m.width-6), ""), "\n") {
-			l := textLine(prefix + part)
-			l.hits = []hit{{x: 0, w: m.width, action: "error", id: fmt.Sprint(i)}}
-			lines = append(lines, l)
-			prefix = "  "
-		}
-		for childIndex, e := range e.entries {
-			if childIndex > 0 {
-				lines = append(lines, textLine(""))
-			}
-			if e.pluginID != "" {
-				name := safeText(e.pluginID)
-				if colorsEnabled() {
-					name = "\x1b[1m" + name + "\x1b[22m"
-				}
-				for _, part := range strings.Split(ansi.Wrap(name, max(1, m.width-6), ""), "\n") {
-					l := textLine("  " + part)
-					l.hits = []hit{{x: 0, w: m.width, action: "error", id: fmt.Sprint(i)}}
-					lines = append(lines, l)
-				}
-			}
-			detail := safeText(productText(e.detail))
-			if e.code == store.CodeHerdrCompatibility {
-				for _, row := range m.rows {
-					if e.scope == row.Sandbox.ID || e.scope == row.Scope || e.scope == store.StatusKey(row.Scope, row.Sandbox.ID) {
-						detail = m.herdrVersionContext(row) + " " + detail
-						break
-					}
-				}
-			}
-			if e.ref != "" {
-				detail = ink(colorMuted, safeText(e.ref)) + " " + detail
-			}
-			for _, part := range strings.Split(ansi.Wrap(detail, max(1, m.width-6), ""), "\n") {
-				l := textLine("  " + part)
-				l.hits = []hit{{x: 0, w: m.width, action: "error", id: fmt.Sprint(i)}}
-				lines = append(lines, l)
-			}
-			lines = append(lines, m.repairCallout(m.diagnosticScope(e.scope, ""), e.recovery, e.command)...)
-			lines = append(lines, m.buildOutput(e.output)...)
-		}
-		if e.dismissed {
-			lines = append(lines, textLine("  "+ink(colorMuted, "Dismissed · still active")))
-		} else if e.firstSeen.IsZero() {
-			lines = append(lines, textLine("  "+ink(colorMuted, "Saving diagnostic…")))
-		}
+		lines = append(lines, m.diagnosticGroupLines(i, e)...)
 	}
 	return lines
 }
@@ -828,37 +422,7 @@ func (m *model) eventLines() []line {
 	var lines []line
 
 	for i := len(m.events) - 1; i >= 0; i-- {
-		e := m.events[i]
-		color := diagnosticColor(e.Code)
-		if store.SeverityForCode(e.Code) == store.SeverityInfo {
-			color = colorInfo
-		}
-		if e.Resolved {
-			color = colorSuccess
-		}
-		lines = append(lines, textLine(""))
-		header := ink(color, safeText(e.Code)) + " · " + m.diagnosticScope(e.Scope, e.Name) + diagnosticTime(e.At)
-		if e.Ref != "" {
-			header = ink(colorMuted, safeText(e.Ref)) + " " + header
-		}
-		if m.focus == "events" && m.eventIndex == len(m.events)-1-i {
-			header = "> " + header
-		}
-		if e.PluginID != "" {
-			header += " · " + safeText(e.PluginID)
-		}
-		for _, part := range strings.Split(ansi.Wrap(header, max(1, m.width-4), ""), "\n") {
-			l := textLine(part)
-			l.hits = []hit{{x: 0, w: m.width, action: "event", id: fmt.Sprint(len(m.events) - 1 - i)}}
-			lines = append(lines, l)
-		}
-		if !e.Resolved {
-			lines = append(lines, m.repairCallout(m.diagnosticScope(e.Scope, e.Name), e.Recovery, e.Command)...)
-		}
-		for _, part := range strings.Split(ansi.Wrap(safeText(productText(e.Detail)), max(10, m.width-6), ""), "\n") {
-			lines = append(lines, textLine("  "+part))
-		}
-		lines = append(lines, m.buildOutput(e.Output)...)
+		lines = append(lines, m.eventRecordLines(m.events[i], len(m.events)-1-i)...)
 	}
 	return lines
 }
@@ -892,27 +456,36 @@ func styledHardwrap(text string, width int) string {
 func fitLines(lines []line, width int) []line {
 	var result []line
 	for _, l := range lines {
-		if len(l.hits) > 0 && ansi.StringWidth(l.text) > width && (l.hits[0].action == "dialog" || l.hits[0].action == "action") {
-			for _, h := range l.hits {
-				text := ansi.Cut(l.text, h.x, h.x+h.w)
-				h.x = 0
-				for _, part := range strings.Split(styledHardwrap(text, width), "\n") {
-					h.w = ansi.StringWidth(part)
-					result = append(result, line{text: part, hits: []hit{h}})
-				}
-			}
-			continue
-		}
-		if len(l.hits) == 0 {
-			for _, text := range strings.Split(styledHardwrap(l.text, width), "\n") {
-				result = append(result, textLine(text))
-			}
-		} else {
-			result = append(result, l)
+		result = append(result, fitLine(l, width)...)
+	}
+	return result
+}
+func fitLine(l line, width int) []line {
+	if len(l.hits) > 0 && ansi.StringWidth(l.text) > width && (l.hits[0].action == "dialog" || l.hits[0].action == "action") {
+		return wrappedControls(l, width)
+	}
+	if len(l.hits) > 0 {
+		return []line{l}
+	}
+	var result []line
+	for _, text := range strings.Split(styledHardwrap(l.text, width), "\n") {
+		result = append(result, textLine(text))
+	}
+	return result
+}
+func wrappedControls(l line, width int) []line {
+	var result []line
+	for _, h := range l.hits {
+		text := ansi.Cut(l.text, h.x, h.x+h.w)
+		h.x = 0
+		for _, part := range strings.Split(styledHardwrap(text, width), "\n") {
+			h.w = ansi.StringWidth(part)
+			result = append(result, line{text: part, hits: []hit{h}})
 		}
 	}
 	return result
 }
+
 func (m *model) actionSpinner() string {
 	return []string{"◐", "◓", "◑", "◒"}[m.ticks%4]
 }
@@ -954,4 +527,601 @@ func highlight(query, value string) string {
 		}
 	}
 	return b.String()
+}
+
+func (m *model) pageBody() (line, []line) {
+	pageTitle := m.page
+	if pageTitle == "Plugins" {
+		pageTitle = "Plugin defaults"
+	}
+	inlineConfirmation := m.dialog == "fix-herdr"
+	body := m.pageContents(inlineConfirmation)
+	body = outline(body, func() string {
+		if m.dialog != "" && !inlineConfirmation {
+			return "Action"
+		}
+		return pageTitle
+	}(), m.width, 0)
+	header := body[0]
+	if (m.dialog == "" || inlineConfirmation) && (m.page == "Sandboxes" || m.page == "Status" || m.page == "Plugins") {
+		header = m.tabStrip()
+	}
+	return header, body
+}
+
+func (m *model) hintSection(inlineConfirmation bool) []line {
+	var notices []line
+	hint, hintColor := m.notice, colorInfo
+	if m.noticeTarget == "worker" && m.managementCancelling() {
+		hintColor = colorMuted
+	}
+	if hint != "" && m.width < 60 {
+		if identity, _ := m.contextHint(); strings.HasPrefix(identity, "herdr plugin: ") {
+			hint = identity + ". " + hint
+		}
+	}
+	if hint == "" {
+		hint, hintColor = m.contextHint()
+	}
+	hintLines := m.hintLines(hint, hintColor, inlineConfirmation)
+	if len(hintLines) > 0 {
+
+		notices = append(notices, outline(hintLines, "Hint", m.width, 0)...)
+	}
+	return notices
+}
+
+func (m *model) observationSections(body []line) []line {
+	if m.dialog == "" {
+		if len(m.events) > 0 {
+			body = append(body, m.eventSection()...)
+		}
+		if len(m.errors) > 0 {
+			body = append(body, m.diagnosticSection()...)
+		}
+	}
+	return body
+}
+
+func (m *model) revealSelection(body []line, capacity int) {
+	if !m.reveal && m.focus != "errors" && m.focus != "diagnostics" && m.focus != "events" {
+		return
+	}
+	target := m.selectionLine(body)
+	if target >= 0 {
+		m.revealLine(target, capacity)
+	}
+	m.reveal = false
+}
+func (m *model) selectionLine(body []line) int {
+	target := -1
+	for i, l := range body {
+		for _, h := range l.hits {
+			if m.focusedHit(h) && (m.focus != "errors" || target < 0) {
+				target = i
+			}
+		}
+	}
+	return target
+}
+func (m *model) revealLine(target, capacity int) {
+	if target < m.scroll && m.reveal {
+		m.scroll = target
+	}
+	if (m.focus == "errors" || m.focus == "events" && m.eventIndex >= 0) && target+2 >= m.scroll+capacity {
+		m.scroll = max(0, target-min(2, max(0, capacity-3)))
+	} else if target >= m.scroll+capacity {
+		m.scroll = target - capacity + 1
+	}
+}
+
+func (m *model) focusedHit(h hit) bool {
+	if m.dialog != "" {
+		return h.action == "dialog" && h.id == fmt.Sprint(m.button%m.dialogButtonCount())
+	}
+	switch m.focus {
+	case "errors":
+		return h.action == "error" && h.id == fmt.Sprint(m.errorIndex)
+	case "diagnostics":
+		return h.action == "diagnostic-toggle"
+	case "events":
+		return m.eventIndex < 0 && h.action == "event-section" || m.eventIndex >= 0 && h.action == "event" && h.id == fmt.Sprint(m.eventIndex)
+	case "table":
+		return m.focusedTableHit(h)
+	case "plugins":
+		return h.action == "override" && len(m.plugins) > 0 && h.id == m.plugins[min(m.detailIndex, len(m.plugins)-1)].ID
+	case "actions":
+		return m.focusedActionHit(h)
+	}
+	return false
+}
+func (m *model) focusedTableHit(h hit) bool {
+	switch m.page {
+	case "Sandboxes":
+		return h.action == "select" && h.id == m.selected
+	case "Plugins":
+		return h.action == "plugin" && h.id == m.pluginSelected
+	case "Status":
+		return m.button == 0 && h.action == "status-choice" && h.id == "on" || h.action == "status-action" && h.id == fmt.Sprint(m.button)
+	}
+	return false
+}
+func (m *model) focusedActionHit(h hit) bool {
+	if m.page != "Sandboxes" {
+		return false
+	}
+	row, found := findRow(m.rows, m.expanded)
+	if !found {
+		return false
+	}
+	actions := m.sandboxActions(row)
+	return h.action == "action" && m.button >= 0 && m.button < len(actions) && h.id == actions[m.button].id
+}
+
+func (m *model) frameLines(lines, body, notices, footerLines []line, capacity int) []line {
+	fixed := len(notices) + len(footerLines)
+	for _, l := range body[m.scroll:min(len(body), m.scroll+capacity)] {
+		y := len(lines)
+		for _, h := range l.hits {
+			h.y = y
+			m.hits = append(m.hits, h)
+		}
+		lines = append(lines, l)
+	}
+	for len(lines) < m.height-fixed {
+		lines = append(lines, textLine(""))
+	}
+	for _, l := range notices {
+		y := len(lines)
+		for _, h := range l.hits {
+			h.y = y
+			m.hits = append(m.hits, h)
+		}
+		lines = append(lines, l)
+	}
+	for _, footerLine := range footerLines {
+		for _, h := range footerLine.hits {
+			h.y = len(lines)
+			m.hits = append(m.hits, h)
+		}
+		lines = append(lines, footerLine)
+	}
+	return lines
+}
+
+func (m *model) managementHint() (string, string) {
+	if m.managementCancelling() {
+		return "Cancelling", colorMuted
+	}
+	if m.pending["worker"] {
+		return "Management change in progress.", colorInfo
+	}
+	if m.worker.Detail != "" {
+		return safeText(m.worker.Detail), colorInfo
+	}
+	return "Management: " + ansi.Strip(m.managementStatus()) + ".", colorInfo
+}
+
+func (m *model) compactPluginHint() (string, string) {
+	if m.dialog != "" || m.width >= 60 {
+		return "", ""
+	}
+	{
+		// Compact rows reserve room for choices; retain the complete focused ID.
+		if m.page == "Plugins" && m.focus == "table" {
+			plugins := m.visiblePlugins()
+			if len(plugins) > 0 {
+				return "herdr plugin: " + safeText(plugins[min(m.pluginIndex, len(plugins)-1)].ID), colorInfo
+			}
+		}
+		if m.page == "Sandboxes" && m.focus == "plugins" && len(m.plugins) > 0 {
+			return "herdr plugin: " + safeText(m.plugins[min(m.detailIndex, len(m.plugins)-1)].ID), colorInfo
+		}
+	}
+	return "", ""
+}
+
+func (m *model) actionHint(row registration.SandboxRow) (string, string) {
+	if m.focus != "actions" || m.expanded != m.selected {
+		return "", ""
+	}
+	actions := m.sandboxActions(row)
+	if m.button < 0 || m.button >= len(actions) {
+		return "", ""
+	}
+	switch actions[m.button].id {
+	case "enable":
+		if !row.EntryPresent && strings.EqualFold(row.Sandbox.Status, "stopped") {
+			return "Start the sandbox yourself before enabling its herdr connection.", colorMuted
+		}
+		return "Enable this sandbox's herdr connection. Herdr may start it when connecting.", colorAccent
+	case "disable":
+		return "Disable this sandbox's herdr connection and stop its plugin work. Keep its entry, label, and existing files.", colorInfo
+	case "remove":
+		return "Remove this disabled entry from herdr. Keep the sandbox and its files. Enable adds the entry again.", colorInfo
+	case "rename":
+		return "Rename changes this sandbox's label in herdr. Its sandbox name and connection stay the same.", colorInfo
+	case "resync":
+		return "Re-sync checks this sandbox and retries setup or selected herdr plugin sync. It checks for manually repaired plugins before building again.", colorInfo
+	case "fix-herdr":
+		return m.fixHerdrExplanation(row), colorInfo
+	}
+	return "", ""
+}
+
+func (m *model) sandboxHint(row registration.SandboxRow) (string, string) {
+	if row.Status.Stale {
+		return staleSandboxHint(row)
+	}
+	if row.AssociationIssue != "" {
+		return row.AssociationIssue, colorWarning
+	}
+	if m.rowHasCode(row, store.CodeHerdrCompatibility) || strings.Contains(strings.ToLower(row.Status.Detail), "herdr in this sandbox") {
+		return m.herdrCompatibilityHint(row), colorError
+	}
+	if row.Enabled == store.Enabled && row.EntryPresent && strings.EqualFold(row.Sandbox.Status, "stopped") && strings.EqualFold(row.Status.Connection, "waiting for start") {
+		return "This sandbox is stopped. Its herdr entry is saved. Setup waits until it starts and Management is ON.", colorMuted
+	}
+	switch row.Status.Detail {
+	case "already registered", "registered", "already registered and reachable", "registered and reachable":
+		return "This sandbox is registered in herdr. Setup is complete.", colorSuccess
+	}
+	color := colorMuted
+	switch strings.ToLower(row.Status.Connection) {
+	case "ready", "connected", "registered":
+		color = colorSuccess
+	case "failed", "blocked", "error", "manual intervention required":
+		color = colorError
+	case "preparing", "installing", "pending":
+		color = colorWarning
+	}
+	return strings.ReplaceAll(productText(row.Status.Detail), "herdr-sbx", "the plugin"), color
+}
+
+func (m *model) sandboxRowLines(r registration.SandboxRow, columns sandboxColumns) []line {
+	id := r.Sandbox.ID
+	if m.expanded == id {
+		return m.sandboxDetails(r)
+	}
+	selected := id == m.selected
+	prefix := "  "
+	if selected {
+		prefix = "> "
+	}
+	label := r.Label
+	if m.input != nil && m.input.kind == "rename" && m.input.target == id {
+		label = m.renderedInput(columns.label)
+	}
+	status := statusStyle(r.Status.Connection, statusDescription(r))
+	if r.AssociationIssue != "" || r.Status.Stale {
+		status = ink(colorWarning, statusDescription(r))
+	}
+	if m.pending[id] {
+		status = m.sandboxProgress(id)
+	}
+	mark := enabledMark(r)
+	if choice, ok := m.pendingEnabled[id]; ok && choice == store.Enabled {
+		mark = ink(colorAccent, "✓")
+	}
+	text := columns.render(prefix+"  ", mark, highlight(m.queries["Sandboxes"], safeText(r.Sandbox.Name)), ink(colorSand, highlight(m.queries["Sandboxes"], safeText(label))), status)
+	l := textLine(text)
+	l.hits = []hit{{x: 4, w: columns.enabled, action: "enabled", id: id}, {x: 5 + columns.enabled, w: max(1, m.width-9-columns.enabled), action: "select", id: id}, {x: 2, w: 2, action: "select", id: id}}
+	return []line{l}
+}
+
+func (m *model) pluginRowLines(i int, p guestplugins.Choice, nameWidth, syncWidth int) []line {
+	var lines []line
+	prefix := "  "
+	if i == m.pluginIndex {
+		prefix = "> "
+	}
+	available := "✓ Installed locally"
+	availabilityColor := colorSuccess
+	if !p.Installed {
+		available = "! Not installed locally"
+		availabilityColor = colorWarning
+	}
+	if p.UnsupportedReason != "" {
+		available = "✗ Unsupported"
+		availabilityColor = colorError
+	}
+	l := textLine(prefix + padded(highlight(m.queries["Plugins"], p.ID), nameWidth) + " " + padded(enabledStyle(p.Enabled, onOff(p.Enabled)), syncWidth) + " " + ink(availabilityColor, available))
+	choiceX := 2 + nameWidth + 1
+	l.hits = []hit{{x: 0, w: choiceX, action: "plugin", id: p.ID}, {x: choiceX, w: syncWidth, action: "default", id: p.ID}}
+	if m.width < 60 {
+		l.text = prefix + padded(highlight(m.queries["Plugins"], p.ID), nameWidth) + " " + padded(enabledStyle(p.Enabled, onOff(p.Enabled)), syncWidth)
+	}
+	lines = append(lines, l)
+	if m.width < 60 {
+		lines = append(lines, textLine("  "+ink(availabilityColor, available)))
+	}
+	if p.UnsupportedReason != "" {
+		for _, part := range strings.Split(ansi.Hardwrap(safeText(p.UnsupportedReason), max(10, m.width-8), true), "\n") {
+			lines = append(lines, textLine("    "+ink(colorWarning, part)))
+		}
+	}
+	return lines
+}
+
+func (m *model) managementCard() []line {
+	on, off := enabledStyle(m.workerEnabled, "ON"), enabledStyle(!m.workerEnabled, "OFF")
+	if m.workerControlError {
+		if m.workerEnabled {
+			on = ink(colorError, "ON")
+		} else {
+			off = ink(colorError, "OFF")
+		}
+	}
+	toggle := textLine(on + ink(colorMuted, " | ") + off)
+	toggle.hits = []hit{{x: 0, w: 2, action: "status-choice", id: "on"}, {x: 5, w: 3, action: "status-choice", id: "off"}}
+	border, title := colorSeparator, "Management"
+	if m.focus == "table" && m.button == 0 {
+		border, title = colorText, "Management ›"
+	}
+	lines := outline([]line{toggle}, title, m.width-4, 0, border)
+	state, stateColor := m.managementState()
+	width := m.width - 4
+	badge := badgeStyle(stateColor, truncate(state, max(1, width-11)))
+	if m.focus == "table" && m.button == 0 && width-ansi.StringWidth(badge)-6 < ansi.StringWidth(title) {
+		title = "› Management"
+	}
+	lines[0] = line{text: detailBorder(detailHeadingText{title: title, badge: badge}, width, 0, border), hits: []hit{{x: 1, w: width - 2, action: "status-action", id: "0"}}}
+	if activity := m.managementActivity(); activity != "" {
+		activity = " " + truncate(activity, max(1, width-4)) + " "
+		lines[len(lines)-1].text = ink(border, "╰"+strings.Repeat("─", max(0, width-ansi.StringWidth(activity)-2))) + ink(colorMuted, activity) + ink(border, "╯")
+	}
+	return lines
+}
+
+func (m *model) prerequisiteLines() []line {
+	var lines []line
+	for _, c := range statusPrerequisites(m.checks.Checks) {
+		color := colorWarning
+		if c.Level == precheck.Ready {
+			color = colorSuccess
+		} else if c.Level == precheck.Blocked {
+			color = colorError
+		}
+		lines = append(lines, textLine(padded(productText(c.Name), 26)+padded(ink(color, symbol(c.Level)), 14)+safeText(productText(c.Detail))))
+		if c.Action != "" {
+			lines = append(lines, textLine(ink(colorInfo, "  Next: "+safeText(productText(c.Action)))))
+		}
+	}
+	return lines
+}
+
+func (m *model) diagnosticChildLines(e uiError, childIndex, i int) []line {
+	var lines []line
+	if childIndex > 0 {
+		lines = append(lines, textLine(""))
+	}
+	if e.pluginID != "" {
+		name := safeText(e.pluginID)
+		if colorsEnabled() {
+			name = "\x1b[1m" + name + "\x1b[22m"
+		}
+		for _, part := range strings.Split(ansi.Wrap(name, max(1, m.width-6), ""), "\n") {
+			l := textLine("  " + part)
+			l.hits = []hit{{x: 0, w: m.width, action: "error", id: fmt.Sprint(i)}}
+			lines = append(lines, l)
+		}
+	}
+	detail := safeText(productText(e.detail))
+	detail = m.diagnosticDetail(e, detail)
+	if e.ref != "" {
+		detail = ink(colorMuted, safeText(e.ref)) + " " + detail
+	}
+	for _, part := range strings.Split(ansi.Wrap(detail, max(1, m.width-6), ""), "\n") {
+		l := textLine("  " + part)
+		l.hits = []hit{{x: 0, w: m.width, action: "error", id: fmt.Sprint(i)}}
+		lines = append(lines, l)
+	}
+	lines = append(lines, m.repairCallout(m.diagnosticScope(e.scope, ""), e.recovery, e.command)...)
+	lines = append(lines, m.buildOutput(e.output)...)
+	return lines
+}
+
+func (m *model) pageContents(inlineConfirmation bool) []line {
+	var body []line
+	if m.dialog != "" && !inlineConfirmation {
+		body = m.dialogLines()
+	} else if m.width < 30 || m.height < 10 {
+		body = []line{textLine("Resize to at least 30 columns × 10 rows."), textLine("b Management · e diagnostics · q close")}
+	} else {
+		switch m.page {
+		case "Sandboxes":
+			body = m.sandboxLines()
+		case "Plugins":
+			body = m.pluginLines()
+		case "Status":
+			body = m.statusLines()
+		case "Help":
+			body = m.helpLines()
+		}
+	}
+
+	return body
+}
+
+func (m *model) hintLines(hint, hintColor string, inlineConfirmation bool) []line {
+	if !m.quitUntil.IsZero() {
+		return m.quitHintLines(time.Now())
+	}
+	if inlineConfirmation {
+		return m.dialogLines()
+	}
+	if hint == "" {
+		return nil
+	}
+	hint = strings.ReplaceAll(productText(hint), "herdr-sbx", "the plugin")
+	if m.noticeTarget != "" && m.pending[m.noticeTarget] && !(m.noticeTarget == "worker" && m.managementCancelling()) {
+		hint = m.actionSpinner() + " " + hint
+	}
+	var lines []line
+	for _, part := range wrapHint(safeText(hint), max(1, m.width-4)) {
+		lines = append(lines, textLine(ink(hintColor, part)))
+	}
+	return lines
+}
+func (m *model) eventSection() []line {
+	var events []line
+	if m.eventsExpanded {
+		events = m.eventLines()
+	}
+	titleColor := colorSeparator
+	if m.focus == "events" && m.eventIndex < 0 {
+		titleColor = colorText
+	}
+	section := outline(events, ink(titleColor, m.eventTitle()), m.width, 0)
+	section[0].hits = []hit{{x: 0, w: m.width, action: "event-section"}}
+	return section
+}
+
+func (m *model) diagnosticSection() []line {
+	title := m.diagnosticTitle()
+	details := m.errorLines()
+	if ansi.StringWidth(title) > m.width-6 {
+		// Keep the New/All switch visible when the title cannot hold it.
+		heading, selector, _ := strings.Cut(title, " · ")
+		title = heading
+		selector, hidden, _ := strings.Cut(selector, " · ")
+		controls := []line{{text: selector, hits: []hit{{x: 0, w: ansi.StringWidth(selector), action: "diagnostic-toggle"}}}}
+		if hidden != "" {
+			controls = append(controls, textLine(ink(colorMuted, hidden)))
+		}
+		details = append(controls, details...)
+	}
+	section := outline(details, title, m.width, 0)
+	section[0].hits = []hit{{x: 0, w: m.width, action: "diagnostic-toggle"}}
+	return section
+}
+
+func staleSandboxHint(row registration.SandboxRow) (string, string) {
+	detail := "Current observations are unavailable."
+	if row.Status.Detail != "" {
+		detail += " Last known status: " + safeText(row.Status.Detail)
+	}
+	if !row.Status.ObservedAt.IsZero() {
+		detail += " Last observation " + row.Status.ObservedAt.Local().Format("2006-01-02 15:04:05") + "."
+	}
+	return detail, colorWarning
+}
+
+func (m *model) diagnosticCounts() (warnings, newCount, allCount int) {
+	groups := m.diagnosticGroups()
+	for _, e := range groups {
+		if store.SeverityForCode(e.code) == store.SeverityWarning {
+			warnings++
+		}
+		allCount += e.count
+		if !e.dismissed {
+			newCount += e.count
+		}
+	}
+
+	return
+}
+
+func (m *model) diagnosticGroupLines(i int, e diagnosticGroup) []line {
+	var lines []line
+	code := e.code
+	if code == "" {
+		code = "Unknown code"
+	}
+	prefix := "  "
+	if m.focus == "errors" && i == m.errorIndex {
+		prefix = "> "
+	}
+	color := diagnosticColor(e.code)
+	header := ink(color, code) + " · " + m.diagnosticScope(e.scope, "") + diagnosticTime(e.seen)
+	if e.count > 1 {
+		header += " " + ink(colorMuted, fmt.Sprintf("×%d", e.count))
+	}
+	lines = append(lines, textLine(""))
+	for _, part := range strings.Split(ansi.Wrap(header, max(1, m.width-6), ""), "\n") {
+		l := textLine(prefix + part)
+		l.hits = []hit{{x: 0, w: m.width, action: "error", id: fmt.Sprint(i)}}
+		lines = append(lines, l)
+		prefix = "  "
+	}
+	for childIndex, child := range e.entries {
+		lines = append(lines, m.diagnosticChildLines(child, childIndex, i)...)
+	}
+	if e.dismissed {
+		lines = append(lines, textLine("  "+ink(colorMuted, "Dismissed · still active")))
+	} else if e.firstSeen.IsZero() {
+		lines = append(lines, textLine("  "+ink(colorMuted, "Saving diagnostic…")))
+	}
+	return lines
+}
+
+func (m *model) eventRecordLines(e store.EventRecord, index int) []line {
+	var lines []line
+	color := diagnosticColor(e.Code)
+	if store.SeverityForCode(e.Code) == store.SeverityInfo {
+		color = colorInfo
+	}
+	if e.Resolved {
+		color = colorSuccess
+	}
+	lines = append(lines, textLine(""))
+	header := ink(color, safeText(e.Code)) + " · " + m.diagnosticScope(e.Scope, e.Name) + diagnosticTime(e.At)
+	if e.Ref != "" {
+		header = ink(colorMuted, safeText(e.Ref)) + " " + header
+	}
+	if m.focus == "events" && m.eventIndex == index {
+		header = "> " + header
+	}
+	if e.PluginID != "" {
+		header += " · " + safeText(e.PluginID)
+	}
+	for _, part := range strings.Split(ansi.Wrap(header, max(1, m.width-4), ""), "\n") {
+		l := textLine(part)
+		l.hits = []hit{{x: 0, w: m.width, action: "event", id: fmt.Sprint(index)}}
+		lines = append(lines, l)
+	}
+	if !e.Resolved {
+		lines = append(lines, m.repairCallout(m.diagnosticScope(e.Scope, e.Name), e.Recovery, e.Command)...)
+	}
+	for _, part := range strings.Split(ansi.Wrap(safeText(productText(e.Detail)), max(10, m.width-6), ""), "\n") {
+		lines = append(lines, textLine("  "+part))
+	}
+	lines = append(lines, m.buildOutput(e.Output)...)
+	return lines
+}
+
+func (m *model) diagnosticDetail(e uiError, detail string) string {
+	if e.code == store.CodeHerdrCompatibility {
+		for _, row := range m.rows {
+			if e.scope == row.Sandbox.ID || e.scope == row.Scope || e.scope == store.StatusKey(row.Scope, row.Sandbox.ID) {
+				detail = m.herdrVersionContext(row) + " " + detail
+				break
+			}
+		}
+	}
+
+	return detail
+}
+
+func filterPrompt(query, actualQuery string, focused bool) string {
+	prompt := "/ " + query
+	if focused {
+		prompt = ink(colorAccent, "/ ") + ink(colorBright, query)
+	} else if actualQuery == "" {
+		prompt = ink(colorMuted, prompt)
+	}
+
+	return prompt
+}
+
+func (m *model) diagnosticSelectorLabels(newLabel, allLabel string) (string, string) {
+	if colorsEnabled() {
+		if m.showAllErrors {
+			allLabel = "\x1b[1m" + allLabel + "\x1b[22m"
+		} else {
+			newLabel = "\x1b[1m" + newLabel + "\x1b[22m"
+		}
+	}
+
+	return newLabel, allLabel
 }

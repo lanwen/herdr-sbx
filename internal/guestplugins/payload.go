@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -58,76 +59,106 @@ func planPayload(root, manifestPath string, manifest map[string]any, arch string
 	if err != nil {
 		return nil, err
 	}
-	var files []payloadFile
-	var size int64
-	var walk func(*os.Root, string) error
-	walk = func(dir *os.Root, prefix string) error {
-		entries, err := fs.ReadDir(dir.FS(), ".")
+	walker := payloadWalker{ignored: ignored, manifestName: manifestName, arch: arch}
+	err = walker.walk(source, "")
+	return walker.files, err
+}
+
+type payloadWalker struct {
+	ignored            map[string]bool
+	manifestName, arch string
+	files              []payloadFile
+	size               int64
+}
+
+func (w *payloadWalker) walk(dir *os.Root, prefix string) error {
+	entries, err := fs.ReadDir(dir.FS(), ".")
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := w.visit(dir, prefix, entry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func privateSourceName(name string) bool {
+	return slices.Contains([]string{".git", ".env", ".ssh", ".aws", ".netrc", ".npmrc", ".pypirc", ".cache"}, name) || strings.HasPrefix(name, ".env.") || strings.HasPrefix(name, ".herdr-sbx-")
+}
+
+func (w *payloadWalker) visit(dir *os.Root, prefix string, entry fs.DirEntry) error {
+	// Never export checkout metadata, local state or credentials.
+	if privateSourceName(entry.Name()) {
+		return nil
+	}
+	name := filepath.Join(prefix, entry.Name())
+	info, err := dir.Lstat(entry.Name())
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		child, err := openPayloadDirectory(dir, entry.Name(), info)
 		if err != nil {
 			return err
 		}
-		for _, entry := range entries {
-			name := filepath.Join(prefix, entry.Name())
-			// Never export checkout metadata, local state or credentials.
-			if entry.Name() == ".git" || entry.Name() == ".env" || strings.HasPrefix(entry.Name(), ".env.") || entry.Name() == ".ssh" || entry.Name() == ".aws" || entry.Name() == ".netrc" || entry.Name() == ".npmrc" || entry.Name() == ".pypirc" || entry.Name() == ".cache" || strings.HasPrefix(entry.Name(), ".herdr-sbx-") {
-				continue
-			}
-			info, err := dir.Lstat(entry.Name())
-			if err != nil {
-				return err
-			}
-			if info.IsDir() {
-				child, err := openPayloadDirectory(dir, entry.Name(), info)
-				if err != nil {
-					return err
-				}
-				err = walk(child, name)
-				child.Close()
-				if err != nil {
-					return err
-				}
-				continue
-			}
-			if ignored[filepath.ToSlash(name)] || name == manifestName || name == "herdr-plugin.toml" {
-				continue
-			}
-			if !info.Mode().IsRegular() {
-				continue
-			}
-			if strings.ContainsAny(name, "\n\r\\") {
-				return errors.New("invalid plugin filename")
-			}
-			data, err := readPayloadFile(dir, entry.Name(), info, (128<<20)-size)
-			if err != nil {
-				return err
-			}
-			size += int64(len(data))
-			mode := int64(0600)
-			if info.Mode().Perm()&0111 != 0 {
-				mode = 0700
-			}
-			if bytes.HasPrefix(data, []byte{0x7f, 'E', 'L', 'F'}) {
-				binary, err := elf.NewFile(bytes.NewReader(data))
-				if err != nil {
-					return err
-				}
-				defer binary.Close()
-				want := elf.EM_X86_64
-				if strings.HasPrefix(arch, "aarch64") {
-					want = elf.EM_AARCH64
-				}
-				if arch != "" && binary.Machine != want {
-					return fmt.Errorf("%s is built for another architecture", name)
-				}
-			} else if len(data) >= 4 && (bytes.Equal(data[:4], []byte{0xcf, 0xfa, 0xed, 0xfe}) || bytes.Equal(data[:4], []byte{0xfe, 0xed, 0xfa, 0xcf}) || bytes.Equal(data[:4], []byte{0xca, 0xfe, 0xba, 0xbe}) || bytes.HasPrefix(data, []byte("MZ"))) {
-				return fmt.Errorf("%s is not a Linux binary", name)
-			}
-			files = append(files, payloadFile{filepath.ToSlash(name), data, mode})
+		defer child.Close()
+		return w.walk(child, name)
+	}
+	return w.addFile(dir, entry.Name(), name, info)
+}
+
+func (w *payloadWalker) addFile(dir *os.Root, entry, name string, info fs.FileInfo) error {
+	if w.ignored[filepath.ToSlash(name)] || name == w.manifestName || name == "herdr-plugin.toml" {
+		return nil
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	if strings.ContainsAny(name, "\n\r\\") {
+		return errors.New("invalid plugin filename")
+	}
+	data, err := readPayloadFile(dir, entry, info, (128<<20)-w.size)
+	if err != nil {
+		return err
+	}
+	w.size += int64(len(data))
+	mode := int64(0600)
+	if info.Mode().Perm()&0111 != 0 {
+		mode = 0700
+	}
+	if err := validatePayloadBinary(name, data, w.arch); err != nil {
+		return err
+	}
+	w.files = append(w.files, payloadFile{filepath.ToSlash(name), data, mode})
+	return nil
+}
+
+func validatePayloadBinary(name string, data []byte, arch string) error {
+	if bytes.HasPrefix(data, []byte{0x7f, 'E', 'L', 'F'}) {
+		binary, err := elf.NewFile(bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		defer binary.Close()
+		want := elf.EM_X86_64
+		if strings.HasPrefix(arch, "aarch64") {
+			want = elf.EM_AARCH64
+		}
+		if arch != "" && binary.Machine != want {
+			return fmt.Errorf("%s is built for another architecture", name)
 		}
 		return nil
 	}
-	err = walk(source, "")
-	return files, err
+	if nonLinuxBinary(data) {
+		return fmt.Errorf("%s is not a Linux binary", name)
+	}
+	return nil
+}
+
+func nonLinuxBinary(data []byte) bool {
+	return len(data) >= 4 && (bytes.Equal(data[:4], []byte{0xcf, 0xfa, 0xed, 0xfe}) || bytes.Equal(data[:4], []byte{0xfe, 0xed, 0xfa, 0xcf}) || bytes.Equal(data[:4], []byte{0xca, 0xfe, 0xba, 0xbe}) || bytes.HasPrefix(data, []byte("MZ")))
 }
 
 // openPayloadDirectory pins a selected directory before enumerating its children.
@@ -207,8 +238,21 @@ func ignoredSourceFiles(root string) (map[string]bool, error) {
 	if output, err := top.Output(); err == nil {
 		ignoreRoot = strings.TrimSpace(string(output))
 	}
+	paths, err := sourceIgnorePaths(root)
+	if err != nil {
+		return nil, err
+	}
+	output, err := run(paths, "--git-dir="+dir, "--work-tree="+ignoreRoot, "-c", "core.excludesFile=/dev/null", "check-ignore", "--no-index", "-z", "--stdin")
+	var exit *exec.ExitError
+	if err != nil && !(errors.As(err, &exit) && exit.ExitCode() == 1) {
+		return nil, fmt.Errorf("read plugin ignore rules: %w", err)
+	}
+	return relativeIgnoredPaths(root, output)
+}
+
+func sourceIgnorePaths(root string) ([]byte, error) {
 	var paths bytes.Buffer
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -222,30 +266,26 @@ func ignoredSourceFiles(root string) (map[string]bool, error) {
 		}
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	output, err := run(paths.Bytes(), "--git-dir="+dir, "--work-tree="+ignoreRoot, "-c", "core.excludesFile=/dev/null", "check-ignore", "--no-index", "-z", "--stdin")
-	var exit *exec.ExitError
-	if err != nil && !(errors.As(err, &exit) && exit.ExitCode() == 1) {
-		return nil, fmt.Errorf("read plugin ignore rules: %w", err)
-	}
+	return paths.Bytes(), err
+}
+
+func relativeIgnoredPaths(root string, output []byte) (map[string]bool, error) {
 	ignored := map[string]bool{}
 	for _, name := range strings.Split(string(output), "\x00") {
-		if name != "" {
-			relative, err := filepath.Rel(root, name)
-			if err != nil {
-				return nil, err
-			}
-			ignored[filepath.ToSlash(relative)] = true
+		if name == "" {
+			continue
 		}
+		relative, err := filepath.Rel(root, name)
+		if err != nil {
+			return nil, err
+		}
+		ignored[filepath.ToSlash(relative)] = true
 	}
 	return ignored, nil
 }
 
 // linuxBuildCommands preserves manifest order and argv boundaries.
 func linuxBuildCommands(manifest map[string]any) ([][]string, error) {
-	var commands [][]string
 	if manifest["build"] == nil {
 		return nil, nil
 	}
@@ -253,40 +293,51 @@ func linuxBuildCommands(manifest map[string]any) ([][]string, error) {
 	if !ok {
 		return nil, errors.New("invalid plugin build entries")
 	}
+	var commands [][]string
 	for _, value := range builds {
-		entry, ok := value.(map[string]any)
-		if !ok {
-			return nil, errors.New("invalid plugin build entry")
+		argv, err := linuxBuildCommand(value)
+		if err != nil {
+			return nil, err
 		}
-		platforms := keyNames(entry["platforms"])
-		linux := len(platforms) == 0
-		for _, platform := range platforms {
-			linux = linux || platform == "linux"
+		if argv != nil {
+			commands = append(commands, argv)
 		}
-		if !linux {
-			continue
-		}
-		raw, ok := entry["command"].([]any)
-		if !ok {
-			return nil, errors.New("plugin build command must be an argv array")
-		}
-		argv := make([]string, len(raw))
-		for i, value := range raw {
-			var ok bool
-			argv[i], ok = value.(string)
-			if !ok {
-				return nil, errors.New("invalid plugin build argument")
-			}
-		}
-		if len(argv) == 0 || argv[0] == "" {
-			return nil, errors.New("plugin build command is empty")
-		}
-		for _, arg := range argv {
-			if strings.ContainsRune(arg, 0) {
-				return nil, errors.New("invalid plugin build argument")
-			}
-		}
-		commands = append(commands, argv)
 	}
 	return commands, nil
+}
+
+func linuxBuildCommand(value any) ([]string, error) {
+	entry, ok := value.(map[string]any)
+	if !ok {
+		return nil, errors.New("invalid plugin build entry")
+	}
+	platforms := keyNames(entry["platforms"])
+	if len(platforms) > 0 && !slices.Contains(platforms, "linux") {
+		return nil, nil
+	}
+	raw, ok := entry["command"].([]any)
+	if !ok {
+		return nil, errors.New("plugin build command must be an argv array")
+	}
+	return pluginBuildArguments(raw)
+}
+
+func pluginBuildArguments(raw []any) ([]string, error) {
+	argv := make([]string, len(raw))
+	for i, value := range raw {
+		arg, ok := value.(string)
+		if !ok {
+			return nil, errors.New("invalid plugin build argument")
+		}
+		argv[i] = arg
+	}
+	if len(argv) == 0 || argv[0] == "" {
+		return nil, errors.New("plugin build command is empty")
+	}
+	for _, arg := range argv {
+		if strings.ContainsRune(arg, 0) {
+			return nil, errors.New("invalid plugin build argument")
+		}
+	}
+	return argv, nil
 }

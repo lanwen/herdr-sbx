@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/lanwen/herdr-sbx/internal/herdr"
-	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
 )
 
@@ -42,7 +41,8 @@ func associatedTrackedMachine(machines []herdr.Machine, item store.Tracked) *her
 	return found
 }
 
-func (s *Service) recoverMachineLabel(ctx context.Context, scope string, st *store.State, machines []herdr.Machine, sb sbx.Sandbox, item *store.Tracked, current func() bool) error {
+func (s *Service) recoverMachineLabel(ctx context.Context, work registrationWork, machines []herdr.Machine, item *store.Tracked) error {
+	scope, st, sb, current := work.Scope, work.State, work.Sandbox, work.Current
 	wanted := item.PendingLabel
 	owned := associatedTrackedMachine(machines, *item)
 	if owned == nil || SandboxName(*item) != sb.Name {
@@ -50,58 +50,79 @@ func (s *Service) recoverMachineLabel(ctx context.Context, scope string, st *sto
 	}
 	if wanted == "" {
 		item.Label = owned.Label
-		if err := replaceTracked(st, scope, *item); err != nil {
-			return err
-		}
-		return store.SaveState(*st)
+		return saveTracked(st, scope, *item)
 	}
-	for _, candidate := range machines {
-		if candidate.ID != item.ProfileID && candidate.Label == wanted {
-			return errors.New("another machine already uses the sandbox label")
-		}
+	if err := availableMachineLabel(machines, item.ProfileID, wanted); err != nil {
+		return err
 	}
-	check := func() error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if current == nil || !current() {
-			return errors.New("sandbox changed before label recovery")
-		}
-		return nil
-	}
-	save := func() error {
-		if err := replaceTracked(st, scope, *item); err != nil {
-			return err
-		}
-		return store.SaveState(*st)
-	}
-	if err := check(); err != nil {
+
+	if err := checkLabelCurrent(ctx, current); err != nil {
 		return err
 	}
 	if owned.Label != wanted {
-		item.PendingLabel = wanted
-		if err := save(); err != nil {
+		if err := s.renamePendingLabel(ctx, work, item, wanted); err != nil {
 			return err
-		}
-		if err := check(); err != nil {
-			return err
-		}
-		output, err := s.herdr.RenameMachine(ctx, item.ProfileID, wanted)
-		if err != nil {
-			return fmt.Errorf("rename associated entry: %s", commandError(err, output))
-		}
-		updated, output, err := s.herdr.ListMachines(ctx)
-		if err != nil {
-			return fmt.Errorf("verify machine label: %s", commandError(err, output))
-		}
-		observed := associatedMachineByID(updated, item.ProfileID, wanted, item.Target)
-		if observed == nil || observed.Label != wanted {
-			return errors.New("machine label change could not be verified")
 		}
 	}
-	if err := check(); err != nil {
+	if err := checkLabelCurrent(ctx, current); err != nil {
 		return err
 	}
 	item.Label, item.PendingLabel = wanted, ""
-	return save()
+	return saveTracked(st, scope, *item)
+}
+
+func checkLabelCurrent(ctx context.Context, current func() bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if current == nil || !current() {
+		return errors.New("sandbox changed before label recovery")
+	}
+	return nil
+}
+func saveTracked(st *store.State, scope string, item store.Tracked) error {
+	if err := replaceTracked(st, scope, item); err != nil {
+		return err
+	}
+	return store.SaveState(*st)
+}
+func (s *Service) renameAssociatedEntry(ctx context.Context, item store.Tracked, wanted string) error {
+	output, err := s.herdr.RenameMachine(ctx, item.ProfileID, wanted)
+	if err != nil {
+		return fmt.Errorf("rename associated entry: %s", commandError(err, output))
+	}
+	updated, output, err := s.herdr.ListMachines(ctx)
+	if err != nil {
+		return fmt.Errorf("verify machine label: %s", commandError(err, output))
+	}
+	observed := associatedMachineByID(updated, item.ProfileID, wanted, item.Target)
+	if observed == nil || observed.Label != wanted {
+		return errors.New("machine label change could not be verified")
+	}
+	return nil
+}
+
+func availableMachineLabel(machines []herdr.Machine, profileID, wanted string) error {
+	for _, candidate := range machines {
+		if candidate.ID != profileID && candidate.Label == wanted {
+			return errors.New("another machine already uses the sandbox label")
+		}
+	}
+
+	return nil
+}
+
+func (s *Service) renamePendingLabel(ctx context.Context, work registrationWork, item *store.Tracked, wanted string) error {
+	scope, st, current := work.Scope, work.State, work.Current
+	item.PendingLabel = wanted
+	if err := saveTracked(st, scope, *item); err != nil {
+		return err
+	}
+	if err := checkLabelCurrent(ctx, current); err != nil {
+		return err
+	}
+	if err := s.renameAssociatedEntry(ctx, *item, wanted); err != nil {
+		return err
+	}
+	return nil
 }

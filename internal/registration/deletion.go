@@ -37,20 +37,14 @@ func (s *Service) removeDeletedSandbox(ctx context.Context, scope, socket, sandb
 	if err := CheckAutomaticWork(ctx); err != nil {
 		return DeletionResult{Retry: true}, err
 	}
-	if scope == "" || socket == "" || store.ScopeID(socket) != scope {
+	if !validDeletionScope(scope, socket) {
 		return DeletionResult{Detail: "Lifecycle deletion retained state: the sandbox daemon scope does not match its saved association."}, nil
 	}
 	st, err := store.LoadState()
 	if err != nil {
 		return DeletionResult{Retry: true}, err
 	}
-	var item *store.Tracked
-	for i := range st.Scopes[scope] {
-		if st.Scopes[scope][i].SandboxID == sandboxID {
-			item = &st.Scopes[scope][i]
-			break
-		}
-	}
+	item := trackedSandbox(&st, scope, sandboxID)
 	if item == nil {
 		return DeletionResult{}, nil
 	}
@@ -62,11 +56,8 @@ func (s *Service) removeDeletedSandbox(ctx context.Context, scope, socket, sandb
 	// A confirmed removed entry retains guest metadata, not a native resource.
 	// A verified name replacement can release that old identity locally, but must
 	// never authorize removal of a machine now connecting to the reused name.
-	if item.ProfileID == "" && (err == nil && absent || errors.Is(err, sbx.ErrSandboxIdentityChanged)) {
-		if err := CheckAutomaticWork(ctx); err != nil {
-			return DeletionResult{Retry: true}, err
-		}
-		return s.clearDeleted(&st, scope, sandboxID, name, "cleared its retained guest state")
+	if releasesGuestState(*item, absent, err) {
+		return s.clearDeletedGuestState(ctx, &st, scope, sandboxID, name)
 	}
 	if err != nil {
 		return DeletionResult{Retry: true}, fmt.Errorf("sandbox absence is not confirmed: %w", err)
@@ -75,11 +66,15 @@ func (s *Service) removeDeletedSandbox(ctx context.Context, scope, socket, sandb
 		return DeletionResult{Detail: "Lifecycle deletion retained state: sandbox absence is not confirmed."}, nil
 	}
 
+	return s.removeDeletedEntry(ctx, &st, scope, *item)
+}
+func (s *Service) removeDeletedEntry(ctx context.Context, st *store.State, scope string, item store.Tracked) (DeletionResult, error) {
+	sandboxID, name := item.SandboxID, SandboxName(item)
 	machines, output, err := s.herdr.ListMachines(ctx)
 	if err != nil {
 		return DeletionResult{Retry: true}, fmt.Errorf("cannot inspect Herdr machines: %s", commandError(err, output))
 	}
-	_, issue := associatedMachine(scope, sbx.Sandbox{ID: item.SandboxID, Name: name}, machines, st)
+	_, issue := associatedMachine(scope, sbx.Sandbox{ID: item.SandboxID, Name: name}, machines, *st)
 	if issue != "" {
 		detail := "Lifecycle deletion retained state: " + issue
 		if err := store.SetRegistrationError(store.CodeOwnershipConflict, store.StatusKey(scope, sandboxID), detail); err != nil {
@@ -88,48 +83,26 @@ func (s *Service) removeDeletedSandbox(ctx context.Context, scope, socket, sandb
 		return DeletionResult{Detail: detail}, nil
 	}
 	if machineByID(machines, item.ProfileID) == nil {
-		return s.clearDeleted(&st, scope, sandboxID, name, "machine was already absent")
+		return s.clearDeleted(st, scope, sandboxID, name, "machine was already absent")
 	}
-	if associatedTrackedMachine(machines, *item) == nil {
+	if associatedTrackedMachine(machines, item) == nil {
 		return DeletionResult{Detail: "Lifecycle deletion retained state: saved machine is no longer the associated entry."}, nil
 	}
 	if err := CheckAutomaticWork(ctx); err != nil {
 		return DeletionResult{Retry: true}, err
 	}
-	removed, err := s.herdr.RemoveMachine(ctx, item.ProfileID)
-	after, _, verifyErr := s.herdr.ListMachines(ctx)
-	if verifyErr != nil {
-		return DeletionResult{Retry: true}, fmt.Errorf("entry removal outcome is unknown; saved association was kept: %w", verifyErr)
+	if err := s.removeAssociatedEntry(ctx, item.ProfileID); err != nil {
+		return DeletionResult{Retry: true}, err
 	}
-	if machineByID(after, item.ProfileID) != nil {
-		if err != nil {
-			return DeletionResult{Retry: true}, fmt.Errorf("remove associated herdr entry: %s", commandError(err, removed))
-		}
-		return DeletionResult{Retry: true}, fmt.Errorf("herdr entry removal is not confirmed")
-	}
-	return s.clearDeleted(&st, scope, sandboxID, name, "removed its associated herdr entry")
+
+	return s.clearDeleted(st, scope, sandboxID, name, "removed its associated herdr entry")
 }
 
 func (s *Service) clearDeleted(st *store.State, scope, sandboxID, name, detail string) (DeletionResult, error) {
 	// Clear the display cache first so a failed write keeps the association
 	// record available for a later cleanup retry.
 	if err := store.UpdateStatusStore(func(status *store.StatusStore) {
-		key := store.StatusKey(scope, sandboxID)
-		status.SetSandboxDeletionFailure(key, "")
-		for errorKey, entry := range status.Errors {
-			if entry.Scope == key && entry.Code == store.CodeOwnershipConflict {
-				delete(status.Errors, errorKey)
-			}
-		}
-		delete(status.Sandboxes, key)
-		delete(status.EnabledObservationPending, key)
-		delete(status.Preparation, key)
-		delete(status.PreparationErrors, key)
-		for attempt := range status.GuestPluginAttempts {
-			if strings.HasPrefix(attempt, key+"\x00") {
-				delete(status.GuestPluginAttempts, attempt)
-			}
-		}
+		clearDeletedStatus(status, scope, sandboxID)
 	}); err != nil {
 		return DeletionResult{Retry: true}, err
 	}
@@ -140,6 +113,25 @@ func (s *Service) clearDeleted(st *store.State, scope, sandboxID, name, detail s
 		return DeletionResult{Retry: true}, err
 	}
 	return DeletionResult{Detail: fmt.Sprintf("%s deleted; %s.", name, detail)}, nil
+}
+
+func clearDeletedStatus(status *store.StatusStore, scope, sandboxID string) {
+	key := store.StatusKey(scope, sandboxID)
+	status.SetSandboxDeletionFailure(key, "")
+	for errorKey, entry := range status.Errors {
+		if entry.Scope == key && entry.Code == store.CodeOwnershipConflict {
+			delete(status.Errors, errorKey)
+		}
+	}
+	delete(status.Sandboxes, key)
+	delete(status.EnabledObservationPending, key)
+	delete(status.Preparation, key)
+	delete(status.PreparationErrors, key)
+	for attempt := range status.GuestPluginAttempts {
+		if strings.HasPrefix(attempt, key+"\x00") {
+			delete(status.GuestPluginAttempts, attempt)
+		}
+	}
 }
 
 // recoverDeletedSandboxes also catches deletions missed while the watcher was
@@ -165,12 +157,54 @@ func (s *Service) recoverDeletedSandboxes(ctx context.Context, out io.Writer, sc
 		if present[item.SandboxID] || item.Pending || SandboxName(item) == "" {
 			continue
 		}
-		result, err := s.removeDeletedSandbox(ctx, scope, socket, item.SandboxID)
-		if err != nil {
-			fmt.Fprintln(out, "Sandbox deletion deferred:", err)
-		} else if result.Detail != "" {
-			fmt.Fprintln(out, result.Detail)
+		s.reportDeletionRecovery(ctx, out, scope, socket, item.SandboxID)
+	}
+	return nil
+}
+
+func (s *Service) reportDeletionRecovery(ctx context.Context, out io.Writer, scope, socket, sandboxID string) {
+	result, err := s.removeDeletedSandbox(ctx, scope, socket, sandboxID)
+	if err != nil {
+		fmt.Fprintln(out, "Sandbox deletion deferred:", err)
+	} else if result.Detail != "" {
+		fmt.Fprintln(out, result.Detail)
+	}
+}
+
+func trackedSandbox(st *store.State, scope, id string) *store.Tracked {
+	for i := range st.Scopes[scope] {
+		if st.Scopes[scope][i].SandboxID == id {
+			return &st.Scopes[scope][i]
 		}
 	}
 	return nil
+}
+
+func validDeletionScope(scope, socket string) bool {
+	return scope != "" && socket != "" && store.ScopeID(socket) == scope
+}
+func releasesGuestState(item store.Tracked, absent bool, err error) bool {
+	return item.ProfileID == "" && (err == nil && absent || errors.Is(err, sbx.ErrSandboxIdentityChanged))
+}
+
+func (s *Service) removeAssociatedEntry(ctx context.Context, profileID string) error {
+	removed, err := s.herdr.RemoveMachine(ctx, profileID)
+	after, _, verifyErr := s.herdr.ListMachines(ctx)
+	if verifyErr != nil {
+		return fmt.Errorf("entry removal outcome is unknown; saved association was kept: %w", verifyErr)
+	}
+	if machineByID(after, profileID) != nil {
+		if err != nil {
+			return fmt.Errorf("remove associated herdr entry: %s", commandError(err, removed))
+		}
+		return fmt.Errorf("herdr entry removal is not confirmed")
+	}
+	return nil
+}
+
+func (s *Service) clearDeletedGuestState(ctx context.Context, st *store.State, scope, sandboxID, name string) (DeletionResult, error) {
+	if err := CheckAutomaticWork(ctx); err != nil {
+		return DeletionResult{Retry: true}, err
+	}
+	return s.clearDeleted(st, scope, sandboxID, name, "cleared its retained guest state")
 }

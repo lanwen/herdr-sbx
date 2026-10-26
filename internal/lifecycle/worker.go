@@ -48,6 +48,10 @@ func (s *Service) StartWorker() error {
 	// The child takes the authoritative lock. Concurrent starters may launch
 	// children, but only one child can watch; the others exit successfully.
 	unlock()
+	return spawnWorker()
+}
+
+func spawnWorker() error {
 	executable, err := os.Executable()
 	if err != nil {
 		return err
@@ -99,28 +103,7 @@ func (s *Service) Worker(out io.Writer) error {
 	if control.WorkerControl != nil && control.WorkerControl.Stopped {
 		return nil
 	}
-	var reportMu sync.Mutex
-	lastState, lastDetail := "", ""
-	report := func(state, detail string, synced bool) {
-		reportMu.Lock()
-		defer reportMu.Unlock()
-		// Completion of an old operation must not overwrite OFF cancellation
-		// with a late Running/reconnecting report.
-		if state != "stopped" && !automaticAllowed(context.Background()) {
-			state, detail, synced = "cancelling", "Cancelling", false
-		}
-		if state != lastState || detail != lastDetail {
-			level := slog.LevelInfo
-			if state == "reconnecting" {
-				level = slog.LevelWarn
-			}
-			logger.LogAttrs(context.Background(), level, "Daemon state changed", slog.String("state", state), slog.String("detail", workerLogDetail(detail)))
-			lastState, lastDetail = state, detail
-		}
-		if err := store.RecordWorkerStatus(state, detail, synced); err != nil {
-			fmt.Fprintln(out, "Worker status was not saved:", err)
-		}
-	}
+	report := workerReporter(logger, out)
 	report("starting", "Checking prerequisites and connecting to sandbox events.", false)
 	defer report("stopped", "Worker exited.", false)
 	s.herdr.RebindSocket(os.Getenv("HERDR_SOCKET_PATH"))
@@ -141,37 +124,8 @@ func (s *Service) Worker(out io.Writer) error {
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	go func() {
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		logErrorReported := false
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				// Rotate the inherited file, including direct stdout/stderr writes.
-				// Output can exceed the cap briefly between checks.
-				output.mu.Lock()
-				logErr := rotateWorkerLog(logPath + ".worker.log")
-				output.mu.Unlock()
-				if logErr != nil {
-					if !logErrorReported {
-						fmt.Fprintln(out, "Daemon log could not be limited:", logErr)
-					}
-					logErrorReported = true
-				} else {
-					logErrorReported = false
-				}
-				status, err := store.ReadStatusStore()
-				if err != nil || status.WorkerControl != nil && status.WorkerControl.Stopped {
-					report("cancelling", "Cancelling", false)
-					cancel()
-					return
-				}
-			}
-		}
-	}()
+	monitor := workerMonitor{rotation: workerLogRotation{output: output, out: out, path: logPath + ".worker.log"}, report: report}
+	go monitor.run(ctx, cancel)
 	livenessDone := make(chan struct{})
 	go func() {
 		defer close(livenessDone)
@@ -182,6 +136,10 @@ func (s *Service) Worker(out io.Writer) error {
 		<-livenessDone
 	}()
 	logger.Info("Daemon started")
+	return s.watchWorker(ctx, out, report)
+}
+
+func (s *Service) watchWorker(ctx context.Context, out io.Writer, report func(string, string, bool)) error {
 	baseline := managementBaseline{}
 	for {
 		err := s.watchManaged(ctx, out, report, &baseline)
@@ -202,6 +160,87 @@ func (s *Service) Worker(out io.Writer) error {
 	}
 }
 
+type workerStatusReporter struct {
+	mu                    sync.Mutex
+	logger                *slog.Logger
+	out                   io.Writer
+	lastState, lastDetail string
+}
+
+func workerReporter(logger *slog.Logger, out io.Writer) func(string, string, bool) {
+	reporter := &workerStatusReporter{logger: logger, out: out}
+	return reporter.report
+}
+
+func (r *workerStatusReporter) report(state, detail string, synced bool) {
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// Completion of an old operation must not overwrite OFF cancellation
+	// with a late Running/reconnecting report.
+	if state != "stopped" && !automaticAllowed(context.Background()) {
+		state, detail, synced = "cancelling", "Cancelling", false
+	}
+	if state != r.lastState || detail != r.lastDetail {
+		level := slog.LevelInfo
+		if state == "reconnecting" {
+			level = slog.LevelWarn
+		}
+		r.logger.LogAttrs(context.Background(), level, "Daemon state changed", slog.String(logKeyState, state), slog.String(logKeyDetail, workerLogDetail(detail)))
+		r.lastState, r.lastDetail = state, detail
+	}
+	if err := store.RecordWorkerStatus(state, detail, synced); err != nil {
+		fmt.Fprintln(r.out, "Worker status was not saved:", err)
+	}
+}
+
+type workerMonitor struct {
+	rotation workerLogRotation
+	report   func(string, string, bool)
+}
+
+func (m *workerMonitor) run(ctx context.Context, cancel context.CancelFunc) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.rotation.check()
+			if workerControlStopped() {
+				m.report("cancelling", "Cancelling", false)
+				cancel()
+				return
+			}
+		}
+	}
+}
+
+type workerLogRotation struct {
+	output        *lockedWriter
+	out           io.Writer
+	path          string
+	errorReported bool
+}
+
+func (r *workerLogRotation) check() {
+	// Rotate the inherited file, including direct stdout/stderr writes.
+	// Output can exceed the cap briefly between checks.
+	r.output.mu.Lock()
+	err := rotateWorkerLog(r.path)
+	r.output.mu.Unlock()
+	if err != nil && !r.errorReported {
+		fmt.Fprintln(r.out, "Daemon log could not be limited:", err)
+	}
+	r.errorReported = err != nil
+}
+
+func workerControlStopped() bool {
+	status, err := store.ReadStatusStore()
+	return err != nil || status.WorkerControl != nil && status.WorkerControl.Stopped
+}
+
 func (s *Service) stopWhenServerEnds(ctx context.Context, stop context.CancelFunc) {
 	ticker := time.NewTicker(s.workerPoll)
 	defer ticker.Stop()
@@ -211,24 +250,28 @@ func (s *Service) stopWhenServerEnds(ctx context.Context, stop context.CancelFun
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if !s.herdr.PluginEnabled(ctx) {
+			if s.serverShutdownDue(ctx, &absentSince) {
 				stop()
 				return
 			}
-			if s.workerServerAlive(ctx) {
-				absentSince = time.Time{}
-				continue
-			}
-			if absentSince.IsZero() {
-				absentSince = time.Now()
-				continue
-			}
-			if time.Since(absentSince) >= s.serverHandoff {
-				stop()
-				return
-			}
+
 		}
 	}
+}
+
+func (s *Service) serverShutdownDue(ctx context.Context, absentSince *time.Time) bool {
+	if !s.herdr.PluginEnabled(ctx) {
+		return true
+	}
+	if s.workerServerAlive(ctx) {
+		*absentSince = time.Time{}
+		return false
+	}
+	if absentSince.IsZero() {
+		*absentSince = time.Now()
+		return false
+	}
+	return time.Since(*absentSince) >= s.serverHandoff
 }
 
 func (s *Service) workerAlive() bool {
@@ -294,22 +337,10 @@ func prepareWorkerStartAtGeneration(ctx context.Context, generation uint64) erro
 		return context.Canceled
 	}
 	if saved.WorkerControl != nil && saved.WorkerControl.Stopped {
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			status, err := store.ReadWorkerStatus()
-			if err != nil {
-				return err
-			}
-			if status.State == "stopped" {
-				break
-			}
-			select {
-			case <-ctx.Done():
-				return fmt.Errorf("waiting for previous daemon to stop: %w", ctx.Err())
-			case <-ticker.C:
-			}
+		if err := waitPreviousWorker(ctx); err != nil {
+			return err
 		}
+
 	}
 	accepted, err := store.SetWorkerControlIfGeneration(false, generation)
 	if err != nil {
@@ -319,6 +350,25 @@ func prepareWorkerStartAtGeneration(ctx context.Context, generation uint64) erro
 		return context.Canceled
 	}
 	return nil
+}
+
+func waitPreviousWorker(ctx context.Context) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		status, err := store.ReadWorkerStatus()
+		if err != nil {
+			return err
+		}
+		if status.State == "stopped" {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for previous daemon to stop: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 // StopWorker persists Stop and waits for the daemon's authoritative lock to
@@ -333,10 +383,8 @@ func (s *Service) StopWorker(ctx context.Context) error {
 // WaitWorkerStopped confirms an OFF choice already saved by the UI. It never
 // issues another command, so an ON queued during cancellation keeps its identity.
 func (s *Service) WaitWorkerStopped(ctx context.Context) error {
-	if status, err := store.ReadWorkerStatus(); err == nil && status.State != "stopped" {
-		if err := store.RecordWorkerStatus("cancelling", "Cancelling", false); err != nil {
-			return err
-		}
+	if err := recordWorkerCancellation(); err != nil {
+		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
@@ -356,4 +404,13 @@ func (s *Service) WaitWorkerStopped(ctx context.Context) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func recordWorkerCancellation() error {
+	if status, err := store.ReadWorkerStatus(); err == nil && status.State != "stopped" {
+		if err := store.RecordWorkerStatus("cancelling", "Cancelling", false); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -13,53 +13,7 @@ import (
 func TestDetailsCachedServerVersionAndWidth(t *testing.T) {
 	for _, noColor := range []bool{false, true} {
 		for _, width := range []int{36, 60, 110} {
-			m := modelFixture(t)
-			if noColor {
-				t.Setenv("NO_COLOR", "1")
-			} else {
-				unsetNoColor(t)
-			}
-			m.width = width
-			r := m.rows[0]
-			now := time.Now().Add(-2 * time.Minute)
-			r.Status.GuestServer = &store.GuestServerObservation{Version: "0.9.2", ObservedAt: now, CheckedAt: now, Current: true}
-			{
-				got := guestServerDescription(r)
-				require.Equal(t, "herdr 0.9.2", got, "current: %q", got)
-			}
-			lines := m.sandboxDetails(r)
-			header := lines[0]
-			require.False(t, width >= 60 && !strings.HasSuffix(ansi.Strip(header.text), " herdr 0.9.2 ╮"), "not in top-right badge: %q", header.text)
-			require.Contains(t, ansi.Strip(header.text), "alpha", "version displaced sandbox name: %q", header.text)
-			for _, line := range lines {
-				require.False(t, ansi.StringWidth(line.text) > width-4, "overflow width %d: %q", width, line.text)
-				require.False(t, noColor && strings.Contains(line.text, "\x1b["), "NO_COLOR contains styling")
-			}
-			for _, state := range []string{"failed probe", "stopped", "stale", "old"} {
-				stale := r
-				observed := *r.Status.GuestServer
-				stale.Status.GuestServer = &observed
-				switch state {
-				case "failed probe":
-					observed.Current = false
-				case "stopped":
-					stale.Sandbox.Status = "stopped"
-				case "stale":
-					stale.Status.Stale = true
-				case "old":
-					observed.CheckedAt = time.Now().Add(-16 * time.Minute)
-				}
-				{
-					got := guestServerDescription(stale)
-					require.Equal(t, "herdr 0.9.2", got, "%s: %q", state, got)
-				}
-			}
-			r.Status.GuestServer = nil
-			require.Equal(t, "", guestServerDescription(r), "invented version")
-			withoutVersion := m.sandboxDetails(r)
-			require.NotContains(t, ansi.Strip(withoutVersion[0].text), "herdr", "unknown version has a border label")
-			r.Status.GuestServer = &store.GuestServerObservation{}
-			require.Equal(t, "", guestServerDescription(r), "empty cached version displayed")
+			testCachedServerVersion(t, width, noColor)
 		}
 	}
 }
@@ -104,4 +58,56 @@ func TestDetailsObservationAgeStartsAfterTwoMinutes(t *testing.T) {
 		require.NotContains(t, header, "just now")
 		require.Contains(t, header, "alpha (running)")
 	}
+}
+
+func testCachedServerVersion(t *testing.T, width int, noColor bool) {
+	t.Helper()
+	m := modelFixture(t)
+	if noColor {
+		t.Setenv("NO_COLOR", "1")
+	} else {
+		unsetNoColor(t)
+	}
+	m.width = width
+	r := m.rows[0]
+	now := time.Now().Add(-2 * time.Minute)
+	r.Status.GuestServer = &store.GuestServerObservation{Version: "0.9.2", ObservedAt: now, CheckedAt: now, Current: true}
+	{
+		got := guestServerDescription(r)
+		require.Equal(t, "herdr 0.9.2", got, "current: %q", got)
+	}
+	lines := m.sandboxDetails(r)
+	header := lines[0]
+	require.False(t, width >= 60 && !strings.HasSuffix(ansi.Strip(header.text), " herdr 0.9.2 ╮"), "not in top-right badge: %q", header.text)
+	require.Contains(t, ansi.Strip(header.text), "alpha", "version displaced sandbox name: %q", header.text)
+	for _, line := range lines {
+		require.False(t, ansi.StringWidth(line.text) > width-4, "overflow width %d: %q", width, line.text)
+		require.False(t, noColor && strings.Contains(line.text, "\x1b["), "NO_COLOR contains styling")
+	}
+	for _, state := range []string{"failed probe", "stopped", "stale", "old"} {
+		stale := r
+		observed := *r.Status.GuestServer
+		stale.Status.GuestServer = &observed
+		switch state {
+		case "failed probe":
+			observed.Current = false
+		case "stopped":
+			stale.Sandbox.Status = "stopped"
+		case "stale":
+			stale.Status.Stale = true
+		case "old":
+			observed.CheckedAt = time.Now().Add(-16 * time.Minute)
+		}
+		{
+			got := guestServerDescription(stale)
+			require.Equal(t, "herdr 0.9.2", got, "%s: %q", state, got)
+		}
+	}
+	r.Status.GuestServer = nil
+	require.Equal(t, "", guestServerDescription(r), "invented version")
+	withoutVersion := m.sandboxDetails(r)
+	require.NotContains(t, ansi.Strip(withoutVersion[0].text), "herdr", "unknown version has a border label")
+	r.Status.GuestServer = &store.GuestServerObservation{}
+	require.Equal(t, "", guestServerDescription(r), "empty cached version displayed")
+
 }

@@ -98,19 +98,23 @@ func updateGuestPluginSettings(change func(*GuestPluginDefaults)) error {
 	if err != nil {
 		return err
 	}
+	return writeGuestPluginSettings(path, data)
+}
+
+func writeGuestPluginSettings(path string, data []byte) error {
 	file, err := os.CreateTemp(filepath.Dir(path), ".guest-plugins-*")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(file.Name())
 	defer file.Close()
-	if _, err = file.Write(append(data, '\n')); err != nil {
+	if _, err := file.Write(append(data, '\n')); err != nil {
 		return err
 	}
-	if err = file.Sync(); err != nil {
+	if err := file.Sync(); err != nil {
 		return err
 	}
-	if err = file.Close(); err != nil {
+	if err := file.Close(); err != nil {
 		return err
 	}
 	if err := os.Rename(file.Name(), path); err != nil {
@@ -146,10 +150,7 @@ func SetSandboxPluginOverride(scope, sandboxID, plugin string, enabled *bool) er
 	return updateGuestPluginSettings(func(settings *GuestPluginDefaults) {
 		key := StatusKey(scope, sandboxID)
 		if enabled == nil {
-			delete(settings.Overrides[key], plugin)
-			if len(settings.Overrides[key]) == 0 {
-				delete(settings.Overrides, key)
-			}
+			settings.clearOverride(key, plugin)
 			return
 		}
 		if settings.Overrides == nil {
@@ -160,4 +161,11 @@ func SetSandboxPluginOverride(scope, sandboxID, plugin string, enabled *bool) er
 		}
 		settings.Overrides[key][plugin] = *enabled
 	})
+}
+
+func (s *GuestPluginDefaults) clearOverride(key, plugin string) {
+	delete(s.Overrides[key], plugin)
+	if len(s.Overrides[key]) == 0 {
+		delete(s.Overrides, key)
+	}
 }

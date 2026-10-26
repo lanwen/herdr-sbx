@@ -31,7 +31,7 @@ func TestReadStatusNormalizesInformationalOutcomesAndExpiresHistory(t *testing.T
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	now := time.Now()
 	require.NoError(t, UpdateStatusStore(func(s *StatusStore) {
-		s.Errors["legacy"] = ErrorRecord{Ref: "abc123", Code: CodePreparation, Scope: "sandbox", Detail: "Re-sync did not finish", LastSeen: now}
+		s.Errors["older"] = ErrorRecord{Ref: "abc123", Code: CodePreparation, Scope: "sandbox", Detail: "Re-sync did not finish", LastSeen: now}
 		s.Errors["plugin"] = ErrorRecord{Code: CodeGuestPluginSync, Scope: "sandbox", Detail: "build failed", LastSeen: now}
 		s.PreparationErrors["sandbox"] = "build failed"
 		s.Preparation["sandbox"] = now.Add(time.Minute)
@@ -78,7 +78,7 @@ func TestOlderMigratedOutcomeDoesNotEvictNewerEvents(t *testing.T) {
 	for i := range 50 {
 		appendEvent(&s, EventRecord{Code: CodePolicyCleanup, Detail: "recent", At: now.Add(-time.Duration(49-i) * time.Second)})
 	}
-	s.Errors["legacy"] = ErrorRecord{Code: CodePreparation, Scope: "sandbox", Detail: "older outcome", LastSeen: now.Add(-30 * time.Minute)}
+	s.Errors["older"] = ErrorRecord{Code: CodePreparation, Scope: "sandbox", Detail: "older outcome", LastSeen: now.Add(-30 * time.Minute)}
 	normalizeEvents(&s)
 	require.Len(t, s.Errors, 0)
 	require.Len(t, s.Events, 50)

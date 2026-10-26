@@ -142,7 +142,7 @@ func TestDeletionRecoveryOnlyChecksMissingTrackedSandboxes(t *testing.T) {
 	f.assertCount(1)
 }
 
-func TestDeletionRecoveryClearsUnrelatedLegacyDetailWithoutRegistration(t *testing.T) {
+func TestDeletionRecoveryClearsUnrelatedEarlierDetailWithoutRegistration(t *testing.T) {
 	f := newLifecycleFixture(t)
 	require.NoError(t, store.RecordSandboxStatus(f.scope, sbx.Sandbox{ID: "new", Name: "new", Status: "stopped"}, "not checked", "sandbox deletion recovery is unavailable", true))
 	{
@@ -317,34 +317,39 @@ func TestManualReconcileRemovesDeletedSandbox(t *testing.T) {
 func TestManualReconcilePreservesUnconfirmedOrUnownedMachines(t *testing.T) {
 	for _, scenario := range []string{"stopped", "unknown absence", "changed profile", "pending intent", "other scope"} {
 		t.Run(scenario, func(t *testing.T) {
-			f := newLifecycleFixture(t)
-			item := ownedRegistration()
-			switch scenario {
-			case "stopped":
-				f.request = func(*http.Request) (*http.Response, error) {
-					return lifecycleResponse(200, `[{"uuid":"old","name":"demo","status":"stopped"}]`), nil
-				}
-			case "unknown absence":
-				original := f.request
-				f.request = func(r *http.Request) (*http.Response, error) {
-					if r.URL.Path != "/sandbox" {
-						return lifecycleResponse(404, `{}`), nil
-					}
-					return original(r)
-				}
-			case "changed profile":
-				f.catalog = `[{"id":"machine-1","label":"manual","target":"another.sbx","session":"default"}]`
-			case "pending intent":
-				item.Pending = true
-			case "other scope":
-				f.scope = "another-daemon"
-			}
-			f.save(item)
-			_ = f.service.registrations.Reconcile(io.Discard)
-			require.Len(t, f.removed, 0, "removed protected machine: %v", f.removed)
-			f.assertCount(1)
+			testManualReconcilePreservesMachine(t, scenario)
 		})
 	}
+}
+
+func testManualReconcilePreservesMachine(t *testing.T, scenario string) {
+	t.Helper()
+	f := newLifecycleFixture(t)
+	item := ownedRegistration()
+	switch scenario {
+	case "stopped":
+		f.request = func(*http.Request) (*http.Response, error) {
+			return lifecycleResponse(200, `[{"uuid":"old","name":"demo","status":"stopped"}]`), nil
+		}
+	case "unknown absence":
+		original := f.request
+		f.request = func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path != "/sandbox" {
+				return lifecycleResponse(404, `{}`), nil
+			}
+			return original(r)
+		}
+	case "changed profile":
+		f.catalog = `[{"id":"machine-1","label":"manual","target":"another.sbx","session":"default"}]`
+	case "pending intent":
+		item.Pending = true
+	case "other scope":
+		f.scope = "another-daemon"
+	}
+	f.save(item)
+	_ = f.service.registrations.Reconcile(io.Discard)
+	require.Len(t, f.removed, 0, "removed protected machine: %v", f.removed)
+	f.assertCount(1)
 }
 
 func TestLifecycleSchedulerIgnoresOtherEventTypes(t *testing.T) {
@@ -538,18 +543,8 @@ func TestWatchCancelsSchedulerBeforeAWorkerRetry(t *testing.T) {
 	entered := make(chan struct{})
 	canceled := make(chan error, 1)
 	var streamEnded atomic.Bool
-	f.run = func(commandContext context.Context, cmd process.Command) (string, error) {
-		if cmd.Name == "sbx" && strings.Join(cmd.Args, " ") == "exec demo -- pwd -P" {
-			close(entered)
-			<-commandContext.Done()
-			canceled <- commandContext.Err()
-			return "", commandContext.Err()
-		}
-		if cmd.Name == "sbx" && strings.Join(cmd.Args, " ") == "daemon status --json" && streamEnded.Load() {
-			return `{"status":"stopped","socket":"/tmp/lifecycle-test.sock"}`, nil
-		}
-		return f.defaultRun(commandContext, cmd)
-	}
+	f.run = watchCancellationRunner(f, entered, canceled, &streamEnded)
+
 	reader, writer := io.Pipe()
 	defer reader.Close()
 	defer writer.Close()
@@ -601,21 +596,9 @@ func TestWorkerReportsStreamSyncAndReconnect(t *testing.T) {
 	}
 	synced := make(chan struct{}, 1)
 	states := make(chan string, 8)
-	report := func(state, detail string, sync bool) {
-		assert.NoError(t, store.RecordWorkerStatus(state, detail, sync))
-		if state != "" {
-			states <- state
-		}
-		if sync {
-			select {
-			case synced <- struct{}{}:
-			default:
-			}
-		}
-		if state == "reconnecting" {
-			cancel()
-		}
-	}
+	reporter := workerReportFixture{t: t, cancel: cancel, synced: synced, states: states}
+	report := reporter.report
+
 	producerDone := make(chan struct{})
 	go func() {
 		defer close(producerDone)
@@ -678,42 +661,7 @@ func TestLifecycleDeletionRetainsOwnershipWithMalformedMachineCatalog(t *testing
 func TestCatchupFailureShowsReasonAndCancellationStaysQuiet(t *testing.T) {
 	for _, cancelled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("cancelled_%t", cancelled), func(t *testing.T) {
-			f := newLifecycleFixture(t)
-			sb := sbx.Sandbox{ID: "old", Name: "demo", Status: "stopped"}
-			require.NoError(t, store.RecordSandboxStatus(f.scope, sb, "ready", "last observed status", false))
-			failure := errors.New("sandbox inventory fixture unavailable")
-			if cancelled {
-				failure = fmt.Errorf("refresh interrupted: %w", context.Canceled)
-			}
-			requests := 0
-			f.request = func(r *http.Request) (*http.Response, error) {
-				require.Equal(t, "/sandbox", r.URL.Path, "unexpected probe: %s", r.URL.Path)
-				requests++
-				if requests > 1 {
-					return nil, failure
-				}
-				return lifecycleResponse(200, `[{"uuid":"other","name":"other","status":"stopped"}]`), nil
-			}
-			var output strings.Builder
-			scheduler := f.scheduler()
-			scheduler.out = &output
-			scheduler.processCatchup(true)
-			saved, err := store.ReadStatusStore()
-			require.NoError(t, err)
-			cached := saved.Sandboxes[store.StatusKey(f.scope, "old")]
-			warning := saved.Warnings[f.scope+"/catch-up"]
-			if cancelled {
-				require.EqualValues(t, "", warning)
-				require.False(t, cached.Stale)
-				require.EqualValues(t, "last observed status", cached.Detail)
-				require.NotContains(t, output.String(), "Docker Sandboxes warning:")
-				return
-			}
-			require.True(t, cached.Stale)
-			require.True(t, strings.HasPrefix(cached.Detail, "Could not refresh sandbox state: "))
-			require.Contains(t, cached.Detail, failure.Error())
-			require.False(t, warning != cached.Detail)
-			require.Contains(t, output.String(), warning)
+			testCatchupFailure(t, cancelled)
 		})
 	}
 }
@@ -732,4 +680,84 @@ func TestMissedDeletionReleasesRemovedEntryMetadataOnNameReuse(t *testing.T) {
 	f.scheduler().recoverMissedDeletes()
 	f.assertCount(0)
 	require.Len(t, f.removed, 0, "local cleanup removed native replacement: %v", f.removed)
+}
+
+func testCatchupFailure(t *testing.T, cancelled bool) {
+
+	f := newLifecycleFixture(t)
+	sb := sbx.Sandbox{ID: "old", Name: "demo", Status: "stopped"}
+	require.NoError(t, store.RecordSandboxStatus(f.scope, sb, "ready", "last observed status", false))
+	failure := errors.New("sandbox inventory fixture unavailable")
+	if cancelled {
+		failure = fmt.Errorf("refresh interrupted: %w", context.Canceled)
+	}
+	requests := 0
+	f.request = func(r *http.Request) (*http.Response, error) {
+		require.Equal(t, "/sandbox", r.URL.Path, "unexpected probe: %s", r.URL.Path)
+		requests++
+		if requests > 1 {
+			return nil, failure
+		}
+		return lifecycleResponse(200, `[{"uuid":"other","name":"other","status":"stopped"}]`), nil
+	}
+	var output strings.Builder
+	scheduler := f.scheduler()
+	scheduler.out = &output
+	scheduler.processCatchup(true)
+	saved, err := store.ReadStatusStore()
+	require.NoError(t, err)
+	cached := saved.Sandboxes[store.StatusKey(f.scope, "old")]
+	warning := saved.Warnings[f.scope+"/catch-up"]
+	if cancelled {
+		require.EqualValues(t, "", warning)
+		require.False(t, cached.Stale)
+		require.EqualValues(t, "last observed status", cached.Detail)
+		require.NotContains(t, output.String(), "Docker Sandboxes warning:")
+		return
+	}
+	require.True(t, cached.Stale)
+	require.True(t, strings.HasPrefix(cached.Detail, "Could not refresh sandbox state: "))
+	require.Contains(t, cached.Detail, failure.Error())
+	require.False(t, warning != cached.Detail)
+	require.Contains(t, output.String(), warning)
+
+}
+
+func watchCancellationRunner(f *lifecycleFixture, entered chan struct{}, canceled chan error, streamEnded *atomic.Bool) func(context.Context, process.Command) (string, error) {
+	return func(commandContext context.Context, cmd process.Command) (string, error) {
+		if cmd.Name == "sbx" && strings.Join(cmd.Args, " ") == "exec demo -- pwd -P" {
+			close(entered)
+			<-commandContext.Done()
+			canceled <- commandContext.Err()
+			return "", commandContext.Err()
+		}
+		if cmd.Name == "sbx" && strings.Join(cmd.Args, " ") == "daemon status --json" && streamEnded.Load() {
+			return `{"status":"stopped","socket":"/tmp/lifecycle-test.sock"}`, nil
+		}
+		return f.defaultRun(commandContext, cmd)
+	}
+}
+
+type workerReportFixture struct {
+	t      *testing.T
+	cancel context.CancelFunc
+	synced chan struct{}
+	states chan string
+}
+
+func (r workerReportFixture) report(state, detail string, sync bool) {
+
+	assert.NoError(r.t, store.RecordWorkerStatus(state, detail, sync))
+	if state != "" {
+		r.states <- state
+	}
+	if sync {
+		select {
+		case r.synced <- struct{}{}:
+		default:
+		}
+	}
+	if state == "reconnecting" {
+		r.cancel()
+	}
 }

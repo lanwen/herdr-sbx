@@ -111,21 +111,7 @@ func TestEmptyFilteredTableCanReachErrorsWithoutClearingFilter(t *testing.T) {
 func TestBoundaryNavigationDoesNotCaptureInputsOrDialogs(t *testing.T) {
 	for _, context := range []string{"no errors", "filter", "dialog"} {
 		t.Run(context, func(t *testing.T) {
-			m := modelFixture(t)
-			m.selected = "b"
-			if context != "no errors" {
-				m.errors = navigationErrors()
-			}
-			if context == "filter" {
-				m.input = &inputState{kind: "filter", text: "draft", cursor: 2}
-			} else if context == "dialog" {
-				m.dialog = "startup"
-			}
-			m.key(keyMsg(tea.KeyDown, ""))
-			require.EqualValues(t, "table", m.focus)
-			require.False(t, context != "filter" && m.selected != "b")
-			require.False(t, context == "filter" && (m.input == nil || m.input.text != "draft" || m.input.cursor != 2), "Down changed the active filter")
-			require.False(t, context == "dialog" && (m.dialog != "startup" || m.button != 0), "Down did not retain dialog-local navigation")
+			testBoundaryNavigationContext(t, context)
 		})
 	}
 }
@@ -177,4 +163,24 @@ func TestResolvedLastErrorReturnsFocusToTable(t *testing.T) {
 	require.EqualValues(t, "table", m.focus)
 	require.True(t, m.reveal)
 	require.EqualValues(t, 0, m.scroll)
+}
+
+func testBoundaryNavigationContext(t *testing.T, context string) {
+	t.Helper()
+	m := modelFixture(t)
+	m.selected = "b"
+	if context != "no errors" {
+		m.errors = navigationErrors()
+	}
+	if context == "filter" {
+		m.input = &inputState{kind: "filter", text: "draft", cursor: 2}
+	} else if context == "dialog" {
+		m.dialog = "startup"
+	}
+	m.key(keyMsg(tea.KeyDown, ""))
+	require.EqualValues(t, "table", m.focus)
+	require.False(t, context != "filter" && m.selected != "b")
+	require.False(t, context == "filter" && (m.input == nil || m.input.text != "draft" || m.input.cursor != 2), "Down changed the active filter")
+	require.False(t, context == "dialog" && (m.dialog != "startup" || m.button != 0), "Down did not retain dialog-local navigation")
+
 }

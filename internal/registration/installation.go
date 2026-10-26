@@ -24,10 +24,12 @@ func (e *installationError) Error() string { return e.Detail }
 
 type installationOptions struct{ Socket, Scope, AuthorizedID string }
 
-var installerAccess = [...]sbx.PolicyAccess{
-	{Host: "herdr.dev:443", Path: "/install.sh"}, {Host: "herdr.dev:443", Path: "/latest.json"},
-	{Host: "github.com:443", Path: "/herdrdev/herdr/releases/download/**"},
-	{Host: "release-assets.githubusercontent.com:443", Path: "/github-production-release-asset/1193909050/**"},
+func installerAccess() []sbx.PolicyAccess {
+	return []sbx.PolicyAccess{
+		{Host: "herdr.dev:443", Path: "/install.sh"}, {Host: "herdr.dev:443", Path: "/latest.json"},
+		{Host: "github.com:443", Path: "/herdrdev/herdr/releases/download/**"},
+		{Host: "release-assets.githubusercontent.com:443", Path: "/github-production-release-asset/1193909050/**"},
+	}
 }
 
 func savePolicyAttempt(attempt store.PolicyAttempt) error {
@@ -49,15 +51,22 @@ func sameAccess(rule sbx.PolicyRule, access sbx.PolicyAccess) bool {
 }
 func existingAccess(rules []sbx.PolicyRule, access sbx.PolicyAccess) bool {
 	for _, rule := range rules {
-		if rule.Decision == "allow" && rule.ResourceType == "http" && rule.Status == "active" && sameAccess(rule, access) {
-			if len(rule.Methods) == 0 {
-				return true
-			}
-			for _, method := range rule.Methods {
-				if method == "GET" || method == "ANY" {
-					return true
-				}
-			}
+		if allowsRead(rule, access) {
+			return true
+		}
+	}
+	return false
+}
+func allowsRead(rule sbx.PolicyRule, access sbx.PolicyAccess) bool {
+	if rule.Decision != "allow" || rule.ResourceType != "http" || rule.Status != "active" || !sameAccess(rule, access) {
+		return false
+	}
+	if len(rule.Methods) == 0 {
+		return true
+	}
+	for _, method := range rule.Methods {
+		if method == "GET" || method == "ANY" {
+			return true
 		}
 	}
 	return false
@@ -80,48 +89,25 @@ func (s *Service) cleanupPolicy(socket string, attempt store.PolicyAttempt) erro
 	}
 	var failures []error
 	for _, owned := range attempt.Owned {
-		id := owned.ID
-		var found *sbx.PolicyRule
-		for i := range rules {
-			if rules[i].ID == id {
-				found = &rules[i]
-				break
-			}
+		stopped, cleanupErr := s.cleanupOwnedRule(ctx, socket, attempt.PolicySandbox, owned, rules)
+		if stopped {
+			return cleanupErr
 		}
-		if found == nil {
-			continue
-		}
-		if !scopedRule(*found, attempt.PolicySandbox) || !found.Editable || found.Decision != "allow" || found.ResourceType != "http" || len(found.Targets) != 1 || found.Targets[0] != owned.Access || len(found.Methods) != 1 || found.Methods[0] != "GET" {
-			failures = append(failures, fmt.Errorf("owned rule %s changed since creation; inspect it manually", id))
-			continue
-		}
-		if err := CheckAutomaticWork(ctx); err != nil {
-			return policyPending("Management is OFF; temporary policy cleanup remains pending")
-		}
-		_, removeErr := s.sbx.RemovePolicyRule(ctx, socket, attempt.PolicySandbox, id)
-		after, listErr := s.sbx.ListPolicyRules(ctx, socket, attempt.PolicySandbox)
-		if listErr != nil {
-			failures = append(failures, listErr)
-			continue
-		}
-		for _, rule := range after {
-			if rule.ID == id {
-				failures = append(failures, fmt.Errorf("rule %s remains after cleanup (%v)", id, removeErr))
-				break
-			}
+		if cleanupErr != nil {
+			failures = append(failures, cleanupErr)
 		}
 	}
+
 	rules, err = s.sbx.ListPolicyRules(ctx, socket, attempt.PolicySandbox)
 	if err != nil {
 		failures = append(failures, err)
-	} else if attempt.Intent != nil {
-		for _, rule := range rules {
-			if scopedRule(rule, attempt.PolicySandbox) && sameAccess(rule, *attempt.Intent) {
-				failures = append(failures, fmt.Errorf("creation outcome uncertain for %s%s; inspect policy for sandbox ID %s manually; matching rules are not owned", attempt.Intent.Host, attempt.Intent.Path, attempt.Sandbox.ID))
-				break
-			}
-		}
+	} else if err := uncertainPolicyIntent(rules, attempt); err != nil {
+		failures = append(failures, err)
 	}
+
+	return finishPolicyCleanup(attempt, failures)
+}
+func finishPolicyCleanup(attempt store.PolicyAttempt, failures []error) error {
 	if len(failures) > 0 {
 		attempt.Detail = errors.Join(failures...).Error()
 		if err := savePolicyAttempt(attempt); err != nil {
@@ -135,6 +121,53 @@ func (s *Service) cleanupPolicy(socket string, attempt store.PolicyAttempt) erro
 		return policyPending(err.Error())
 	}
 	return nil
+}
+
+func uncertainPolicyIntent(rules []sbx.PolicyRule, attempt store.PolicyAttempt) error {
+	if attempt.Intent == nil {
+		return nil
+	}
+	for _, rule := range rules {
+		if scopedRule(rule, attempt.PolicySandbox) && sameAccess(rule, *attempt.Intent) {
+			return fmt.Errorf("creation outcome uncertain for %s%s; inspect policy for sandbox ID %s manually; matching rules are not owned", attempt.Intent.Host, attempt.Intent.Path, attempt.Sandbox.ID)
+		}
+	}
+	return nil
+}
+
+func (s *Service) cleanupOwnedRule(ctx context.Context, socket, policySandbox string, owned store.OwnedPolicyRule, rules []sbx.PolicyRule) (bool, error) {
+	found := policyRuleByID(rules, owned.ID)
+	if found == nil {
+		return false, nil
+	}
+	if !unchangedOwnedRule(*found, policySandbox, owned.Access) {
+		return false, fmt.Errorf("owned rule %s changed since creation; inspect it manually", owned.ID)
+	}
+	if err := CheckAutomaticWork(ctx); err != nil {
+		return true, policyPending("Management is OFF; temporary policy cleanup remains pending")
+	}
+	_, removeErr := s.sbx.RemovePolicyRule(ctx, socket, policySandbox, owned.ID)
+	after, listErr := s.sbx.ListPolicyRules(ctx, socket, policySandbox)
+	if listErr != nil {
+		return false, listErr
+	}
+	if policyRuleByID(after, owned.ID) != nil {
+		return false, fmt.Errorf("rule %s remains after cleanup (%v)", owned.ID, removeErr)
+	}
+	return false, nil
+}
+
+func policyRuleByID(rules []sbx.PolicyRule, id string) *sbx.PolicyRule {
+	for i := range rules {
+		if rules[i].ID == id {
+			return &rules[i]
+		}
+	}
+	return nil
+}
+
+func unchangedOwnedRule(rule sbx.PolicyRule, policySandbox string, access sbx.PolicyAccess) bool {
+	return scopedRule(rule, policySandbox) && rule.Editable && rule.Decision == "allow" && rule.ResourceType == "http" && len(rule.Targets) == 1 && rule.Targets[0] == access && len(rule.Methods) == 1 && rule.Methods[0] == "GET"
 }
 
 // Activation may restore previously authorized temporary access. Refresh stays observational.
@@ -186,7 +219,7 @@ func (s *Service) installHerdr(ctx context.Context, request installationRequest)
 	if !request.Authorized {
 		return s.prepareFromHost(ctx, target, request.Current, request.Progress)
 	}
-	if request.Socket == "" || request.Scope == "" || request.Sandbox.ID == "" || request.Sandbox.Name == "" {
+	if !validTemporaryRequest(request) {
 		return "", errors.New("temporary access requires an identified local daemon and sandbox")
 	}
 	if request.Current == nil || !request.Current() {
@@ -206,52 +239,74 @@ func (s *Service) installHerdr(ctx context.Context, request installationRequest)
 			version = ""
 		}
 	}()
-	for _, access := range installerAccess {
-		if existingAccess(rules, access) {
-			continue
-		}
-		if ctx.Err() != nil {
-			return "", ctx.Err()
-		}
-		if !request.Current() {
-			return "", context.Canceled
-		}
-		attempt.Intent = &access
-		if err = savePolicyAttempt(attempt); err != nil {
-			return "", err
-		}
-		response, mutationErr := s.sbx.CreatePolicyAccess(ctx, request.Socket, request.Sandbox.Name, access)
-		if mutationErr != nil {
-			return "", policyPending("Temporary access creation is uncertain: " + mutationErr.Error())
-		}
-		for _, created := range response.Created {
-			if created == "" {
-				return "", policyPending("Created policy rule has no ID")
-			}
-			attempt.Owned = append(attempt.Owned, store.OwnedPolicyRule{ID: created, Access: access})
-		}
-		for _, existing := range response.Existing {
-			if existing == "" {
-				return "", policyPending("Existing policy rule has no ID; creation outcome is uncertain")
-			}
-		}
-		if len(response.Created)+len(response.Existing) == 0 {
-			if response.Error != "" {
-				// Keep intent until cleanup verifies no matching allowance remains.
-				return "", errors.New(response.Error)
-			}
-			return "", policyPending("Policy API did not acknowledge an allowance; creation outcome is uncertain")
-		}
-		attempt.Intent = nil
-		if err = savePolicyAttempt(attempt); err != nil {
-			return "", policyPending("Could not record created rules: " + err.Error())
-		}
-		if response.Error != "" {
-			return "", errors.New(response.Error)
-		}
+	if err := s.createInstallerAccess(ctx, request, rules, &attempt); err != nil {
+		return "", err
 	}
+
 	if !request.Current() {
 		return "", context.Canceled
 	}
 	return s.prepareMissingRemote(ctx, target, request.Current, request.Progress)
+}
+
+func (s *Service) createInstallerAccess(ctx context.Context, request installationRequest, rules []sbx.PolicyRule, attempt *store.PolicyAttempt) error {
+	for _, access := range installerAccess() {
+		if existingAccess(rules, access) {
+			continue
+		}
+		if err := checkGuestCurrent(ctx, request.Current); err != nil {
+			return err
+		}
+		attempt.Intent = &access
+		if err := savePolicyAttempt(*attempt); err != nil {
+			return err
+		}
+		if err := s.createPolicyAccess(ctx, request, access, attempt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func (s *Service) createPolicyAccess(ctx context.Context, request installationRequest, access sbx.PolicyAccess, attempt *store.PolicyAttempt) error {
+	response, mutationErr := s.sbx.CreatePolicyAccess(ctx, request.Socket, request.Sandbox.Name, access)
+	if mutationErr != nil {
+		return policyPending("Temporary access creation is uncertain: " + mutationErr.Error())
+	}
+	if err := recordPolicyAcknowledgement(response, access, attempt); err != nil {
+		return err
+	}
+	attempt.Intent = nil
+	if err := savePolicyAttempt(*attempt); err != nil {
+		return policyPending("Could not record created rules: " + err.Error())
+	}
+	if response.Error != "" {
+		return errors.New(response.Error)
+	}
+	return nil
+}
+
+func validTemporaryRequest(request installationRequest) bool {
+	return request.Socket != "" && request.Scope != "" && request.Sandbox.ID != "" && request.Sandbox.Name != ""
+}
+
+func recordPolicyAcknowledgement(response sbx.PolicyMutation, access sbx.PolicyAccess, attempt *store.PolicyAttempt) error {
+	for _, created := range response.Created {
+		if created == "" {
+			return policyPending("Created policy rule has no ID")
+		}
+		attempt.Owned = append(attempt.Owned, store.OwnedPolicyRule{ID: created, Access: access})
+	}
+	for _, existing := range response.Existing {
+		if existing == "" {
+			return policyPending("Existing policy rule has no ID; creation outcome is uncertain")
+		}
+	}
+	if len(response.Created)+len(response.Existing) == 0 {
+		if response.Error != "" {
+			// Keep intent until cleanup verifies no matching allowance remains.
+			return errors.New(response.Error)
+		}
+		return policyPending("Policy API did not acknowledge an allowance; creation outcome is uncertain")
+	}
+	return nil
 }

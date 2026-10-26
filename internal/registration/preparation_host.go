@@ -37,82 +37,107 @@ func (s *Service) prepareFromHost(ctx context.Context, target string, current fu
 	if strings.TrimSpace(local) != "herdr "+wanted || wanted == "" {
 		return "", fmt.Errorf("local Herdr must report an exact stable release version")
 	}
-	return s.prepareHostVersion(ctx, target, wanted, "", current, progress)
+	return s.prepareHostVersion(ctx, target, hostPreparation{Wanted: wanted, Previous: "", Current: current, Progress: progress})
 }
 
 // An expected old version permits atomic replacement of only the user-local
 // executable we just inspected. Other paths and symlinks are left untouched.
-func (s *Service) prepareHostVersion(ctx context.Context, target, wanted, old string, current func() bool, progress func(string)) (string, error) {
+func (s *Service) prepareHostVersion(ctx context.Context, target string, preparation hostPreparation) (string, error) {
+	wanted, old, current, progress := preparation.Wanted, preparation.Previous, preparation.Current, preparation.Progress
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
-	check := func() error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if current != nil && !current() {
-			return context.Canceled
-		}
-		return nil
-	}
-	if err := check(); err != nil {
+	if err := checkGuestCurrent(ctx, current); err != nil {
 		return "", err
 	}
-	output, err := s.runSSH(ctx, 15*time.Second, target, "uname -sm")
+	platform, err := s.sandboxPlatform(ctx, target)
 	if err != nil {
-		return "", fmt.Errorf("sandbox architecture: %s", commandError(err, output))
+		return "", err
 	}
-	var platform string
-	switch strings.TrimSpace(output) {
-	case "Linux x86_64":
-		platform = "linux-x86_64"
-	case "Linux aarch64", "Linux arm64":
-		platform = "linux-aarch64"
-	default:
-		return "", fmt.Errorf("unsupported sandbox platform: %q", strings.TrimSpace(output))
-	}
-	if err := check(); err != nil {
+	if err := checkGuestCurrent(ctx, current); err != nil {
 		return "", err
 	}
 	if progress != nil {
 		progress("Downloading Herdr on the host for " + platform + ".")
 	}
-	client := &http.Client{Transport: s.releaseTransport, Timeout: 90 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 5 {
-			return fmt.Errorf("too many release redirects")
-		}
-		u := req.URL
-		if u.Scheme != "https" || u.User != nil || u.Port() != "" || (u.Hostname() != "github.com" && u.Hostname() != "release-assets.githubusercontent.com" && u.Hostname() != "herdr.dev") {
-			return fmt.Errorf("unexpected release redirect host")
-		}
-		return nil
-	}}
-	manifest, err := releaseGet(ctx, client, releaseManifestURL)
+	client := &http.Client{Transport: s.releaseTransport, Timeout: 90 * time.Second, CheckRedirect: releaseRedirect}
+	release, err := fetchHerdrRelease(ctx, client, wanted)
 	if err != nil {
 		return "", err
+	}
+	asset, err := releaseAsset(release, platform)
+	if err != nil {
+		return "", err
+	}
+	if err := checkGuestCurrent(ctx, current); err != nil {
+		return "", err
+	}
+	file, checksum, err := downloadHerdr(ctx, client, asset, release.SHA256[platform])
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(file.Name())
+	defer file.Close()
+	return s.transferPreparedHerdr(ctx, target, file, checksum, hostPreparation{Wanted: release.Version, Previous: old, Current: current, Progress: progress})
+}
+
+func (s *Service) sandboxPlatform(ctx context.Context, target string) (string, error) {
+	output, err := s.runSSH(ctx, 15*time.Second, target, "uname -sm")
+	if err != nil {
+		return "", fmt.Errorf("sandbox architecture: %s", commandError(err, output))
+	}
+	switch strings.TrimSpace(output) {
+	case "Linux x86_64":
+		return "linux-x86_64", nil
+	case "Linux aarch64", "Linux arm64":
+		return "linux-aarch64", nil
+	default:
+		return "", fmt.Errorf("unsupported sandbox platform: %q", strings.TrimSpace(output))
+	}
+}
+
+func releaseRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 5 {
+		return fmt.Errorf("too many release redirects")
+	}
+	u := req.URL
+	if u.Scheme != "https" || u.User != nil || u.Port() != "" || (u.Hostname() != "github.com" && u.Hostname() != "release-assets.githubusercontent.com" && u.Hostname() != "herdr.dev") {
+		return fmt.Errorf("unexpected release redirect host")
+	}
+	return nil
+}
+
+func fetchHerdrRelease(ctx context.Context, client *http.Client, wanted string) (herdrRelease, error) {
+	manifest, err := releaseGet(ctx, client, releaseManifestURL)
+	if err != nil {
+		return herdrRelease{}, err
 	}
 	data, err := io.ReadAll(io.LimitReader(manifest, (2<<20)+1))
 	manifest.Close()
 	if err != nil {
-		return "", err
+		return herdrRelease{}, err
 	}
 	if len(data) > 2<<20 {
-		return "", fmt.Errorf("release manifest exceeds size limit")
+		return herdrRelease{}, fmt.Errorf("release manifest exceeds size limit")
 	}
 	var release herdrRelease
 	if err := json.Unmarshal(data, &release); err != nil {
-		return "", fmt.Errorf("invalid release manifest: %w", err)
+		return herdrRelease{}, fmt.Errorf("invalid release manifest: %w", err)
 	}
 	if release.Version != wanted {
 		archived, ok := release.Releases[wanted]
 		if !ok {
-			return "", fmt.Errorf("release manifest has no verified assets for local Herdr %s", wanted)
+			return herdrRelease{}, fmt.Errorf("release manifest has no verified assets for local Herdr %s", wanted)
 		}
 		release = archived
 		release.Version = wanted
 	}
 	if version.Parse(release.Version) != release.Version || version.Compare(release.Version, minHerdrVersion) < 0 {
-		return "", fmt.Errorf("release manifest has an incompatible version")
+		return herdrRelease{}, fmt.Errorf("release manifest has an incompatible version")
 	}
+	return release, nil
+}
+
+func releaseAsset(release herdrRelease, platform string) (string, error) {
 	asset, err := url.Parse(release.Assets[platform])
 	if err != nil || asset.Scheme != "https" || asset.Host != "github.com" || asset.User != nil || asset.RawQuery != "" || asset.Fragment != "" || asset.Path != "/herdrdev/herdr/releases/download/v"+release.Version+"/herdr-"+platform {
 		return "", fmt.Errorf("release manifest has an unexpected asset URL")
@@ -121,20 +146,41 @@ func (s *Service) prepareHostVersion(ctx context.Context, target, wanted, old st
 	if err != nil || len(digest) != sha256.Size {
 		return "", fmt.Errorf("release manifest lacks a valid SHA256")
 	}
-	if err := check(); err != nil {
-		return "", err
-	}
-	body, err := releaseGet(ctx, client, asset.String())
+	return asset.String(), nil
+}
+
+func downloadHerdr(ctx context.Context, client *http.Client, asset, expected string) (file *os.File, checksum string, err error) {
+	body, err := releaseGet(ctx, client, asset)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
-	defer body.Close()
-	file, err := os.CreateTemp("", "herdr-sbx-download-*")
+	closed := false
+	closeBody := func() {
+		if !closed {
+			closed = true
+			_ = body.Close()
+		}
+	}
+	defer closeBody()
+	file, err = os.CreateTemp("", "herdr-sbx-download-*")
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
-	defer os.Remove(file.Name())
-	defer file.Close()
+	// The caller owns a successful download; interruption also removes partial files.
+	complete := false
+	defer func() {
+		if !complete {
+			file.Close()
+			os.Remove(file.Name())
+		}
+	}()
+	checksum, err = verifyHerdrDownload(file, body, expected)
+	closeBody()
+	complete = err == nil
+	return file, checksum, err
+}
+
+func verifyHerdrDownload(file *os.File, body io.Reader, expected string) (string, error) {
 	hash := sha256.New()
 	size, err := io.Copy(io.MultiWriter(file, hash), io.LimitReader(body, maxHerdrDownload+1))
 	if err != nil {
@@ -144,10 +190,15 @@ func (s *Service) prepareHostVersion(ctx context.Context, target, wanted, old st
 		return "", fmt.Errorf("Herdr download has an invalid size")
 	}
 	checksum := hex.EncodeToString(hash.Sum(nil))
-	if checksum != strings.ToLower(release.SHA256[platform]) {
+	if checksum != strings.ToLower(expected) {
 		return "", fmt.Errorf("host Herdr download SHA256 mismatch")
 	}
-	if err := check(); err != nil {
+	return checksum, nil
+}
+
+func (s *Service) transferPreparedHerdr(ctx context.Context, target string, file *os.File, checksum string, preparation hostPreparation) (string, error) {
+	wanted, old, current, progress := preparation.Wanted, preparation.Previous, preparation.Current, preparation.Progress
+	if err := checkGuestCurrent(ctx, current); err != nil {
 		return "", err
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
@@ -156,17 +207,17 @@ func (s *Service) prepareHostVersion(ctx context.Context, target, wanted, old st
 	if progress != nil {
 		progress("Copying verified Herdr into the sandbox over SSH.")
 	}
-	if err := s.streamHerdrReplacing(ctx, target, file, checksum, release.Version, old); err != nil {
+	if err := s.streamHerdrReplacing(ctx, target, file, checksum, herdrVersions{Wanted: wanted, Previous: old}); err != nil {
 		return "", err
 	}
-	if err := check(); err != nil {
+	if err := checkGuestCurrent(ctx, current); err != nil {
 		return "", err
 	}
 	status, err := s.remoteHerdrStatus(ctx, target)
 	if err != nil {
 		return "", err
 	}
-	if status.Missing || status.Conflict || version.Parse(status.Version) != release.Version {
+	if status.Missing || status.Conflict || version.Parse(status.Version) != wanted {
 		return "", fmt.Errorf("transferred Herdr did not pass the remote readiness check")
 	}
 	return status.Version, nil
@@ -189,10 +240,11 @@ func releaseGet(ctx context.Context, client *http.Client, address string) (io.Re
 }
 
 func (s *Service) streamHerdr(ctx context.Context, target string, binary io.Reader, checksum, version string) error {
-	return s.streamHerdrReplacing(ctx, target, binary, checksum, version, "")
+	return s.streamHerdrReplacing(ctx, target, binary, checksum, herdrVersions{Wanted: version, Previous: ""})
 }
 
-func (s *Service) streamHerdrReplacing(ctx context.Context, target string, binary io.Reader, checksum, version, old string) error {
+func (s *Service) streamHerdrReplacing(ctx context.Context, target string, binary io.Reader, checksum string, versions herdrVersions) error {
+	version, old := versions.Wanted, versions.Previous
 	if err := CheckAutomaticWork(ctx); err != nil {
 		return err
 	}
@@ -215,3 +267,13 @@ func (s *Service) streamHerdrReplacing(ctx context.Context, target string, binar
 func transferredInstallCommand(checksum, version string) string {
 	return `set -eu; umask 077; mkdir -p "$HOME/.local/share" "$HOME/.local/bin"; stage=$(mktemp -d "$HOME/.local/share/herdr-sbx-install.XXXXXX"); trap 'rm -rf "$stage"' EXIT; trap 'exit 1' HUP INT TERM; cat > "$stage/herdr"; printf '%s  %s\n' '` + checksum + `' "$stage/herdr" | sha256sum -c -; chmod 755 "$stage/herdr"; installed_version=$("$stage/herdr" --version); [ "$installed_version" = 'herdr ` + version + `' ]; [ ! -e "$HOME/.local/bin/herdr" ] && [ ! -L "$HOME/.local/bin/herdr" ]; ln -T "$stage/herdr" "$HOME/.local/bin/herdr"`
 }
+
+// hostPreparation keeps one verified release transition and its operation callbacks.
+type hostPreparation struct {
+	Wanted, Previous string
+	Current          func() bool
+	Progress         func(string)
+}
+
+// herdrVersions identifies the requested release and the inspected replacement precondition.
+type herdrVersions struct{ Wanted, Previous string }

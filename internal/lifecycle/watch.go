@@ -42,93 +42,127 @@ type managementBaseline struct{ scope, socket string }
 func (svc *Service) watchManaged(ctx context.Context, out io.Writer, report func(string, string, bool), baseline *managementBaseline) error {
 	out = &lockedWriter{out: out}
 	schedulerCtx, stopScheduler := context.WithCancel(ctx)
-	var scheduler *lifecycleScheduler
+	session := managedWatchSession{schedulerContext: schedulerCtx, report: report, baseline: baseline}
 	defer func() {
 		stopScheduler()
-		if scheduler != nil {
-			scheduler.wait()
+		if session.scheduler != nil {
+			session.scheduler.wait()
 		}
 	}()
-
 	for {
-		if !automaticAllowed(ctx) {
-			return nil
-		}
-		p := svc.registrations.Inspect()
-		svc.checks(out, p)
-		if p.Scope == "" || p.Socket == "" || !hasLevel(p, "Sandbox capability", precheck.Ready) || !hasLevel(p, "Sandbox daemon", precheck.Ready) || hasBlocked(p, "Docker authorization") {
-			if scheduler != nil {
-				if err := store.MarkScopeStale(scheduler.scope, "sandbox discovery is unavailable"); err != nil {
-					fmt.Fprintln(out, "Sandbox status was not saved:", err)
-				}
-				svc.warnBlocking(ctx, out, scheduler.scope+"/discovery", "Sandbox discovery is unavailable. Check Docker Sandboxes from the status panel.")
-			}
-			return errors.New("watch needs a running sandbox daemon and readable sandbox inventory")
-		}
-		if scheduler != nil && (scheduler.scope != p.Scope || scheduler.socket != p.Socket) {
-			return errors.New("sandbox daemon scope changed; restart the lifecycle watch")
-		}
-		if baseline.scope != p.Scope || baseline.socket != p.Socket {
-			if err := svc.registrations.CaptureBaseline(ctx, p.Socket); err != nil {
-				return fmt.Errorf("read management baseline before automatic work: %w", err)
-			}
-			*baseline = managementBaseline{scope: p.Scope, socket: p.Socket}
-		}
-		if !automaticAllowed(ctx) {
-			return nil
-		}
-		if err := svc.registrations.RecoverPendingPolicy(p.Scope, p.Socket); err != nil {
+		again, err := svc.watchManagedOnce(ctx, out, &session)
+		if err != nil || !again {
 			return err
 		}
-		if err := store.ClearWarning(p.Scope + "/discovery"); err != nil {
-			fmt.Fprintln(out, "Sandbox warning state was not saved:", err)
-		}
+	}
+}
 
-		fmt.Fprintln(out, "Watching sandbox lifecycle. Press Ctrl-C to stop.")
-		if scheduler == nil {
-			scheduler = svc.newScheduler(schedulerCtx, p.Scope, p.Socket, out, report)
+type managedWatchSession struct {
+	schedulerContext context.Context
+	scheduler        *lifecycleScheduler
+	report           func(string, string, bool)
+	baseline         *managementBaseline
+}
+
+func (svc *Service) watchManagedOnce(ctx context.Context, out io.Writer, session *managedWatchSession) (bool, error) {
+	if !automaticAllowed(ctx) {
+		return false, nil
+	}
+	p, err := svc.prepareWatch(ctx, out, session.scheduler, session.baseline)
+	if err != nil {
+		return false, err
+	}
+	if !automaticAllowed(ctx) {
+		return false, nil
+	}
+	if err := svc.registrations.RecoverPendingPolicy(p.Scope, p.Socket); err != nil {
+		return false, err
+	}
+	if err := store.ClearWarning(p.Scope + "/discovery"); err != nil {
+		fmt.Fprintln(out, "Sandbox warning state was not saved:", err)
+	}
+	fmt.Fprintln(out, "Watching sandbox lifecycle. Press Ctrl-C to stop.")
+	if session.scheduler == nil {
+		session.scheduler = svc.newScheduler(session.schedulerContext, p.Scope, p.Socket, out, session.report)
+	}
+	err = svc.readManagedStream(ctx, p.Socket, session.scheduler, session.report)
+	return svc.reconnectStream(ctx, out, session.scheduler, session.report, err), nil
+}
+
+func (svc *Service) prepareWatch(ctx context.Context, out io.Writer, scheduler *lifecycleScheduler, baseline *managementBaseline) (precheck.Result, error) {
+	p := svc.registrations.Inspect()
+	svc.checks(out, p)
+	if !watchPrerequisitesReady(p) {
+		svc.discoveryUnavailable(ctx, out, scheduler)
+		return p, errors.New("watch needs a running sandbox daemon and readable sandbox inventory")
+	}
+	if scheduler != nil && (scheduler.scope != p.Scope || scheduler.socket != p.Socket) {
+		return p, errors.New("sandbox daemon scope changed; restart the lifecycle watch")
+	}
+	if baseline.scope != p.Scope || baseline.socket != p.Socket {
+		if err := svc.registrations.CaptureBaseline(ctx, p.Socket); err != nil {
+			return p, fmt.Errorf("read management baseline before automatic work: %w", err)
 		}
-		scheduler.beginStream()
-		streamReported := false
-		err := svc.sbx.ReadLifecycle(ctx, p.Socket, func(event sbx.LifecycleEvent) bool {
-			if report != nil && !streamReported && (event.Type == "sandbox.lifecycle" || event.Type == "sync") {
-				streamReported = true
-				report("running", "Following sandbox lifecycle events.", false)
-			}
-			return scheduler.enqueue(event)
-		})
-		if ctx.Err() != nil {
-			fmt.Fprintln(out, "Lifecycle watch stopped.")
-			return nil
+		*baseline = managementBaseline{scope: p.Scope, socket: p.Socket}
+	}
+	return p, nil
+}
+
+func watchPrerequisitesReady(p precheck.Result) bool {
+	return p.Scope != "" && p.Socket != "" && hasLevel(p, "Sandbox capability", precheck.Ready) && hasLevel(p, "Sandbox daemon", precheck.Ready) && !hasBlocked(p, "Docker authorization")
+}
+
+func (svc *Service) discoveryUnavailable(ctx context.Context, out io.Writer, scheduler *lifecycleScheduler) {
+	if scheduler == nil {
+		return
+	}
+	if err := store.MarkScopeStale(scheduler.scope, "sandbox discovery is unavailable"); err != nil {
+		fmt.Fprintln(out, "Sandbox status was not saved:", err)
+	}
+	svc.warnBlocking(ctx, out, scheduler.scope+"/discovery", "Sandbox discovery is unavailable. Check Docker Sandboxes from the status panel.")
+}
+
+func (svc *Service) readManagedStream(ctx context.Context, socket string, scheduler *lifecycleScheduler, report func(string, string, bool)) error {
+	scheduler.beginStream()
+	streamReported := false
+	return svc.sbx.ReadLifecycle(ctx, socket, func(event sbx.LifecycleEvent) bool {
+		if report != nil && !streamReported && (event.Type == "sandbox.lifecycle" || event.Type == "sync") {
+			streamReported = true
+			report("running", "Following sandbox lifecycle events.", false)
 		}
-		if !automaticAllowed(ctx) {
-			return nil
+		return scheduler.enqueue(event)
+	})
+}
+
+func (svc *Service) reconnectStream(ctx context.Context, out io.Writer, scheduler *lifecycleScheduler, report func(string, string, bool), err error) bool {
+	if ctx.Err() != nil {
+		fmt.Fprintln(out, "Lifecycle watch stopped.")
+		return false
+	}
+	if !automaticAllowed(ctx) {
+		return false
+	}
+	if report != nil {
+		detail := "Sandbox event stream ended; reconnecting."
+		if err != nil {
+			detail = err.Error()
 		}
-		if report != nil {
-			detail := "Sandbox event stream ended; reconnecting."
-			if err != nil {
-				detail = err.Error()
-			}
-			report("reconnecting", detail, false)
-		}
-		if err != nil && !errors.Is(err, context.Canceled) {
-			if err := store.MarkScopeStale(scheduler.scope, "sandbox lifecycle stream interrupted"); err != nil {
-				fmt.Fprintln(out, "Sandbox status was not saved:", err)
-			}
-			svc.warnBlocking(ctx, out, scheduler.scope+"/stream", "Sandbox lifecycle stream interrupted. The worker will reconnect.")
-			fmt.Fprintln(out, "Lifecycle stream ended:", err)
-		} else {
-			if err := store.MarkScopeStale(scheduler.scope, "sandbox lifecycle stream interrupted"); err != nil {
-				fmt.Fprintln(out, "Sandbox status was not saved:", err)
-			}
-			svc.warnBlocking(ctx, out, scheduler.scope+"/stream", "Sandbox lifecycle stream interrupted. The worker will reconnect.")
-			fmt.Fprintln(out, "Lifecycle stream ended; reconnecting.")
-		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(time.Second):
-		}
+		report("reconnecting", detail, false)
+	}
+	if statusErr := store.MarkScopeStale(scheduler.scope, "sandbox lifecycle stream interrupted"); statusErr != nil {
+		fmt.Fprintln(out, "Sandbox status was not saved:", statusErr)
+	}
+	svc.warnBlocking(ctx, out, scheduler.scope+"/stream", "Sandbox lifecycle stream interrupted. The worker will reconnect.")
+	if err != nil && !errors.Is(err, context.Canceled) {
+		fmt.Fprintln(out, "Lifecycle stream ended:", err)
+	} else {
+		fmt.Fprintln(out, "Lifecycle stream ended; reconnecting.")
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(time.Second):
+		return true
 	}
 }
 
@@ -181,16 +215,7 @@ func (s *lifecycleScheduler) enqueue(event sbx.LifecycleEvent) bool {
 		return true
 	}
 	s.mu.Lock()
-	if event.Seq != nil {
-		if s.lastSeq != nil && *event.Seq > *s.lastSeq && *event.Seq-*s.lastSeq > 1 {
-			s.catchup = true
-			s.freshCatchup = true
-		}
-		if s.lastSeq == nil || *event.Seq > *s.lastSeq {
-			seq := *event.Seq
-			s.lastSeq = &seq
-		}
-	}
+	s.recordSequence(event.Seq)
 	if action == "deleted" {
 		s.retired[event.SandboxID] = true
 		s.deletes[event.SandboxID] = event
@@ -202,6 +227,21 @@ func (s *lifecycleScheduler) enqueue(event sbx.LifecycleEvent) bool {
 	default:
 		s.mu.Unlock()
 		return false
+	}
+}
+
+// recordSequence runs under the scheduler lock shared with catch-up consumption.
+func (s *lifecycleScheduler) recordSequence(seq *uint64) {
+	if seq == nil {
+		return
+	}
+	if s.lastSeq != nil && *seq > *s.lastSeq && *seq-*s.lastSeq > 1 {
+		s.catchup = true
+		s.freshCatchup = true
+	}
+	if s.lastSeq == nil || *seq > *s.lastSeq {
+		value := *seq
+		s.lastSeq = &value
 	}
 }
 
@@ -265,47 +305,59 @@ func (s *lifecycleScheduler) processCatchup(periodic bool) {
 	if !automaticAllowed(s.ctx) {
 		return
 	}
-	s.mu.Lock()
-	needed := s.catchup
-	fresh := s.freshCatchup
-	s.catchup = false
-	if periodic || needed {
-		s.freshCatchup = false
-	}
-	s.mu.Unlock()
-	if !periodic && !needed {
+	needed, fresh := s.takeCatchup(periodic)
+	if !needed {
 		return
 	}
 	ctx := s.ctx
 	if fresh {
 		ctx = registration.WithFreshGuestObservation(ctx)
 	}
-	if err := s.owner.registrations.ReconcileContext(ctx, s.out); err != nil {
-		if errors.Is(err, context.Canceled) {
-			return
-		}
-		if fresh {
-			s.mu.Lock()
-			s.freshCatchup = true
-			s.mu.Unlock()
-		}
-		if !errors.Is(err, context.Canceled) {
-			detail := fmt.Sprintf("Could not refresh sandbox state: %v", err)
-			if statusErr := store.MarkScopeStale(s.scope, detail); statusErr != nil {
-				fmt.Fprintln(s.out, "Sandbox status was not saved:", statusErr)
-			}
-			s.owner.warnBlocking(s.ctx, s.out, s.scope+"/catch-up", detail)
-			fmt.Fprintln(s.out, "Lifecycle catch-up failed:", err)
-		}
+	err := s.owner.registrations.ReconcileContext(ctx, s.out)
+	if errors.Is(err, context.Canceled) {
+		return
+	}
+	if err != nil {
+		s.catchupFailed(err, fresh)
 	} else {
-		if s.report != nil {
-			s.report("", "", true)
-		}
-		if err := store.ClearWarning(s.scope + "/catch-up"); err != nil {
-			fmt.Fprintln(s.out, "Sandbox warning state was not saved:", err)
-		}
+		s.catchupSucceeded()
 	}
 	s.recoverMissedDeletes()
+}
+
+func (s *lifecycleScheduler) takeCatchup(periodic bool) (needed, fresh bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	needed = periodic || s.catchup
+	fresh = s.freshCatchup
+	s.catchup = false
+	if needed {
+		s.freshCatchup = false
+	}
+	return needed, fresh
+}
+
+func (s *lifecycleScheduler) catchupFailed(err error, fresh bool) {
+	if fresh {
+		s.mu.Lock()
+		s.freshCatchup = true
+		s.mu.Unlock()
+	}
+	detail := fmt.Sprintf("Could not refresh sandbox state: %v", err)
+	if statusErr := store.MarkScopeStale(s.scope, detail); statusErr != nil {
+		fmt.Fprintln(s.out, "Sandbox status was not saved:", statusErr)
+	}
+	s.owner.warnBlocking(s.ctx, s.out, s.scope+"/catch-up", detail)
+	fmt.Fprintln(s.out, "Lifecycle catch-up failed:", err)
+}
+
+func (s *lifecycleScheduler) catchupSucceeded() {
+	if s.report != nil {
+		s.report("", "", true)
+	}
+	if err := store.ClearWarning(s.scope + "/catch-up"); err != nil {
+		fmt.Fprintln(s.out, "Sandbox warning state was not saved:", err)
+	}
 }
 
 func (s *lifecycleScheduler) wait() {
@@ -326,21 +378,25 @@ func (s *lifecycleScheduler) handle(event sbx.LifecycleEvent) {
 		}
 		fmt.Fprintln(s.out, "Initial sandbox lifecycle state received.")
 	case "started", "created":
-		if !s.current(event) {
-			return
-		}
-		if err := s.owner.registrations.ReconcileSandbox(registration.WithFreshGuestObservation(s.ctx), s.out, event.SandboxID, event.SandboxName, func() bool { return s.current(event) }); err != nil && !errors.Is(err, context.Canceled) {
-			fmt.Fprintln(s.out, "Lifecycle registration failed:", err)
-		}
-		if s.isRetired(event.SandboxID) {
-			s.removeDeleted(event)
-		}
+		s.handleStarted(event)
 	case "stopped":
 		// A stopped event is an observation, not a no-wake guarantee: an
 		// independently enabled herdr reconnect may already be in flight.
 		fmt.Fprintf(s.out, "%s stopped; deferring guest work.\n", event.SandboxName)
 		s.processCatchup(true)
 	case "deleted":
+		s.removeDeleted(event)
+	}
+}
+
+func (s *lifecycleScheduler) handleStarted(event sbx.LifecycleEvent) {
+	if !s.current(event) {
+		return
+	}
+	if err := s.owner.registrations.ReconcileSandbox(registration.WithFreshGuestObservation(s.ctx), s.out, event.SandboxID, event.SandboxName, func() bool { return s.current(event) }); err != nil && !errors.Is(err, context.Canceled) {
+		fmt.Fprintln(s.out, "Lifecycle registration failed:", err)
+	}
+	if s.isRetired(event.SandboxID) {
 		s.removeDeleted(event)
 	}
 }
@@ -396,6 +452,69 @@ func (s *lifecycleScheduler) recoverMissedDeletes() {
 		fmt.Fprintln(s.out, "Lifecycle recovery deferred:", err)
 		return
 	}
+	s.confirmPresentSandboxes(present)
+	for _, item := range st.Scopes[s.scope] {
+		if !automaticAllowed(s.ctx) {
+			return
+		}
+		s.recoverTrackedSandbox(item, present)
+	}
+}
+
+func (s *lifecycleScheduler) recoverTrackedSandbox(item store.Tracked, present map[string]bool) {
+	if registration.SandboxName(item) == "" || item.Pending {
+		return
+	}
+	warningKey := store.StatusKey(s.scope, item.SandboxID) + "/absence"
+	if present[item.SandboxID] {
+		return
+	}
+	s.recoverMissingSandbox(item, warningKey)
+}
+
+func (s *lifecycleScheduler) recoverMissingSandbox(item store.Tracked, warningKey string) {
+	if item.ProfileID == "" {
+		// Registration verifies the dead identity before clearing local-only state.
+		// Its no-profile path also handles a verified same-name replacement safely.
+		s.removeDeleted(sbx.LifecycleEvent{Type: "sandbox.lifecycle", Action: "deleted", SandboxID: item.SandboxID, SandboxName: registration.SandboxName(item)})
+		return
+	}
+	absent, err := s.owner.sbx.SandboxAbsent(s.ctx, s.socket, registration.SandboxName(item), item.SandboxID)
+	if err != nil {
+		s.recordDeletionUnconfirmed(item, err)
+		s.owner.warnBlocking(s.ctx, s.out, warningKey, registration.SandboxName(item)+": "+store.DeletionUnconfirmedDetail)
+		fmt.Fprintln(s.out, "Sandbox deletion check deferred:", err)
+		return
+	}
+	if err := store.UpdateStatusStore(func(status *store.StatusStore) {
+		key := store.StatusKey(s.scope, item.SandboxID)
+		status.SetSandboxDeletionFailure(key, "")
+		if cached, ok := status.Sandboxes[key]; ok && !absent {
+			cached.ConfirmPresent()
+			status.Sandboxes[key] = cached
+		}
+	}); err != nil {
+		fmt.Fprintln(s.out, "Sandbox status was not saved:", err)
+	}
+	if absent {
+		s.removeDeleted(sbx.LifecycleEvent{Type: "sandbox.lifecycle", Action: "deleted", SandboxID: item.SandboxID, SandboxName: registration.SandboxName(item)})
+	}
+}
+
+func (s *lifecycleScheduler) recordDeletionUnconfirmed(item store.Tracked, err error) {
+	if statusErr := store.UpdateStatusStore(func(status *store.StatusStore) {
+		key := store.StatusKey(s.scope, item.SandboxID)
+		cached := status.Sandboxes[key]
+		cached.Scope, cached.SandboxID, cached.Name = s.scope, item.SandboxID, registration.SandboxName(item)
+		cached.Stale, cached.Detail = true, store.DeletionUnconfirmedDetail
+		status.Sandboxes[key] = cached
+		status.SetSandboxDeletionFailure(key, store.DeletionUnconfirmedDetail+" Verification failed: "+err.Error())
+	}); statusErr != nil {
+		fmt.Fprintln(s.out, "Sandbox status was not saved:", statusErr)
+	}
+}
+
+func (s *lifecycleScheduler) confirmPresentSandboxes(present map[string]bool) {
 	// An earlier daemon broadcast this warning to every sandbox in the scope.
 	// Successful inventory now limits uncertainty to missing tracked identities.
 	if err := store.UpdateStatusStore(func(status *store.StatusStore) {
@@ -410,53 +529,6 @@ func (s *lifecycleScheduler) recoverMissedDeletes() {
 		}
 	}); err != nil {
 		fmt.Fprintln(s.out, "Sandbox status was not saved:", err)
-	}
-	for _, item := range st.Scopes[s.scope] {
-		if !automaticAllowed(s.ctx) {
-			return
-		}
-		if registration.SandboxName(item) == "" || item.Pending {
-			continue
-		}
-		warningKey := store.StatusKey(s.scope, item.SandboxID) + "/absence"
-		if present[item.SandboxID] {
-			continue
-		}
-		if item.ProfileID == "" {
-			// Registration verifies the dead identity before clearing local-only state.
-			// Its no-profile path also handles a verified same-name replacement safely.
-			s.removeDeleted(sbx.LifecycleEvent{Type: "sandbox.lifecycle", Action: "deleted", SandboxID: item.SandboxID, SandboxName: registration.SandboxName(item)})
-			continue
-		}
-		absent, err := s.owner.sbx.SandboxAbsent(s.ctx, s.socket, registration.SandboxName(item), item.SandboxID)
-		if err != nil {
-			if statusErr := store.UpdateStatusStore(func(status *store.StatusStore) {
-				key := store.StatusKey(s.scope, item.SandboxID)
-				cached := status.Sandboxes[key]
-				cached.Scope, cached.SandboxID, cached.Name = s.scope, item.SandboxID, registration.SandboxName(item)
-				cached.Stale, cached.Detail = true, store.DeletionUnconfirmedDetail
-				status.Sandboxes[key] = cached
-				status.SetSandboxDeletionFailure(key, store.DeletionUnconfirmedDetail+" Verification failed: "+err.Error())
-			}); statusErr != nil {
-				fmt.Fprintln(s.out, "Sandbox status was not saved:", statusErr)
-			}
-			s.owner.warnBlocking(s.ctx, s.out, warningKey, registration.SandboxName(item)+": "+store.DeletionUnconfirmedDetail)
-			fmt.Fprintln(s.out, "Sandbox deletion check deferred:", err)
-			continue
-		}
-		if err := store.UpdateStatusStore(func(status *store.StatusStore) {
-			key := store.StatusKey(s.scope, item.SandboxID)
-			status.SetSandboxDeletionFailure(key, "")
-			if cached, ok := status.Sandboxes[key]; ok && !absent {
-				cached.ConfirmPresent()
-				status.Sandboxes[key] = cached
-			}
-		}); err != nil {
-			fmt.Fprintln(s.out, "Sandbox status was not saved:", err)
-		}
-		if absent {
-			s.removeDeleted(sbx.LifecycleEvent{Type: "sandbox.lifecycle", Action: "deleted", SandboxID: item.SandboxID, SandboxName: registration.SandboxName(item)})
-		}
 	}
 }
 

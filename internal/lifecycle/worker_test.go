@@ -199,20 +199,8 @@ func TestStopWorkerStopsCooperativeWorker(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("daemon did not enter its watch loop")
 	}
-	logPoll := time.NewTicker(time.Millisecond)
-	defer logPoll.Stop()
-	for {
-		info, err := os.Stat(logPath)
-		require.NoError(t, err)
-		if info.Size() == 1 {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal("running daemon did not rotate its log")
-		case <-logPoll.C:
-		}
-	}
+	waitForWorkerLogRotation(t, ctx, logPath)
+
 	require.NoError(t, f.service.StopWorker(ctx))
 	select {
 	case err := <-finished:
@@ -414,4 +402,22 @@ func TestScopeChangeStopsWatchBeforeFurtherAutomaticWork(t *testing.T) {
 	require.EqualValues(t, 1, catalogReads)
 	require.False(t, baseline.scope != f.scope)
 	require.Len(t, f.removed, 0)
+}
+
+func waitForWorkerLogRotation(t *testing.T, ctx context.Context, logPath string) {
+	t.Helper()
+	logPoll := time.NewTicker(time.Millisecond)
+	defer logPoll.Stop()
+	for {
+		info, err := os.Stat(logPath)
+		require.NoError(t, err)
+		if info.Size() == 1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("running daemon did not rotate its log")
+		case <-logPoll.C:
+		}
+	}
 }

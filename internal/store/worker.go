@@ -39,21 +39,8 @@ func ReadWorkerStatus() (WorkerStatus, error) {
 	if err != nil {
 		return WorkerStatus{}, err
 	}
-	file, err := os.OpenFile(path+".worker", os.O_RDONLY, 0)
-	active := false
-	if err == nil {
-		defer file.Close()
-		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if err == nil {
-			if err := syscall.Flock(int(file.Fd()), syscall.LOCK_UN); err != nil {
-				return WorkerStatus{}, err
-			}
-		} else if errors.Is(err, syscall.EWOULDBLOCK) {
-			active = true
-		} else {
-			return WorkerStatus{}, err
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	active, err := workerLockActive(path + ".worker")
+	if err != nil {
 		return WorkerStatus{}, err
 	}
 	saved, err := ReadStatusStore()
@@ -71,4 +58,25 @@ func ReadWorkerStatus() (WorkerStatus, error) {
 		status.State, status.Detail = "stopped", "Daemon is not running."
 	}
 	return status, nil
+}
+
+func workerLockActive(path string) (bool, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY, 0)
+	active := false
+	if err == nil {
+		defer file.Close()
+		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			if err := syscall.Flock(int(file.Fd()), syscall.LOCK_UN); err != nil {
+				return false, err
+			}
+		} else if errors.Is(err, syscall.EWOULDBLOCK) {
+			active = true
+		} else {
+			return false, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	return active, nil
 }

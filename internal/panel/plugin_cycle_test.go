@@ -79,36 +79,7 @@ func TestSandboxPluginChoiceCyclesIndependentOfDefault(t *testing.T) {
 			name = "default on"
 		}
 		t.Run(name, func(t *testing.T) {
-			m := modelFixture(t)
-			m.expanded = "a"
-			m.focus = "plugins"
-			m.plugins = []guestplugins.Choice{{ID: "test.plugin", Enabled: defaultOn}}
-			require.NoError(t, store.SetGuestPluginDefault("test.plugin", defaultOn))
-			m.settings, _ = store.ReadGuestPluginDefaults()
-			for step := 0; step < 3; step++ {
-				var command tea.Cmd
-				switch step {
-				case 0:
-					command = m.key(keyMsg(tea.KeyEnter, ""))
-				case 1:
-					command = m.key(keyMsg(tea.KeySpace, " "))
-				case 2:
-					command = m.hitAction(hit{action: "override", id: "test.plugin"})
-				}
-				require.NotNil(t, command)
-				require.EqualValues(t, "", m.dialog)
-				require.Nil(t, m.changeOverride(false), "pending choice was not gated")
-				message := command().(operationMsg)
-				require.NoError(t, message.err)
-				delete(m.pending, "a")
-				m.settings, _ = store.ReadGuestPluginDefaults()
-				value, exists := m.settings.Overrides[store.StatusKey("scope", "a")]["test.plugin"]
-				require.False(t, exists != (step < 2))
-				require.False(t, step < 2 && value != (step == 0))
-			}
-
-			effective := m.settings.Effective("scope", "a").Plugins["test.plugin"].Enabled
-			require.Equal(t, defaultOn, effective, "Inherit did not restore live default")
+			testPluginChoiceCycle(t, defaultOn)
 		})
 	}
 }
@@ -187,4 +158,39 @@ func TestPreviewControlsTargetSandboxAfterArrowSelection(t *testing.T) {
 	require.EqualValues(t, "a", m.selected)
 	require.EqualValues(t, "a", m.expanded)
 	require.EqualValues(t, "table", m.focus)
+}
+
+func testPluginChoiceCycle(t *testing.T, defaultOn bool) {
+	t.Helper()
+	m := modelFixture(t)
+	m.expanded = "a"
+	m.focus = "plugins"
+	m.plugins = []guestplugins.Choice{{ID: "test.plugin", Enabled: defaultOn}}
+	require.NoError(t, store.SetGuestPluginDefault("test.plugin", defaultOn))
+	m.settings, _ = store.ReadGuestPluginDefaults()
+	for step := 0; step < 3; step++ {
+		var command tea.Cmd
+		switch step {
+		case 0:
+			command = m.key(keyMsg(tea.KeyEnter, ""))
+		case 1:
+			command = m.key(keyMsg(tea.KeySpace, " "))
+		case 2:
+			command = m.hitAction(hit{action: "override", id: "test.plugin"})
+		}
+		require.NotNil(t, command)
+		require.EqualValues(t, "", m.dialog)
+		require.Nil(t, m.changeOverride(false), "pending choice was not gated")
+		message := command().(operationMsg)
+		require.NoError(t, message.err)
+		delete(m.pending, "a")
+		m.settings, _ = store.ReadGuestPluginDefaults()
+		value, exists := m.settings.Overrides[store.StatusKey("scope", "a")]["test.plugin"]
+		require.False(t, exists != (step < 2))
+		require.False(t, step < 2 && value != (step == 0))
+	}
+
+	effective := m.settings.Effective("scope", "a").Plugins["test.plugin"].Enabled
+	require.Equal(t, defaultOn, effective, "Inherit did not restore live default")
+
 }

@@ -29,8 +29,12 @@ tools.shellcheck = "0.11.0"
 run = "shellcheck scripts/*.sh"
 
 [tasks.lint]
-description = "Check Go and shell source"
-depends = ["go-lint", "shellcheck"]
+description = "Check Go, shell, and source vocabulary"
+depends = ["go-lint", "shellcheck", "source-words-check"]
+
+[tasks.source-words-check]
+description = "Reject prohibited words in source files"
+run = "python3 scripts/check-source-words.py legacy"
 
 [tasks.vulncheck]
 description = "Check reachable Go vulnerabilities (requires network access)"

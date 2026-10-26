@@ -56,44 +56,48 @@ func commands() *cli.Command {
 			command("worker", "Internal worker process", func(_ context.Context, _ *cli.Command) error {
 				return lifecycleService.Worker(terminalWriter{out: os.Stdout})
 			}),
+			daemonCommand(lifecycleService),
+		},
+	}
+}
+
+func daemonCommand(lifecycleService *lifecycle.Service) *cli.Command {
+	return &cli.Command{
+		Name: "daemon", Usage: "Manage the background daemon",
+		Action: func(_ context.Context, _ *cli.Command) error {
+			return errors.New("usage: herdr-sbx daemon <start|stop|status>")
+		},
+		Commands: []*cli.Command{
 			{
-				Name: "daemon", Usage: "Manage the background daemon",
-				Action: func(_ context.Context, _ *cli.Command) error {
-					return errors.New("usage: herdr-sbx daemon <start|stop|status>")
+				Name: "start", Usage: "Turn Management ON and start the daemon",
+				Flags: []cli.Flag{&cli.BoolFlag{Name: "automatic", Hidden: true}},
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					if cmd.Args().Len() != 0 {
+						return errors.New("usage: herdr-sbx daemon start")
+					}
+					if cmd.Bool("automatic") {
+						return lifecycleService.StartWorker()
+					}
+					return lifecycleService.StartWorkerExplicit()
 				},
-				Commands: []*cli.Command{
-					{
-						Name: "start", Usage: "Turn Management ON and start the daemon",
-						Flags: []cli.Flag{&cli.BoolFlag{Name: "automatic", Hidden: true}},
-						Action: func(_ context.Context, cmd *cli.Command) error {
-							if cmd.Args().Len() != 0 {
-								return errors.New("usage: herdr-sbx daemon start")
-							}
-							if cmd.Bool("automatic") {
-								return lifecycleService.StartWorker()
-							}
-							return lifecycleService.StartWorkerExplicit()
-						},
-					},
-					{
-						Name: "stop", Usage: "Turn Management OFF, cancel automatic work, and stop the daemon",
-						Action: func(ctx context.Context, cmd *cli.Command) error {
-							if cmd.Args().Len() != 0 {
-								return errors.New("usage: herdr-sbx daemon stop")
-							}
-							return lifecycleService.StopWorker(ctx)
-						},
-					},
-					{
-						Name: "status", Usage: "Show cached daemon status",
-						Flags: []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "Print a detailed daemon JSON snapshot"}},
-						Action: func(_ context.Context, cmd *cli.Command) error {
-							if cmd.Args().Len() != 0 {
-								return errors.New("usage: herdr-sbx daemon status [--json]")
-							}
-							return printDaemonStatus(cmd.Root().Writer, cmd.Bool("json"))
-						},
-					},
+			},
+			{
+				Name: "stop", Usage: "Turn Management OFF, cancel automatic work, and stop the daemon",
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					if cmd.Args().Len() != 0 {
+						return errors.New("usage: herdr-sbx daemon stop")
+					}
+					return lifecycleService.StopWorker(ctx)
+				},
+			},
+			{
+				Name: "status", Usage: "Show cached daemon status",
+				Flags: []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "Print a detailed daemon JSON snapshot"}},
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					if cmd.Args().Len() != 0 {
+						return errors.New("usage: herdr-sbx daemon status [--json]")
+					}
+					return printDaemonStatus(cmd.Root().Writer, cmd.Bool("json"))
 				},
 			},
 		},

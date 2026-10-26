@@ -33,28 +33,7 @@ func TestThemeRetainsContentGeometryAndMouseBoundsWithoutColor(t *testing.T) {
 	for _, size := range []struct{ width, height int }{{110, 32}, {60, 18}} {
 		for _, page := range []string{"Sandboxes", "Plugins", "Status"} {
 			t.Run(fmt.Sprintf("%s-%d", page, size.width), func(t *testing.T) {
-				m := styledFixture(t)
-				m.width, m.height = size.width, size.height
-				m.page = page
-				unsetNoColor(t)
-				colored := m.View().Content
-				hits := append([]hit(nil), m.hits...)
-				require.Contains(t, colored, colorSuccess)
-				require.Contains(t, colored, background)
-				require.Contains(t, ansi.Strip(colored), "╭")
-				require.Contains(t, ansi.Strip(colored), "│")
-				for _, value := range []string{"", "1"} {
-					t.Setenv("NO_COLOR", value)
-					plain := m.View().Content
-					require.NotContains(t, plain, "\x1b[", "NO_COLOR=%q retained styling", value)
-					coloredLines := strings.Split(ansi.Strip(colored), "\n")
-					plainLines := strings.Split(plain, "\n")
-					require.Equal(t, strings.Join(plainLines[:len(plainLines)-1], "\n"), strings.Join(coloredLines[:len(coloredLines)-1], "\n"), "color changed layout/content at %dx%d", size.width, size.height)
-					require.Equal(t, m.hits[:len(m.hits)-2], hits[:len(hits)-2], "color changed mouse geometry")
-				}
-				for _, line := range strings.Split(ansi.Strip(colored), "\n") {
-					require.Equal(t, size.width, ansi.StringWidth(line), "line width=%d, want %d", ansi.StringWidth(line), size.width)
-				}
+				testThemeGeometry(t, size.width, size.height, page)
 			})
 		}
 	}
@@ -202,19 +181,7 @@ func TestOutlinedLongInputsKeepCursorVisible(t *testing.T) {
 	for _, width := range []int{60, 80, 110} {
 		for _, kind := range []string{"rename", "filter"} {
 			t.Run(fmt.Sprintf("%s-%d", kind, width), func(t *testing.T) {
-				unsetNoColor(t)
-				m := styledFixture(t)
-				m.width, m.height = width, 18
-				m.input = &inputState{kind: kind, target: "a", text: strings.Repeat("long ", 40), cursor: 200}
-				view := ansi.Strip(m.View().Content)
-				caret := "│"
-				if kind == "rename" {
-					caret = "█"
-				}
-				require.Contains(t, view, "long "+caret, "cursor clipped: %s", view)
-				if kind == "filter" {
-					require.NotContains(t, view, "Clear", "filter input displayed Clear while editing: %s", view)
-				}
+				testOutlinedInput(t, width, kind)
 			})
 		}
 	}
@@ -241,4 +208,49 @@ func TestFilterPromptFocusAndActiveQueryColors(t *testing.T) {
 	require.Contains(t, line.text, colorBright+"alpha│")
 	require.NotContains(t, ansi.Strip(line.text), "Clear")
 	require.Len(t, line.hits, 1)
+}
+
+func testThemeGeometry(t *testing.T, width, height int, page string) {
+	t.Helper()
+	m := styledFixture(t)
+	m.width, m.height = width, height
+	m.page = page
+	unsetNoColor(t)
+	colored := m.View().Content
+	hits := append([]hit(nil), m.hits...)
+	require.Contains(t, colored, colorSuccess)
+	require.Contains(t, colored, background)
+	require.Contains(t, ansi.Strip(colored), "╭")
+	require.Contains(t, ansi.Strip(colored), "│")
+	for _, value := range []string{"", "1"} {
+		t.Setenv("NO_COLOR", value)
+		plain := m.View().Content
+		require.NotContains(t, plain, "\x1b[", "NO_COLOR=%q retained styling", value)
+		coloredLines := strings.Split(ansi.Strip(colored), "\n")
+		plainLines := strings.Split(plain, "\n")
+		require.Equal(t, strings.Join(plainLines[:len(plainLines)-1], "\n"), strings.Join(coloredLines[:len(coloredLines)-1], "\n"), "color changed layout/content at %dx%d", width, height)
+		require.Equal(t, m.hits[:len(m.hits)-2], hits[:len(hits)-2], "color changed mouse geometry")
+	}
+	for _, line := range strings.Split(ansi.Strip(colored), "\n") {
+		require.Equal(t, width, ansi.StringWidth(line), "line width=%d, want %d", ansi.StringWidth(line), width)
+	}
+
+}
+
+func testOutlinedInput(t *testing.T, width int, kind string) {
+	t.Helper()
+	unsetNoColor(t)
+	m := styledFixture(t)
+	m.width, m.height = width, 18
+	m.input = &inputState{kind: kind, target: "a", text: strings.Repeat("long ", 40), cursor: 200}
+	view := ansi.Strip(m.View().Content)
+	caret := "│"
+	if kind == "rename" {
+		caret = "█"
+	}
+	require.Contains(t, view, "long "+caret, "cursor clipped: %s", view)
+	if kind == "filter" {
+		require.NotContains(t, view, "Clear", "filter input displayed Clear while editing: %s", view)
+	}
+
 }

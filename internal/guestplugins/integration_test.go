@@ -83,25 +83,9 @@ command=["sh","run.sh"]
 `), 0600)
 	os.WriteFile(filepath.Join(portable, "run.sh"), []byte("#!/bin/sh\nexit 0\n"), 0700)
 	localJSON, _ := json.Marshal(map[string]any{"result": map[string]any{"plugins": []map[string]any{{"plugin_id": "example.actions", "version": "1.2.3", "enabled": true, "plugin_root": plugin, "manifest_path": filepath.Join(plugin, "actions.toml")}, {"plugin_id": "example.secondary", "version": "0.1.0", "enabled": false, "plugin_root": secondaryRoot, "manifest_path": filepath.Join(secondaryRoot, "herdr-plugin.toml")}, {"plugin_id": "example.portable", "version": "1.0.0", "enabled": true, "plugin_root": portable, "manifest_path": filepath.Join(portable, "herdr-plugin.toml")}}}})
-	transfers := 0
-	raceConfig := false
-	shell := func(ctx context.Context, command process.Command) (string, error) {
-		if command.Name != "ssh" {
-			return string(localJSON), nil
-		}
-		if command.Stdin != nil {
-			transfers++
-		}
-		if command.Stdin != nil && raceConfig {
-			require.NoError(t, os.WriteFile(guestConfig, []byte("# concurrent edit\n[advanced]\nscrollback_limit_bytes=6000\n"), 0600))
-		}
-		script := strings.ReplaceAll(command.Args[len(command.Args)-1], "uname -sm", "printf 'Linux aarch64\\n'")
-		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", script)
-		cmd.Env = append(os.Environ(), "HERDR_CONFIG_PATH="+guestConfig)
-		cmd.Stdin = command.Stdin
-		out, err := cmd.CombinedOutput()
-		return string(out), err
-	}
+	fixture := installedPluginShell{t: t, localJSON: localJSON, guestConfig: guestConfig}
+	shell := fixture.run
+
 	require.NoError(t, store.SetGuestPluginDefault("example.actions", true))
 	client := herdr.New(process.Runner{Execute: shell})
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -113,9 +97,9 @@ command=["sh","run.sh"]
 	}()
 	require.NoError(t, client.StartProjectServer(ctx, "fixture.sbx", root))
 	for range 2 {
-		require.NoError(t, ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true }))
+		require.NoError(t, ApplySandbox(ctx, client, SandboxTarget{Address: "fixture.sbx", Scope: "fixture-scope", SandboxID: "fixture-sandbox"}, ApplyOptions{Current: func() bool { return true }}))
 	}
-	require.Equal(t, 1, transfers, "unchanged plugin transferred again: %d transfers", transfers)
+	require.Equal(t, 1, fixture.transfers, "unchanged plugin transferred again: %d transfers", fixture.transfers)
 	installed, err := client.InspectGuestPlugin(ctx, "fixture.sbx", "example.actions")
 	require.NoError(t, err)
 	{
@@ -142,32 +126,59 @@ command=["sh","run.sh"]
 	require.NoError(t, err)
 	require.EqualValues(t, "", absent.Plugin.ID)
 	require.NoError(t, store.SetGuestPluginDefault("example.secondary", true))
-	require.NoError(t, ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true }))
+	require.NoError(t, ApplySandbox(ctx, client, SandboxTarget{Address: "fixture.sbx", Scope: "fixture-scope", SandboxID: "fixture-sandbox"}, ApplyOptions{Current: func() bool { return true }}))
 	secondary, err := client.InspectGuestPlugin(ctx, "fixture.sbx", "example.secondary")
 	require.NoError(t, err)
 	require.True(t, secondary.Plugin.Enabled)
 	require.NoError(t, store.SetGuestPluginDefault("example.secondary", false))
-	require.NoError(t, ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true }))
+	require.NoError(t, ApplySandbox(ctx, client, SandboxTarget{Address: "fixture.sbx", Scope: "fixture-scope", SandboxID: "fixture-sandbox"}, ApplyOptions{Current: func() bool { return true }}))
 	secondary, err = client.InspectGuestPlugin(ctx, "fixture.sbx", "example.secondary")
 	require.NoError(t, err)
 	require.True(t, secondary.Plugin.Enabled)
 
 	// A portable plugin can use its installed files directly.
 	require.NoError(t, store.SetGuestPluginDefault("example.portable", true))
-	require.NoError(t, ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true }))
+	require.NoError(t, ApplySandbox(ctx, client, SandboxTarget{Address: "fixture.sbx", Scope: "fixture-scope", SandboxID: "fixture-sandbox"}, ApplyOptions{Current: func() bool { return true }}))
 	generic, err := client.InspectGuestPlugin(ctx, "fixture.sbx", "example.portable")
 	require.NoError(t, err)
 	require.True(t, generic.Plugin.Enabled)
 	require.NoError(t, store.SetGuestPluginDefault("example.portable", false))
 
-	raceConfig = true
+	fixture.raceConfig = true
 	require.NoError(t, os.WriteFile(hostConfig, []byte(strings.ReplaceAll(hostKeys, "prefix+ctrl+r", "prefix+ctrl+t")), 0600))
 	{
-		err := ApplySandbox(ctx, client, "fixture.sbx", "fixture-scope", "fixture-sandbox", func() bool { return true })
+		err := ApplySandbox(ctx, client, SandboxTarget{Address: "fixture.sbx", Scope: "fixture-scope", SandboxID: "fixture-sandbox"}, ApplyOptions{Current: func() bool { return true }})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "config changed")
 	}
 	data, err = os.ReadFile(guestConfig)
 	require.NoError(t, err)
 	require.Contains(t, string(data), "# concurrent edit")
+}
+
+type installedPluginShell struct {
+	t           *testing.T
+	localJSON   []byte
+	guestConfig string
+	transfers   int
+	raceConfig  bool
+}
+
+func (f *installedPluginShell) run(ctx context.Context, command process.Command) (string, error) {
+
+	if command.Name != "ssh" {
+		return string(f.localJSON), nil
+	}
+	if command.Stdin != nil {
+		f.transfers++
+	}
+	if command.Stdin != nil && f.raceConfig {
+		require.NoError(f.t, os.WriteFile(f.guestConfig, []byte("# concurrent edit\n[advanced]\nscrollback_limit_bytes=6000\n"), 0600))
+	}
+	script := strings.ReplaceAll(command.Args[len(command.Args)-1], "uname -sm", "printf 'Linux aarch64\\n'")
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", script)
+	cmd.Env = append(os.Environ(), "HERDR_CONFIG_PATH="+f.guestConfig)
+	cmd.Stdin = command.Stdin
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }

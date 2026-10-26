@@ -16,13 +16,24 @@ import (
 	"github.com/lanwen/herdr-sbx/internal/registration"
 )
 
+const (
+	logKeyDetail    = "detail"
+	logKeyState     = "state"
+	logKeyCheck     = "check"
+	logKeyReady     = "ready"
+	logKeyTotal     = "total"
+	logKeySandboxID = "sandbox_id"
+	logKeySandbox   = "sandbox"
+	logKeyCode      = "code"
+)
+
 // workerOutput adapts operation progress to daemon events without copying full
 // command responses or multiline presentation reports into the log.
 type workerOutput struct{ logger *slog.Logger }
 
 func (w *workerOutput) Write(p []byte) (int, error) {
 	if detail := workerLogDetail(string(p)); detail != "" {
-		w.logger.Info("Daemon operation", slog.String("detail", detail))
+		w.logger.Info("Daemon operation", slog.String(logKeyDetail, detail))
 	}
 	return len(p), nil
 }
@@ -57,24 +68,29 @@ func (w *workerChecks) print(_ io.Writer, result precheck.Result) {
 		if check.Level == precheck.Ready {
 			ready++
 		}
-		previous, known := w.previous[check.Name]
-		if known && previous.Level == check.Level && previous.Detail == check.Detail {
-			continue
-		}
-		if initial && check.Level == precheck.Ready {
-			continue
-		}
-		level := slog.LevelInfo
-		if check.Level != precheck.Ready {
-			level = slog.LevelWarn
-		}
-		w.logger.LogAttrs(context.Background(), level, "Prerequisite changed",
-			slog.String("check", check.Name), slog.String("state", string(check.Level)), slog.String("detail", workerLogDetail(check.Detail)))
+		w.transition(check, initial)
+
 	}
 	if initial {
-		w.logger.Info("Prerequisites checked", slog.Int("ready", ready), slog.Int("total", len(result.Checks)))
+		w.logger.Info("Prerequisites checked", slog.Int(logKeyReady, ready), slog.Int(logKeyTotal, len(result.Checks)))
 	}
 	w.previous = next
+}
+
+func (w *workerChecks) transition(check precheck.Check, initial bool) {
+	previous, known := w.previous[check.Name]
+	if known && previous.Level == check.Level && previous.Detail == check.Detail {
+		return
+	}
+	if initial && check.Level == precheck.Ready {
+		return
+	}
+	level := slog.LevelInfo
+	if check.Level != precheck.Ready {
+		level = slog.LevelWarn
+	}
+	w.logger.LogAttrs(context.Background(), level, "Prerequisite changed",
+		slog.String(logKeyCheck, check.Name), slog.String(logKeyState, string(check.Level)), slog.String(logKeyDetail, workerLogDetail(check.Detail)))
 }
 
 // rotateWorkerLog preserves the active inode so inherited stdout/stderr keep
@@ -104,29 +120,8 @@ func rotateWorkerLog(path string) error {
 	// only older chunks, and reading never grows with an unbounded log file.
 	chunks := (info.Size() - 1) / workerLogLimit
 	remainderOffset := chunks * workerLogLimit
-	if chunks == 1 {
-		// Moving the previous archive preserves its complete chunk, including when
-		// the active file has only just crossed the rotation threshold.
-		previous, err := openWorkerLog(path+".1", os.O_RDONLY)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		if previous != nil {
-			if err := previous.Close(); err != nil {
-				return err
-			}
-		}
-		if err := os.Rename(path+".1", path+".2"); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-	} else {
-		chunk := make([]byte, workerLogLimit)
-		if _, err := log.ReadAt(chunk, remainderOffset-2*workerLogLimit); err != nil {
-			return err
-		}
-		if err := writeWorkerArchive(path+".2", chunk); err != nil {
-			return err
-		}
+	if err := rotateOlderWorkerArchive(path, log, chunks, remainderOffset); err != nil {
+		return err
 	}
 	chunk := make([]byte, workerLogLimit)
 	if _, err := log.ReadAt(chunk, remainderOffset-workerLogLimit); err != nil {
@@ -136,6 +131,40 @@ func rotateWorkerLog(path string) error {
 		return err
 	}
 	return retainWorkerLogTail(log, remainderOffset)
+}
+
+func rotateOlderWorkerArchive(path string, log *os.File, chunks, remainderOffset int64) error {
+	if chunks == 1 {
+		return moveWorkerArchive(path)
+	} else {
+
+		chunk := make([]byte, workerLogLimit)
+		if _, err := log.ReadAt(chunk, remainderOffset-2*workerLogLimit); err != nil {
+			return err
+		}
+		if err := writeWorkerArchive(path+".2", chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func moveWorkerArchive(path string) error {
+	// Moving the previous archive preserves its complete chunk, including when
+	// the active file has only just crossed the rotation threshold.
+	previous, err := openWorkerLog(path+".1", os.O_RDONLY)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if previous != nil {
+		if err := previous.Close(); err != nil {
+			return err
+		}
+	}
+	if err := os.Rename(path+".1", path+".2"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func retainWorkerLogTail(log *os.File, remainderOffset int64) error {
@@ -228,7 +257,7 @@ func (w *workerResults) print(_ io.Writer, observation registration.ResultObserv
 		level = slog.LevelWarn
 	}
 	w.logger.LogAttrs(context.Background(), level, "Sandbox state changed",
-		slog.String("sandbox_id", observation.SandboxID), slog.String("sandbox", observation.Name),
-		slog.String("state", observation.Status), slog.String("code", observation.DiagnosticCode),
-		slog.String("detail", workerLogDetail(observation.Detail)))
+		slog.String(logKeySandboxID, observation.SandboxID), slog.String(logKeySandbox, observation.Name),
+		slog.String(logKeyState, observation.Status), slog.String(logKeyCode, observation.DiagnosticCode),
+		slog.String(logKeyDetail, workerLogDetail(observation.Detail)))
 }

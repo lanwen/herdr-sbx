@@ -90,7 +90,7 @@ func TestDismissalDoesNotCrossScopeOrCode(t *testing.T) {
 	}
 }
 
-func TestLegacyDismissalImportsOnlyFullyDismissedGroups(t *testing.T) {
+func TestOlderDismissalImportsOnlyFullyDismissedGroups(t *testing.T) {
 	for _, mixed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "all", true: "mixed"}[mixed], func(t *testing.T) {
 			t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())

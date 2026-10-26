@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"strings"
 
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
@@ -42,7 +41,8 @@ func (s *Service) ReconcileSandbox(ctx context.Context, out io.Writer, id, name 
 
 // ReconcileAuthorized performs the explicitly approved temporary-access
 // installation path for one selected sandbox.
-func (s *Service) ReconcileAuthorized(ctx context.Context, out io.Writer, scope, socket, id, name string) error {
+func (s *Service) ReconcileAuthorized(ctx context.Context, out io.Writer, selection SandboxSelection) error {
+	scope, socket, id, name := selection.Scope, selection.Socket, selection.ID, selection.Name
 	if id == "" || name == "" {
 		return errors.New("sandbox has no stable identity")
 	}
@@ -57,7 +57,8 @@ func (s *Service) ReconcileAuthorized(ctx context.Context, out io.Writer, scope,
 
 // RetrySelected preserves the selected sandbox identity across cooldown reset
 // and reconciliation, so a same-name replacement cannot receive the retry.
-func (s *Service) RetrySelected(ctx context.Context, out io.Writer, scope, socket, id, name string) error {
+func (s *Service) RetrySelected(ctx context.Context, out io.Writer, selection SandboxSelection) error {
+	scope, socket, id, name := selection.Scope, selection.Socket, selection.ID, selection.Name
 	if id == "" || name == "" {
 		return errors.New("sandbox has no stable identity")
 	}
@@ -65,16 +66,7 @@ func (s *Service) RetrySelected(ctx context.Context, out io.Writer, scope, socke
 		return errors.New("clear preparation retry state: " + err.Error())
 	}
 	return s.ReconcileSandbox(context.WithValue(WithExplicitAction(ctx), guestPluginRetryKey{}, true), out, id, name, func() bool {
-		items, err := s.inventory(ctx, socket)
-		if err != nil {
-			return false
-		}
-		for _, candidate := range items {
-			if candidate.ID == id && candidate.Name == name && strings.EqualFold(candidate.Status, "running") {
-				return true
-			}
-		}
-		return false
+		return s.fixSandboxCurrent(ctx, socket, id, name)
 	})
 }
 
@@ -86,5 +78,5 @@ func (s *Service) RecoverPendingPolicy(scope, socket string) error {
 // InstallationAccess returns the exact HTTPS endpoints requested by the
 // temporary installer, in display order.
 func (s *Service) InstallationAccess() []sbx.PolicyAccess {
-	return append([]sbx.PolicyAccess(nil), installerAccess[:]...)
+	return installerAccess()
 }

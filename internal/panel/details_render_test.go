@@ -55,89 +55,13 @@ func TestExpandedCardReplacesRowAndKeepsIdentityActionsAndVersion(t *testing.T) 
 
 func TestExpandedCardTitleKeepsCheckboxAndRenameHits(t *testing.T) {
 	for _, width := range []int{30, 60, 110} {
-		m := modelFixture(t)
-		m.width = width
-		m.expanded, m.selected = "a", "a"
-		m.input = &inputState{kind: "rename", target: "a", text: "New label", cursor: 9}
-		details := m.sandboxDetails(m.rows[0])
-		var all strings.Builder
-		var checkbox, rename []hit
-		for _, l := range details {
-			all.WriteString(ansi.Strip(l.text))
-			for _, h := range l.hits {
-				if h.action == "enabled" {
-					checkbox = append(checkbox, h)
-				}
-				if h.action == "action" && h.id == "rename" {
-					rename = append(rename, h)
-				}
-			}
-		}
-		require.Len(t, checkbox, 1, "checkbox target missing at width %d", width)
-		require.Equal(t, "a", checkbox[0].id)
-		require.Len(t, rename, 1, "rename target missing at width %d", width)
-		require.Contains(t, all.String(), "New label█", "inline rename lost at width %d", width)
-		for _, l := range details {
-			for _, h := range l.hits {
-				require.GreaterOrEqual(t, h.x, 0)
-				require.LessOrEqual(t, h.x+h.w, width-4)
-				cell := ansi.Cut(ansi.Strip(l.text), h.x, h.x+h.w)
-				if h.action == "enabled" {
-					require.Equal(t, "✓", cell)
-				}
-				if h.action == "action" && h.id == "rename" {
-					require.Equal(t, "Rename ↵", strings.TrimSpace(cell))
-				}
-			}
-		}
+		testExpandedCardTitle(t, width)
 	}
 }
 
 func TestDetailFocusMutesPrimaryAndShowsRenameSaveState(t *testing.T) {
 	for _, width := range []int{30, 60, 110} {
-		m := modelFixture(t)
-		unsetNoColor(t)
-		m.width = width
-		m.selected, m.expanded = "a", "a"
-		actionText := func(id string) string {
-			t.Helper()
-			for _, l := range m.sandboxDetails(m.rows[0]) {
-				for _, h := range l.hits {
-					if h.action == "action" && h.id == id {
-						require.False(t, h.x+h.w > width-4, "action hit outside card: %+v", h)
-						return ansi.Cut(l.text, h.x, h.x+h.w)
-					}
-				}
-			}
-			t.Fatalf("action %s missing", id)
-			return ""
-		}
-		isBlue := func(text string) bool {
-			// ANSI cuts may retain zero-width color resets from the next button.
-			text, _, _ = strings.Cut(text, "Disable")
-			return strings.Contains(text, strings.Replace(colorAccent, "[38;", "[48;", 1)) || strings.Contains(text, "\x1b[48;2;136;162;238m") || strings.Contains(text, backgroundSelected)
-		}
-		for _, state := range []struct {
-			focus  string
-			button int
-			blue   bool
-		}{
-			{"table", 0, true}, {"actions", 0, true}, {"actions", len(m.sandboxActions(m.rows[0])) - 1, false}, {"plugins", 0, false},
-		} {
-			m.focus, m.button = state.focus, state.button
-			primary := actionText("disable")
-			require.Equal(t, state.blue, isBlue(primary), "width %d focus %s button %d: primary emphasis %q", width, state.focus, state.button, primary)
-			require.Contains(t, primary, "\x1b[22m(space)\x1b[1m", "hotkey weight changed: %q", primary)
-		}
-		m.focus, m.button = "table", 0
-		m.input = &inputState{kind: "rename", target: "a", text: "New label", cursor: 3}
-		rename := actionText("rename")
-		require.Contains(t, rename, strings.Replace(colorSand, "[38;", "[48;", 1))
-		require.Contains(t, ansi.Strip(rename), "Rename ↵")
-		require.False(t, isBlue(actionText("disable")), "primary stayed emphasized during rename")
-
-		got := m.renderedInput(40)
-		require.Equal(t, "New█ label", got, "block cursor at wrong position: %q", got)
+		testDetailFocus(t, width)
 	}
 }
 
@@ -210,7 +134,9 @@ func TestFilledRestoresSurfaceAfterFullResetAndClearsTextAttributes(t *testing.T
 	for _, reset := range []string{"\x1b[m", "\x1b[0m"} {
 		text := filled(colorText, background, "\x1b[1mBefore"+reset+"After")
 		pen := lipgloss.NewWrapWriter(io.Discard)
-		_, _ = pen.Write([]byte(text[:strings.Index(text, "After")]))
+		before, _, found := strings.Cut(text, "After")
+		require.True(t, found)
+		_, _ = pen.Write([]byte(before))
 		got := pen.Style()
 		_ = pen.Close()
 		expected := lipgloss.NewWrapWriter(io.Discard)
@@ -219,4 +145,107 @@ func TestFilledRestoresSurfaceAfterFullResetAndClearsTextAttributes(t *testing.T
 		_ = expected.Close()
 		require.Equal(t, want, got, "reset %q: got=%v want=%v", reset, got, want)
 	}
+}
+
+func testExpandedCardTitle(t *testing.T, width int) {
+	t.Helper()
+	m := modelFixture(t)
+	m.width = width
+	m.expanded, m.selected = "a", "a"
+	m.input = &inputState{kind: "rename", target: "a", text: "New label", cursor: 9}
+	details := m.sandboxDetails(m.rows[0])
+	var all strings.Builder
+	var checkbox, rename []hit
+	for _, l := range details {
+		all.WriteString(ansi.Strip(l.text))
+	}
+	checkbox = detailHits(details, func(h hit) bool { return h.action == "enabled" })
+	rename = detailHits(details, func(h hit) bool { return h.action == "action" && h.id == "rename" })
+	require.Len(t, checkbox, 1, "checkbox target missing at width %d", width)
+	require.Equal(t, "a", checkbox[0].id)
+	require.Len(t, rename, 1, "rename target missing at width %d", width)
+	require.Contains(t, all.String(), "New label█", "inline rename lost at width %d", width)
+	assertCardHitCells(t, details, width)
+
+}
+
+func testDetailFocus(t *testing.T, width int) {
+	t.Helper()
+	m := modelFixture(t)
+	unsetNoColor(t)
+	m.width = width
+	m.selected, m.expanded = "a", "a"
+	actionText := func(id string) string { return detailActionText(t, m, id, width) }
+
+	isBlue := func(text string) bool {
+		// ANSI cuts may retain zero-width color resets from the next button.
+		text, _, _ = strings.Cut(text, "Disable")
+		return strings.Contains(text, strings.Replace(colorAccent, "[38;", "[48;", 1)) || strings.Contains(text, "\x1b[48;2;136;162;238m") || strings.Contains(text, backgroundSelected)
+	}
+	for _, state := range []struct {
+		focus  string
+		button int
+		blue   bool
+	}{
+		{"table", 0, true}, {"actions", 0, true}, {"actions", len(m.sandboxActions(m.rows[0])) - 1, false}, {"plugins", 0, false},
+	} {
+		m.focus, m.button = state.focus, state.button
+		primary := actionText("disable")
+		require.Equal(t, state.blue, isBlue(primary), "width %d focus %s button %d: primary emphasis %q", width, state.focus, state.button, primary)
+		require.Contains(t, primary, "\x1b[22m(space)\x1b[1m", "hotkey weight changed: %q", primary)
+	}
+	m.focus, m.button = "table", 0
+	m.input = &inputState{kind: "rename", target: "a", text: "New label", cursor: 3}
+	rename := actionText("rename")
+	require.Contains(t, rename, strings.Replace(colorSand, "[38;", "[48;", 1))
+	require.Contains(t, ansi.Strip(rename), "Rename ↵")
+	require.False(t, isBlue(actionText("disable")), "primary stayed emphasized during rename")
+
+	got := m.renderedInput(40)
+	require.Equal(t, "New█ label", got, "block cursor at wrong position: %q", got)
+
+}
+
+func detailHits(lines []line, match func(hit) bool) []hit {
+	var found []hit
+	for _, l := range lines {
+		for _, h := range l.hits {
+			if match(h) {
+				found = append(found, h)
+			}
+		}
+	}
+	return found
+}
+
+func assertCardHitCells(t *testing.T, details []line, width int) {
+	t.Helper()
+	for _, l := range details {
+		for _, h := range l.hits {
+			require.GreaterOrEqual(t, h.x, 0)
+			require.LessOrEqual(t, h.x+h.w, width-4)
+			cell := ansi.Cut(ansi.Strip(l.text), h.x, h.x+h.w)
+			if h.action == "enabled" {
+				require.Equal(t, "✓", cell)
+			}
+			if h.action == "action" && h.id == "rename" {
+				require.Equal(t, "Rename ↵", strings.TrimSpace(cell))
+			}
+		}
+	}
+}
+
+func detailActionText(t *testing.T, m *model, id string, width int) string {
+
+	t.Helper()
+	for _, l := range m.sandboxDetails(m.rows[0]) {
+		for _, h := range l.hits {
+			if h.action == "action" && h.id == id {
+				require.False(t, h.x+h.w > width-4, "action hit outside card: %+v", h)
+				return ansi.Cut(l.text, h.x, h.x+h.w)
+			}
+		}
+	}
+	t.Fatalf("action %s missing", id)
+	return ""
 }

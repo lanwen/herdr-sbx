@@ -123,38 +123,7 @@ func TestTopTabsAndStatusControlsFitAndReveal(t *testing.T) {
 
 func TestSectionTabsRotateActiveToLeftAndNamesRemainClickable(t *testing.T) {
 	for _, width := range []int{30, 60, 110} {
-		m := modelFixture(t)
-		m.width = width
-		for _, page := range []string{"Sandboxes", "Status", "Plugins"} {
-			m.openTab(page)
-			strip := m.tabStrip()
-			header := ansi.Strip(strip.text)
-			require.True(t, strings.HasPrefix(header, "╭─ "))
-			require.True(t, strings.HasSuffix(header, "╮"))
-			require.False(t, ansi.StringWidth(header) != width)
-			require.True(t, strings.HasPrefix(strings.TrimPrefix(header, "╭─ "), func() string {
-				if width >= 45 {
-					return "  " + page + "  "
-				}
-				return page
-			}()), "active tab not leftmost: %q", header)
-			require.False(t, strings.ContainsAny(header, "←→"), "tab strip suggests arrow keys: %q", header)
-			count := 0
-			for _, h := range strip.hits {
-				require.Equal(t, "page", h.action, "non-tab control remains: %#v", h)
-				require.Contains(t, ansi.Cut(header, h.x, h.x+h.w), h.id, "tab hit does not cover its name")
-				m.hitAction(h)
-				require.Equal(t, h.id, m.page, "tab name click did not select tab")
-				count++
-			}
-			require.False(t, width < 32 && count != 1)
-			require.False(t, width >= 32 && count != 3)
-			m.openTab(page)
-			m.key(keyMsg(tea.KeyTab, ""))
-			require.NotEqual(t, page, m.page, "Tab cannot reach hidden pages")
-			m.key(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-			require.Equal(t, page, m.page, "Shift+Tab did not return")
-		}
+		testSectionTabs(t, width)
 	}
 }
 
@@ -272,16 +241,18 @@ func TestStatusChoicesKeepIntentDistinctFromObservedWorker(t *testing.T) {
 	}
 }
 
+type refreshEligibilityCase struct {
+	name    string
+	enabled bool
+	state   string
+	last    time.Time
+	errors  bool
+	want    bool
+}
+
 func TestStatusRefreshAvailableUnlessAutoSyncIsHealthyAndRecent(t *testing.T) {
 	now := time.Date(2026, time.October, 16, 12, 0, 0, 0, time.UTC)
-	for _, test := range []struct {
-		name    string
-		enabled bool
-		state   string
-		last    time.Time
-		errors  bool
-		want    bool
-	}{
+	for _, test := range []refreshEligibilityCase{
 		{"recent", true, "running", now.Add(-29 * time.Second), false, false},
 		{"at threshold", true, "running", now.Add(-30 * time.Second), false, false},
 		{"stale", true, "running", now.Add(-30*time.Second - time.Nanosecond), false, true},
@@ -295,19 +266,7 @@ func TestStatusRefreshAvailableUnlessAutoSyncIsHealthyAndRecent(t *testing.T) {
 		{"active error", true, "running", now, true, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			m := modelFixture(t)
-			m.workerEnabled = test.enabled
-			m.worker.State, m.worker.LastSync = test.state, test.last
-			if test.errors {
-				m.errors = []uiError{{code: store.CodeGuestPluginSync, scope: "a", detail: "plugin failed"}}
-			}
-			found := false
-			for _, action := range m.statusActionsAt(now) {
-				if action.id == "refresh" {
-					found = true
-				}
-			}
-			require.Equal(t, test.want, found, "refresh available=%v, want %v", found, test.want)
+			testStatusRefreshEligibility(t, test, now)
 		})
 	}
 }
@@ -481,4 +440,59 @@ func TestStopRequestReportsLongRunningDaemon(t *testing.T) {
 	require.EqualValues(t, 1, m.errors[0].count)
 	m.Update(workerMsg{status: store.WorkerStatus{State: "stopped"}, control: &store.WorkerControl{Stopped: true}, initialized: true})
 	require.Len(t, m.errors, 0, "stop did not clear delayed-stop error: %+v", m.errors)
+}
+
+func testSectionTabs(t *testing.T, width int) {
+	t.Helper()
+	m := modelFixture(t)
+	m.width = width
+	for _, page := range []string{"Sandboxes", "Status", "Plugins"} {
+		m.openTab(page)
+		strip := m.tabStrip()
+		header := ansi.Strip(strip.text)
+		require.True(t, strings.HasPrefix(header, "╭─ "))
+		require.True(t, strings.HasSuffix(header, "╮"))
+		require.False(t, ansi.StringWidth(header) != width)
+		require.True(t, strings.HasPrefix(strings.TrimPrefix(header, "╭─ "), func() string {
+			if width >= 45 {
+				return "  " + page + "  "
+			}
+			return page
+		}()), "active tab not leftmost: %q", header)
+		require.False(t, strings.ContainsAny(header, "←→"), "tab strip suggests arrow keys: %q", header)
+		count := 0
+		for _, h := range strip.hits {
+			require.Equal(t, "page", h.action, "non-tab control remains: %#v", h)
+			require.Contains(t, ansi.Cut(header, h.x, h.x+h.w), h.id, "tab hit does not cover its name")
+			m.hitAction(h)
+			require.Equal(t, h.id, m.page, "tab name click did not select tab")
+			count++
+		}
+		require.False(t, width < 32 && count != 1)
+		require.False(t, width >= 32 && count != 3)
+		m.openTab(page)
+		m.key(keyMsg(tea.KeyTab, ""))
+		require.NotEqual(t, page, m.page, "Tab cannot reach hidden pages")
+		m.key(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+		require.Equal(t, page, m.page, "Shift+Tab did not return")
+	}
+
+}
+
+func testStatusRefreshEligibility(t *testing.T, test refreshEligibilityCase, now time.Time) {
+	t.Helper()
+	m := modelFixture(t)
+	m.workerEnabled = test.enabled
+	m.worker.State, m.worker.LastSync = test.state, test.last
+	if test.errors {
+		m.errors = []uiError{{code: store.CodeGuestPluginSync, scope: "a", detail: "plugin failed"}}
+	}
+	found := false
+	for _, action := range m.statusActionsAt(now) {
+		if action.id == "refresh" {
+			found = true
+		}
+	}
+	require.Equal(t, test.want, found, "refresh available=%v, want %v", found, test.want)
+
 }
