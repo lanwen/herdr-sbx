@@ -26,7 +26,12 @@ run = "golangci-lint run ./..."
 [tasks.shellcheck]
 description = "Check POSIX shell scripts"
 tools.shellcheck = "0.11.0"
-run = "shellcheck scripts/*.sh"
+run = "shellcheck scripts/*.sh .githooks/commit-msg"
+
+[tasks.commitlint]
+description = "Check a conventional commit message from stdin or --message <file>"
+tools."go:github.com/conventionalcommit/commitlint" = "0.12.0"
+run = "commitlint lint"
 
 [tasks.lint]
 description = "Check Go, shell, and source vocabulary"

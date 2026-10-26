@@ -3,6 +3,9 @@
 Use the [reference](reference.md#development) for package navigation, commands, and isolation requirements.
 The [TUI specification](tui-spec.md) owns interface behavior; the reference owns CLI and external contracts.
 
+New commits must follow the [commit message rules](reference.md#commit-messages).
+Enable the local `commit-msg` hook for early feedback; pull requests check every introduced commit in CI.
+
 ## Assign an outcome
 
 Select a role from the [shared role definitions](../.agents/roles/README.md).
