@@ -256,8 +256,15 @@ The internal packages divide the work as follows:
 
 Run `mise run deps` before tests.
 Use `mise run fmt` to format Go files and `mise run build` to rebuild the linked binary.
-Use `mise run lint` for Go and POSIX shell checks, or run `mise run go-lint` and `mise run shellcheck` separately.
-Go linting uses golangci-lint with correctness checks, ineffective assignment detection, and unused code detection in `.golangci.yml`.
+Use `mise run lint` for Go, POSIX shell, and source vocabulary checks.
+Run `mise run go-lint`, `mise run shellcheck`, and `mise run source-words-check` separately when needed.
+Go linting uses the explicit checks in `.golangci.yml`, including correctness, ineffective assignments, unused code, global variables, `init` functions, structured logging, and selected go-critic diagnostics.
+Every Go function, including tests, must have cognitive complexity at most 10.
+Structured logging uses owned loggers, capitalized messages, typed attributes, and constant attribute keys.
+Use context-aware logging when a context is available.
+`mise run source-words-check` rejects `legacy` in Go, Python, shell, Ruby, and Swift source, including identifiers, comments, and strings.
+The source check ignores letter case and also checks nonignored files before their first commit.
+Documentation and configuration files are outside that source vocabulary rule.
 Use `mise run vulncheck` to check reachable Go vulnerabilities against the Go vulnerability database.
 These tasks install their pinned tools on first use and need network access for installation.
 The vulnerability check also needs network access to read the database and fails when it finds reachable vulnerabilities.

@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -41,47 +42,7 @@ func TestStandardHelpRendersContextAndFullBindings(t *testing.T) {
 func TestFooterIndicatorsStayAtBottomRightAndClickable(t *testing.T) {
 	for _, width := range []int{60, 110} {
 		for _, noColor := range []bool{false, true} {
-			m := styledFixture(t)
-			m.width, m.height = width, 18
-			m.pending["worker"] = true
-			m.workerEnabled = true
-			unsetNoColor(t)
-			if noColor {
-				t.Setenv("NO_COLOR", "")
-			}
-			view := ansi.Strip(m.View().Content)
-			lines := strings.Split(view, "\n")
-			require.Len(t, lines, 18, "height=%d", len(lines))
-			require.NotContains(t, view, "herdr-sbx /", "old title retained")
-			footer := lines[len(lines)-1]
-			require.True(t, strings.HasSuffix(strings.TrimRight(footer, " "), func() string {
-				if noColor {
-					return "sbx: Running"
-				}
-				return "sbx ●"
-			}()), "status not right aligned: %q", footer)
-			var daemon, docker hit
-			for _, h := range m.hits {
-				if h.action == "worker" {
-					daemon = h
-				}
-				if h.action == "docker" {
-					docker = h
-				}
-			}
-			require.False(t, daemon.x != docker.x-daemon.w-2)
-			require.NotEqualValues(t, 0, daemon.x)
-			require.EqualValues(t, 17, daemon.y)
-			require.EqualValues(t, 17, docker.y)
-			require.False(t, docker.x+docker.w != width)
-			require.False(t, ansi.StringWidth(footer) != width)
-			require.EqualValues(t, "Management ON", ansi.Cut(footer, daemon.x, daemon.x+daemon.w))
-			clickAt(m, daemon.x, daemon.y)
-			require.EqualValues(t, "Status", m.page)
-			require.EqualValues(t, "", m.dialog)
-			docker = selectionHit(t, m, "docker", docker.id)
-			clickAt(m, docker.x, docker.y)
-			require.Equal(t, "Status", m.page, "sbx status does not open")
+			testFooterIndicators(t, width, noColor)
 		}
 	}
 }
@@ -203,18 +164,8 @@ func TestHelpOnlyAdvertisesEligibleActions(t *testing.T) {
 	m := modelFixture(t)
 	m.workerEnabled = true
 	m.worker = store.WorkerStatus{State: "running", LastSync: time.Now()}
-	available := func(want string) bool {
-		for _, group := range m.helpKeys().full {
-			for _, b := range group {
-				for _, k := range b.Keys() {
-					if k == want && b.Enabled() {
-						return true
-					}
-				}
-			}
-		}
-		return false
-	}
+	available := func(want string) bool { return availableHelpKey(m, want) }
+
 	for _, k := range []string{"c", "d", "e", "n", "i"} {
 		require.False(t, available(k), "unavailable %s advertised", k)
 	}
@@ -317,4 +268,61 @@ func TestHelpKeepsCompactCancellationAndOmitsMissingNextAction(t *testing.T) {
 			}
 		}
 	}
+}
+
+func testFooterIndicators(t *testing.T, width int, noColor bool) {
+	t.Helper()
+	m := styledFixture(t)
+	m.width, m.height = width, 18
+	m.pending["worker"] = true
+	m.workerEnabled = true
+	unsetNoColor(t)
+	if noColor {
+		t.Setenv("NO_COLOR", "")
+	}
+	view := ansi.Strip(m.View().Content)
+	lines := strings.Split(view, "\n")
+	require.Len(t, lines, 18, "height=%d", len(lines))
+	require.NotContains(t, view, "herdr-sbx /", "old title retained")
+	footer := lines[len(lines)-1]
+	require.True(t, strings.HasSuffix(strings.TrimRight(footer, " "), func() string {
+		if noColor {
+			return "sbx: Running"
+		}
+		return "sbx ●"
+	}()), "status not right aligned: %q", footer)
+	var daemon, docker hit
+	for _, h := range m.hits {
+		if h.action == "worker" {
+			daemon = h
+		}
+		if h.action == "docker" {
+			docker = h
+		}
+	}
+	require.False(t, daemon.x != docker.x-daemon.w-2)
+	require.NotEqualValues(t, 0, daemon.x)
+	require.EqualValues(t, 17, daemon.y)
+	require.EqualValues(t, 17, docker.y)
+	require.False(t, docker.x+docker.w != width)
+	require.False(t, ansi.StringWidth(footer) != width)
+	require.EqualValues(t, "Management ON", ansi.Cut(footer, daemon.x, daemon.x+daemon.w))
+	clickAt(m, daemon.x, daemon.y)
+	require.EqualValues(t, "Status", m.page)
+	require.EqualValues(t, "", m.dialog)
+	docker = selectionHit(t, m, "docker", docker.id)
+	clickAt(m, docker.x, docker.y)
+	require.Equal(t, "Status", m.page, "sbx status does not open")
+
+}
+
+func availableHelpKey(m *model, want string) bool {
+	for _, group := range m.helpKeys().full {
+		for _, binding := range group {
+			if slices.Contains(binding.Keys(), want) && binding.Enabled() {
+				return true
+			}
+		}
+	}
+	return false
 }

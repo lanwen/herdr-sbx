@@ -21,13 +21,7 @@ func DesiredFingerprint(ctx context.Context, client *herdr.Client, scope, sandbo
 		return "", err
 	}
 	effective := settings.Effective(scope, sandboxID)
-	ids := []string{}
-	for id, choice := range effective.Plugins {
-		if choice.Enabled {
-			ids = append(ids, id)
-		}
-	}
-	sort.Strings(ids)
+	ids := enabledPluginIDs(effective)
 	// Explicit Off and inherited Off have the same effect. No guest operation is due.
 	if len(ids) == 0 {
 		return digest(nil), nil
@@ -46,49 +40,63 @@ func DesiredFingerprint(ctx context.Context, client *herdr.Client, scope, sandbo
 	for _, plugin := range catalog {
 		installed[plugin.ID] = plugin
 	}
-	type source struct {
-		Plugin      herdr.PluginInstall
-		Manifest    []byte
-		Files       []string
-		Unavailable string
-	}
-	sources := []source{}
+	sources := []fingerprintSource{}
 	for _, id := range ids {
 		plugin, found := installed[id]
 		if !found {
-			sources = append(sources, source{Plugin: herdr.PluginInstall{ID: id}, Unavailable: "not installed"})
+			sources = append(sources, fingerprintSource{Plugin: herdr.PluginInstall{ID: id}, Unavailable: "not installed"})
 			continue
 		}
-		snapshot := source{Plugin: plugin}
-		manifest, err := readSmall(plugin.ManifestPath)
-		if err != nil {
-			snapshot.Unavailable = err.Error()
-			sources = append(sources, snapshot)
-			continue
-		}
-		snapshot.Manifest = manifest
-		doc, err := parseConfig(manifest)
-		if err != nil {
-			snapshot.Unavailable = err.Error()
-			sources = append(sources, snapshot)
-			continue
-		}
-		files, err := planPayload(plugin.Root, plugin.ManifestPath, doc, "")
-		if err != nil {
-			snapshot.Unavailable = err.Error()
-		} else {
-			for _, file := range files {
-				snapshot.Files = append(snapshot.Files, fmt.Sprintf("%s:%o:%s", file.name, file.mode, digest(file.data)))
-			}
-		}
-		sources = append(sources, snapshot)
+		sources = append(sources, snapshotFingerprintSource(plugin))
 	}
 	data, err := json.Marshal(struct {
-		Sources []source
+		Sources []fingerprintSource
 		Config  []byte
 	}{sources, config})
 	if err != nil {
 		return "", err
 	}
 	return digest(data), nil
+}
+
+type fingerprintSource struct {
+	Plugin      herdr.PluginInstall
+	Manifest    []byte
+	Files       []string
+	Unavailable string
+}
+
+func snapshotFingerprintSource(plugin herdr.PluginInstall) fingerprintSource {
+	snapshot := fingerprintSource{Plugin: plugin}
+	manifest, err := readSmall(plugin.ManifestPath)
+	if err != nil {
+		snapshot.Unavailable = err.Error()
+		return snapshot
+	}
+	snapshot.Manifest = manifest
+	doc, err := parseConfig(manifest)
+	if err != nil {
+		snapshot.Unavailable = err.Error()
+		return snapshot
+	}
+	files, err := planPayload(plugin.Root, plugin.ManifestPath, doc, "")
+	if err != nil {
+		snapshot.Unavailable = err.Error()
+		return snapshot
+	}
+	for _, file := range files {
+		snapshot.Files = append(snapshot.Files, fmt.Sprintf("%s:%o:%s", file.name, file.mode, digest(file.data)))
+	}
+	return snapshot
+}
+
+func enabledPluginIDs(settings store.GuestPluginDefaults) []string {
+	ids := []string{}
+	for id, choice := range settings.Plugins {
+		if choice.Enabled {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }

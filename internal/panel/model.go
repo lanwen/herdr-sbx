@@ -150,17 +150,7 @@ type model struct {
 func newModel(s *Service) *model {
 	m := &model{service: s, page: "Sandboxes", focus: "table", width: 110, height: 32, queries: map[string]string{}, pending: map[string]bool{}, pendingChoices: map[string]pluginChoiceChange{}, workerEnabled: true, loading: true, worker: store.WorkerStatus{State: "starting"}}
 	m.popup = popupManager()
-	if saved, err := store.ReadStatusStore(); err == nil {
-		if saved.WorkerControl != nil {
-			m.workerEnabled = !saved.WorkerControl.Stopped
-		}
-		for _, item := range saved.Errors {
-			if (item.Scope == "worker" && (item.Code == store.CodeDaemonUnreachable || item.Code == store.CodeDaemonStart || item.Code == store.CodeDaemonStop)) || (item.Scope == "Host" && item.Code == store.CodeDaemonUnreachable) {
-				m.workerControlError = true
-				break
-			}
-		}
-	}
+	m.restoreWorkerControl()
 	if s != nil {
 		m.startWorkerFn = s.lifecycle.StartWorkerExplicit
 		m.stopWorkerFn = s.lifecycle.WaitWorkerStopped
@@ -312,61 +302,15 @@ func (m *model) mergeErrors(msg workerMsg) {
 		return
 	}
 	m.lastErrorsObserved = observed
-	for key, change := range m.errorChanges {
-		if !change.persistedAt.IsZero() && observed.After(change.persistedAt) {
-			delete(m.errorChanges, key)
-		}
-	}
+	m.expireErrorChanges(observed)
 	var selected *diagnosticGroup
 	if entries := m.visibleErrors(); m.focus == "errors" && m.errorIndex < len(entries) {
 		e := entries[m.errorIndex]
 		selected = &e
 	}
-	var merged []uiError
-	for _, e := range m.errors {
-		if _, local := m.errorChanges[errorScopeKey(e.code, e.scope, e.pluginID)]; local {
-			merged = append(merged, e)
-		}
-	}
-	for _, e := range msg.errors {
-		if _, local := m.errorChanges[errorScopeKey(e.Code, e.Scope, e.PluginID)]; !local {
-			merged = append(merged, uiError{ref: e.Ref, code: e.Code, scope: e.Scope, detail: e.Detail, firstSeen: e.FirstSeen, dismissed: e.Dismissed, pluginID: e.PluginID, command: e.Command, recovery: e.Recovery, output: e.Output, count: e.Count, seen: e.LastSeen})
-		}
-	}
-	sort.Slice(merged, func(i, j int) bool {
-		if !merged[i].firstSeen.Equal(merged[j].firstSeen) {
-			return merged[i].firstSeen.Before(merged[j].firstSeen)
-		}
-		return diagnosticIdentity(merged[i]) < diagnosticIdentity(merged[j])
-	})
-	// Apply in-flight group dismissal to incoming children without suppressing
-	// their details. A stale poll cannot make an acknowledged group new again.
-	for i := range merged {
-		if _, pending := m.errorChanges[diagnosticGroupKey(merged[i].code, merged[i].scope)]; pending {
-			merged[i].dismissed = true
-		}
-	}
+	merged := m.mergedErrors(msg)
 	m.errors = merged
-	if m.diagnosticClickGroup != "" {
-		found := false
-		for _, e := range m.visibleErrors() {
-			if diagnosticGroupKey(e.code, e.scope) == m.diagnosticClickGroup {
-				found = true
-				break
-			}
-		}
-		if !found {
-			m.diagnosticClickGroup = ""
-		}
-	}
-	if selected != nil {
-		for i, e := range m.visibleErrors() {
-			if e.code == selected.code && e.scope == selected.scope {
-				m.errorIndex = i
-				break
-			}
-		}
-	}
+	m.restoreDiagnosticSelection(selected)
 	m.events = msg.events
 	m.errorIndex = min(m.errorIndex, max(0, len(m.visibleErrors())-1))
 	if m.focus == "errors" && len(m.visibleErrors()) == 0 {
@@ -400,36 +344,7 @@ func (m *model) clearError(code, scope string) {
 }
 func (m *model) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 	hadErrors := len(m.errors) > 0
-	defer func() {
-		if m.page == "Status" && m.dialog == "" {
-			if button := max(0, min(m.button, len(m.statusActions())-1)); button != m.button {
-				m.button, m.reveal = button, true
-			}
-		}
-		if hadErrors && len(m.errors) == 0 && (m.focus == "errors" || m.focus == "diagnostics") {
-			m.focus, m.reveal = "table", true
-			m.scroll = 0
-		}
-		if m.writingErrors || len(m.effects) == 0 {
-			return
-		}
-		effects := m.effects
-		m.effects = nil
-		m.writingErrors = true
-		persist := func() tea.Msg {
-			var written, failed []errorWrite
-			for _, effect := range effects {
-				if err := effect.apply(); err == nil {
-					written = append(written, effect)
-				} else {
-					effect.err = err
-					failed = append(failed, effect)
-				}
-			}
-			return errorsPersistedMsg{writes: written, failed: failed, at: time.Now()}
-		}
-		command = tea.Batch(command, persist)
-	}()
+	defer func() { command = m.finishUpdate(hadErrors, command) }()
 
 	switch msg := msg.(type) {
 	case quitTimeoutMsg:
@@ -441,224 +356,19 @@ func (m *model) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 		m.renderedFrame = ""
 		m.width, m.height = msg.Width, msg.Height
 	case tickMsg:
-		m.ticks++
-		if !m.workerEnabled && !m.stopRequestedAt.IsZero() && !m.stopDelayReported && time.Since(m.stopRequestedAt) > time.Minute && m.worker.State != "stopped" && m.worker.State != "exited" {
-			m.addError(store.CodeDaemonUnreachable, "worker", fmt.Errorf("Cannot confirm that the daemon stopped within one minute. It may be busy or unreachable"))
-			m.stopDelayReported = true
-			m.workerControlError = true
-		}
-		var refresh tea.Cmd
-		if m.ticks%5 == 0 {
-			refresh = m.observe()
-		}
-		return m, tea.Batch(m.pollWorker(), refresh, tick())
+		return m.updateTick(msg)
 	case errorsPersistedMsg:
-		m.writingErrors = false
-		dismissalFailed := false
-		for _, write := range msg.failed {
-			if write.dismissal == nil {
-				continue
-			}
-			dismissalFailed = true
-			for i := range m.errors {
-				if m.errors[i].code == write.dismissal.code && m.errors[i].scope == write.dismissal.scope {
-					m.errors[i].dismissed = false
-				}
-			}
-			if m.errorChanges[write.key].revision == write.revision {
-				delete(m.errorChanges, write.key)
-			}
-			m.addError(store.CodeDiagnosticDismiss, "Host", fmt.Errorf("Could not save the diagnostic dismissal. The item is still new; try Dismiss again. %v", write.err))
-		}
-		for _, write := range msg.writes {
-			if write.dismissal != nil && !dismissalFailed {
-				m.clearError(store.CodeDiagnosticDismiss, "Host")
-			}
-			change := m.errorChanges[write.key]
-			if change.revision == write.revision {
-				change.persistedAt = msg.at
-				m.errorChanges[write.key] = change
-			}
-		}
+		return m.updateErrorsPersisted(msg)
 	case workerMsg:
-		if msg.err == nil {
-			m.mergeErrors(msg)
-		}
-		m.addError(store.CodeDaemonStatus, "Host", msg.err)
-		if msg.err != nil {
-			m.worker.State = "error"
-			m.worker.Detail = "Cannot read Management status."
-		}
-		if msg.err == nil {
-			m.worker = msg.status
-			m.clearError(store.CodeDaemonStatus, "Host")
-			if msg.status.State == "reconnecting" {
-				m.addError(store.CodeDaemonReconnect, "Host", fmt.Errorf("%s", msg.status.Detail))
-			} else {
-				m.clearError(store.CodeDaemonReconnect, "Host")
-			}
-			if (msg.status.State == "stopped" || msg.status.State == "exited") && !m.pending["worker"] && !m.workerEnabled {
-				m.stopRequestedAt = time.Time{}
-				m.stopDelayReported = false
-				m.workerControlError = false
-				m.clearError(store.CodeDaemonUnreachable, "worker")
-				m.clearError(store.CodeDaemonUnreachable, "Host")
-				m.clearError(store.CodeDaemonStop, "worker")
-			} else if !m.workerEnabled && !m.workerControlError && m.stopRequestedAt.IsZero() {
-				m.stopRequestedAt = time.Now()
-			}
-		}
-		if !m.workerLoaded {
-			m.workerLoaded = true
-			if !m.workerIntentSet && !m.pending["worker"] && msg.err == nil && msg.status.State == "stopped" {
-				if !msg.initialized {
-					return m, m.startWorker()
-				} else {
-					m.dialog = "startup"
-					m.button = 0
-				}
-			}
-		}
+		return m.updateWorker(msg)
 	case checksMsg:
 		m.checksPending = false
 		m.checks = msg.checks
 		return m, nil
 	case observationMsg:
-		if msg.generation != m.generation {
-			return m, nil
-		}
-		m.refreshing = false
-		m.loading = false
-		if len(m.checks.Checks) == 0 || m.checks.Socket == "" {
-			m.checks.Scope, m.checks.Socket = msg.checks.Scope, msg.checks.Socket
-		}
-		if msg.err != nil {
-			m.addError(store.CodeSandboxInventory, "Host", msg.err)
-			if len(msg.rows) > 0 {
-				partial := append([]registration.SandboxRow(nil), msg.rows...)
-				for _, old := range m.rows {
-					if _, found := findRow(partial, old.Sandbox.ID); !found {
-						partial = append(partial, old)
-					}
-				}
-				m.mergeRows(partial)
-			}
-			for i := range m.rows {
-				m.rows[i].Status.Stale = true
-			}
-		} else {
-			m.clearError(store.CodeSandboxInventory, "Host")
-			m.mergeRows(msg.rows)
-		}
-		if msg.pluginErr != nil {
-			m.addError(store.CodePluginDiscovery, "Host", msg.pluginErr)
-		} else {
-			m.clearError(store.CodePluginDiscovery, "Host")
-			m.plugins = msg.plugins
-			m.settings = msg.settings
-		}
-		m.ensureSelection()
-		return m, nil
+		return m.updateObservation(msg)
 	case operationMsg:
-		if msg.enabledChoice != nil {
-			for i := range m.rows {
-				if m.rows[i].Sandbox.ID == msg.target {
-					m.rows[i].Enabled = *msg.enabledChoice
-				}
-			}
-		}
-		if _, ok := m.pendingEnabled[msg.target]; ok {
-			delete(m.pendingEnabled, msg.target)
-			// Discard observations started before this action completed, then refresh.
-			m.generation++
-			m.refreshing = false
-		}
-		delete(m.pending, msg.target)
-		if m.noticeTarget == msg.target && !m.operationInContext(msg.target) {
-			m.notice, m.noticeTarget = "", ""
-		}
-		if msg.target == "worker" && msg.code == store.CodeDaemonStop && msg.err == nil {
-			m.stopRequestedAt = time.Time{}
-			m.worker.State, m.worker.Detail = "stopped", "Daemon is stopped."
-		}
-		// OFF invalidates the active start even if ON was selected again before it returned.
-		// Confirm the old generation settled before accepting the latest ON baseline.
-		if msg.target == "worker" && msg.code == store.CodeDaemonStart && !m.stopRequestedAt.IsZero() {
-			return m, m.applyWorkerChoice(m.workerEnabled)
-		}
-		if msg.target == "worker" && (msg.code == store.CodeDaemonStart || msg.code == store.CodeDaemonStop) && m.workerEnabled != (msg.code == store.CodeDaemonStart) {
-			// The requested choice changed while this command was running. Finish
-			// that command before applying the latest choice, and never let its
-			// stale completion replace the newer choice's feedback.
-			if msg.err == nil || msg.code == store.CodeDaemonStart {
-				if msg.code == store.CodeDaemonStop {
-					m.stopRequestedAt = time.Time{}
-					m.worker.State, m.worker.Detail = "stopped", "Daemon is stopped."
-				}
-				return m, m.applyWorkerChoice(m.workerEnabled)
-			}
-		}
-		if msg.pluginChoice != nil {
-			delete(m.pendingChoices, msg.target)
-			if msg.err == nil {
-				m.applyPluginChoice(*msg.pluginChoice)
-			}
-		}
-		if msg.err != nil {
-			code, detail := msg.code, msg.err
-			if strings.HasPrefix(msg.err.Error(), store.CodeSafeEntryUnsupported+":") {
-				code = store.CodeSafeEntryUnsupported
-				detail = errors.New(strings.TrimSpace(strings.TrimPrefix(msg.err.Error(), code+":")))
-			}
-			if code == store.CodePreparation {
-				detail = fmt.Errorf("Re-sync did not finish: %v", msg.err)
-			}
-			if errors.Is(msg.err, store.ErrStateLocked) {
-				detail = fmt.Errorf("The daemon is syncing sandbox registrations. This action did not finish; try again when syncing ends")
-			}
-			if msg.target == "worker" {
-				if errors.Is(msg.err, lifecycle.ErrDaemonStopUnconfirmed) {
-					code = store.CodeDaemonUnreachable
-				} else if errors.Is(msg.err, context.DeadlineExceeded) {
-					code, detail = store.CodeDaemonUnreachable, fmt.Errorf("Cannot reach daemon to change Management")
-				}
-			}
-			if msg.target == "worker" {
-				m.workerControlError = true
-			}
-			scope := msg.target
-			if code == store.CodeSafeEntryUnsupported {
-				if row, ok := findRow(m.rows, msg.target); ok {
-					scope = store.StatusKey(row.Scope, msg.target)
-				}
-			}
-			m.addError(code, scope, detail)
-			if m.operationInContext(msg.target) && (m.noticeTarget == "" || m.noticeTarget == msg.target) {
-				m.notice, m.noticeTarget = "", ""
-				if msg.code == store.CodeHerdrFix {
-					m.notice = "Fix herdr did not finish."
-				}
-			}
-		} else {
-			if msg.target == "worker" {
-				m.workerControlError = false
-				m.clearError(store.CodeDaemonUnreachable, "worker")
-			}
-			m.clearError(msg.code, msg.target)
-			if m.operationInContext(msg.target) && (m.noticeTarget == "" || m.noticeTarget == msg.target) {
-				m.notice, m.noticeTarget = msg.notice, ""
-				if msg.target == "worker" {
-					m.notice = ""
-				}
-			}
-			if msg.rename && m.input == msg.input && (msg.submittedText == "" || m.input.text == msg.submittedText) {
-				m.input = nil
-			}
-		}
-		if m.closing && len(m.pending) == 0 {
-			return m, tea.Quit
-		}
-		return m, tea.Batch(m.observe(), m.pollWorker())
+		return m.updateOperation(msg)
 	case tea.KeyPressMsg:
 		return m, m.key(msg)
 	case tea.MouseClickMsg:
@@ -667,44 +377,18 @@ func (m *model) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
 			m.beginTextSelection(msg.X, msg.Y)
 		}
 	case tea.MouseMotionMsg:
-		if m.textSelection != nil && m.textSelection.pressed && msg.Button == tea.MouseLeft {
-			m.textSelection.move(msg.X, msg.Y)
-		}
+		m.updateMouseMotion(msg)
 	case tea.MouseReleaseMsg:
 		if msg.Button == tea.MouseLeft || msg.Button == tea.MouseNone {
 			return m, m.releaseTextSelection(msg.X, msg.Y)
 		}
 	case tea.MouseWheelMsg:
-		if m.textSelection != nil && m.textSelection.pressed {
-			return m, nil
-		}
-		m.clearTextSelection()
-		if m.helpOpen {
-			if msg.Button == tea.MouseWheelUp {
-				m.helpScroll = max(0, m.helpScroll-3)
-			} else {
-				m.helpScroll += 3
-			}
-			return m, nil
-		}
-		if msg.Button == tea.MouseWheelUp {
-			m.scroll = max(0, m.scroll-3)
-		} else {
-			m.scroll += 3
-		}
+		return m.updateMouseWheel(msg)
 	}
 	return m, nil
 }
 func (m *model) mergeRows(rows []registration.SandboxRow) {
-	actionID := ""
-	if m.focus == "actions" {
-		if row, ok := m.row(); ok {
-			actions := m.sandboxActions(row)
-			if m.button >= 0 && m.button < len(actions) {
-				actionID = actions[m.button].id
-			}
-		}
-	}
+	actionID := m.selectedActionID()
 	byID := map[string]registration.SandboxRow{}
 	for _, r := range rows {
 		if choice, ok := m.pendingEnabled[r.Sandbox.ID]; ok {
@@ -725,22 +409,9 @@ func (m *model) mergeRows(rows []registration.SandboxRow) {
 			delete(byID, r.Sandbox.ID)
 		}
 	}
-	if m.input != nil && m.input.kind == "rename" {
-		if _, ok := findRow(result, m.input.target); !ok {
-			m.addError(store.CodeRename, m.input.target, fmt.Errorf("registration is no longer available; the proposed label is preserved"))
-		}
-	}
+	m.preserveMissingRename(result)
 	m.rows = result
-	if actionID != "" {
-		if row, ok := m.row(); ok {
-			for i, action := range m.sandboxActions(row) {
-				if action.id == actionID {
-					m.button = i
-					break
-				}
-			}
-		}
-	}
+	m.restoreActionSelection(actionID)
 }
 func findRow(rows []registration.SandboxRow, id string) (registration.SandboxRow, bool) {
 	for _, r := range rows {
@@ -801,23 +472,7 @@ func (m *model) ensureSelection() {
 		}
 	}
 	m.expanded = m.selected
-	if m.page == "Sandboxes" && (m.focus == "actions" || m.focus == "plugins") {
-		if row, ok := m.row(); ok {
-			count := len(m.sandboxActions(row))
-			m.button = max(0, min(m.button, count-1))
-			if m.focus == "actions" && count == 0 {
-				m.focus = "table"
-				if len(m.plugins) > 0 {
-					m.focus = "plugins"
-				}
-			} else if m.focus == "plugins" && len(m.plugins) == 0 {
-				m.focus = "table"
-				if count > 0 {
-					m.focus = "actions"
-				}
-			}
-		}
-	}
+	m.ensureDetailSelection()
 	m.detailIndex = max(0, min(m.detailIndex, len(m.plugins)-1))
 
 	plugins := m.visiblePlugins()
@@ -868,26 +523,7 @@ func (m *model) setEnabled(choice store.EnabledChoice) tea.Cmd {
 			m.rows[i].Enabled = choice
 		}
 	}
-	command := m.run(r.Sandbox.ID, store.CodeManagement, "Sandbox connection choice saved", func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		return m.setEnabledFn(ctx, r.Scope, r.Sandbox.ID, choice)
-	})
-	return func() tea.Msg {
-		result := command().(operationMsg)
-		settled := r.Enabled
-		choices, err := store.ReadEnabled()
-		if err == nil {
-			settled = choices[store.StatusKey(r.Scope, r.Sandbox.ID)]
-			if settled == "" {
-				settled = store.Enabled
-			}
-		} else {
-			result.err = errors.Join(result.err, fmt.Errorf("cannot confirm saved enabled choice: %w", err))
-		}
-		result.enabledChoice = &settled
-		return result
-	}
+	return m.saveEnabledChoice(r, choice)
 }
 func (m *model) toggleEnabled() tea.Cmd {
 	r, ok := m.row()
@@ -964,17 +600,7 @@ func (m *model) savePluginChoice(target string, change pluginChoiceChange, save 
 }
 func (m *model) applyPluginChoice(change pluginChoiceChange) {
 	if change.defaultChoice {
-		if m.settings.Plugins == nil {
-			m.settings.Plugins = map[string]store.GuestPluginDefault{}
-		}
-		setting := m.settings.Plugins[change.pluginID]
-		setting.Enabled = *change.enabled
-		m.settings.Plugins[change.pluginID] = setting
-		for i := range m.plugins {
-			if m.plugins[i].ID == change.pluginID {
-				m.plugins[i].Enabled = *change.enabled
-			}
-		}
+		m.applyDefaultPluginChoice(change)
 		return
 	}
 	if m.settings.Overrides == nil {
@@ -1024,3 +650,517 @@ func (sshCommand) SetStderr(io.Writer) {}
 
 // A stopped worker must not prevent recovery of access left by an interrupted
 // installation. Request this once per opening as soon as the daemon is known.
+
+func (m *model) updateTick(msg tickMsg) (tea.Model, tea.Cmd) {
+	m.ticks++
+	if !m.workerEnabled && !m.stopRequestedAt.IsZero() && !m.stopDelayReported && time.Since(m.stopRequestedAt) > time.Minute && m.worker.State != "stopped" && m.worker.State != "exited" {
+		m.addError(store.CodeDaemonUnreachable, "worker", fmt.Errorf("Cannot confirm that the daemon stopped within one minute. It may be busy or unreachable"))
+		m.stopDelayReported = true
+		m.workerControlError = true
+	}
+	var refresh tea.Cmd
+	if m.ticks%5 == 0 {
+		refresh = m.observe()
+	}
+	return m, tea.Batch(m.pollWorker(), refresh, tick())
+}
+
+func (m *model) updateErrorsPersisted(msg errorsPersistedMsg) (tea.Model, tea.Cmd) {
+	m.writingErrors = false
+	dismissalFailed := false
+	for _, write := range msg.failed {
+		if write.dismissal == nil {
+			continue
+		}
+		dismissalFailed = true
+		m.failedDismissal(write)
+	}
+	for _, write := range msg.writes {
+		if write.dismissal != nil && !dismissalFailed {
+			m.clearError(store.CodeDiagnosticDismiss, "Host")
+		}
+		change := m.errorChanges[write.key]
+		if change.revision == write.revision {
+			change.persistedAt = msg.at
+			m.errorChanges[write.key] = change
+		}
+	}
+	return m, nil
+}
+
+func (m *model) updateWorker(msg workerMsg) (tea.Model, tea.Cmd) {
+	if msg.err == nil {
+		m.mergeErrors(msg)
+	}
+	m.addError(store.CodeDaemonStatus, "Host", msg.err)
+	if msg.err != nil {
+		m.worker.State = "error"
+		m.worker.Detail = "Cannot read Management status."
+	}
+	m.applyWorkerStatus(msg)
+	if !m.workerLoaded {
+		m.workerLoaded = true
+		if !m.workerIntentSet && !m.pending["worker"] && msg.err == nil && msg.status.State == "stopped" {
+			if !msg.initialized {
+				return m, m.startWorker()
+			} else {
+				m.dialog = "startup"
+				m.button = 0
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m *model) updateObservation(msg observationMsg) (tea.Model, tea.Cmd) {
+	if msg.generation != m.generation {
+		return m, nil
+	}
+	m.refreshing = false
+	m.loading = false
+	if len(m.checks.Checks) == 0 || m.checks.Socket == "" {
+		m.checks.Scope, m.checks.Socket = msg.checks.Scope, msg.checks.Socket
+	}
+	if msg.err != nil {
+		m.addError(store.CodeSandboxInventory, "Host", msg.err)
+		m.mergePartialRows(msg.rows)
+		for i := range m.rows {
+			m.rows[i].Status.Stale = true
+		}
+	} else {
+		m.clearError(store.CodeSandboxInventory, "Host")
+		m.mergeRows(msg.rows)
+	}
+	if msg.pluginErr != nil {
+		m.addError(store.CodePluginDiscovery, "Host", msg.pluginErr)
+	} else {
+		m.clearError(store.CodePluginDiscovery, "Host")
+		m.plugins = msg.plugins
+		m.settings = msg.settings
+	}
+	m.ensureSelection()
+	return m, nil
+}
+
+func (m *model) updateOperation(msg operationMsg) (tea.Model, tea.Cmd) {
+	m.settleOperation(msg)
+	if command, superseded := m.supersededWorkerOperation(msg); superseded {
+		return m, command
+	}
+	if msg.pluginChoice != nil {
+		delete(m.pendingChoices, msg.target)
+		if msg.err == nil {
+			m.applyPluginChoice(*msg.pluginChoice)
+		}
+	}
+	if msg.err != nil {
+		m.operationFailed(msg)
+	} else {
+		m.operationSucceeded(msg)
+	}
+
+	if m.closing && len(m.pending) == 0 {
+		return m, tea.Quit
+	}
+	return m, tea.Batch(m.observe(), m.pollWorker())
+}
+
+func (m *model) updateMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	if m.textSelection != nil && m.textSelection.pressed {
+		return m, nil
+	}
+	m.clearTextSelection()
+	if m.helpOpen {
+		if msg.Button == tea.MouseWheelUp {
+			m.helpScroll = max(0, m.helpScroll-3)
+		} else {
+			m.helpScroll += 3
+		}
+		return m, nil
+	}
+	if msg.Button == tea.MouseWheelUp {
+		m.scroll = max(0, m.scroll-3)
+	} else {
+		m.scroll += 3
+	}
+	return m, nil
+}
+
+func (m *model) finishUpdate(hadErrors bool, command tea.Cmd) tea.Cmd {
+	if m.page == "Status" && m.dialog == "" {
+		if button := max(0, min(m.button, len(m.statusActions())-1)); button != m.button {
+			m.button, m.reveal = button, true
+		}
+	}
+	if hadErrors && len(m.errors) == 0 && (m.focus == "errors" || m.focus == "diagnostics") {
+		m.focus, m.reveal = "table", true
+		m.scroll = 0
+	}
+	if m.writingErrors || len(m.effects) == 0 {
+		return command
+	}
+	effects := m.effects
+	m.effects = nil
+	m.writingErrors = true
+	persist := func() tea.Msg { return persistErrorWrites(effects) }
+	return tea.Batch(command, persist)
+}
+
+func (m *model) restoreWorkerControl() {
+	if saved, err := store.ReadStatusStore(); err == nil {
+		if saved.WorkerControl != nil {
+			m.workerEnabled = !saved.WorkerControl.Stopped
+		}
+		for _, item := range saved.Errors {
+			if workerControlDiagnostic(item) {
+				m.workerControlError = true
+				break
+			}
+		}
+	}
+}
+
+func workerControlDiagnostic(item store.ErrorRecord) bool {
+	if item.Scope == "Host" {
+		return item.Code == store.CodeDaemonUnreachable
+	}
+	return item.Scope == "worker" && (item.Code == store.CodeDaemonUnreachable || item.Code == store.CodeDaemonStart || item.Code == store.CodeDaemonStop)
+}
+
+func (m *model) mergedErrors(msg workerMsg) []uiError {
+	var merged []uiError
+	for _, e := range m.errors {
+		if _, local := m.errorChanges[errorScopeKey(e.code, e.scope, e.pluginID)]; local {
+			merged = append(merged, e)
+		}
+	}
+	for _, e := range msg.errors {
+		if _, local := m.errorChanges[errorScopeKey(e.Code, e.Scope, e.PluginID)]; !local {
+			merged = append(merged, uiError{ref: e.Ref, code: e.Code, scope: e.Scope, detail: e.Detail, firstSeen: e.FirstSeen, dismissed: e.Dismissed, pluginID: e.PluginID, command: e.Command, recovery: e.Recovery, output: e.Output, count: e.Count, seen: e.LastSeen})
+		}
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		if !merged[i].firstSeen.Equal(merged[j].firstSeen) {
+			return merged[i].firstSeen.Before(merged[j].firstSeen)
+		}
+		return diagnosticIdentity(merged[i]) < diagnosticIdentity(merged[j])
+	})
+	m.applyPendingDismissals(merged)
+	return merged
+}
+
+func (m *model) restoreDiagnosticSelection(selected *diagnosticGroup) {
+	m.restoreDiagnosticClickGroup()
+	if selected == nil {
+		return
+	}
+	for i, e := range m.visibleErrors() {
+		if e.code == selected.code && e.scope == selected.scope {
+			m.errorIndex = i
+			break
+		}
+	}
+}
+func (m *model) restoreDiagnosticClickGroup() {
+	if m.diagnosticClickGroup == "" {
+		return
+	}
+	for _, e := range m.visibleErrors() {
+		if diagnosticGroupKey(e.code, e.scope) == m.diagnosticClickGroup {
+			return
+		}
+	}
+	m.diagnosticClickGroup = ""
+}
+
+func (m *model) selectedActionID() string {
+	actionID := ""
+	if m.focus == "actions" {
+		if row, ok := m.row(); ok {
+			actions := m.sandboxActions(row)
+			if m.button >= 0 && m.button < len(actions) {
+				actionID = actions[m.button].id
+			}
+		}
+	}
+	return actionID
+}
+
+func (m *model) restoreActionSelection(actionID string) {
+	if actionID != "" {
+		if row, ok := m.row(); ok {
+			for i, action := range m.sandboxActions(row) {
+				if action.id == actionID {
+					m.button = i
+					break
+				}
+			}
+		}
+	}
+}
+
+func (m *model) ensureDetailSelection() {
+	if m.page != "Sandboxes" || (m.focus != "actions" && m.focus != "plugins") {
+		return
+	}
+	row, ok := m.row()
+	if !ok {
+		return
+	}
+	count := len(m.sandboxActions(row))
+	m.button = max(0, min(m.button, count-1))
+	if m.focus == "actions" && count == 0 {
+		m.focusAvailableDetail("plugins", len(m.plugins))
+		return
+	}
+	if m.focus == "plugins" && len(m.plugins) == 0 {
+		m.focusAvailableDetail("actions", count)
+	}
+}
+
+func (m *model) saveEnabledChoice(r registration.SandboxRow, choice store.EnabledChoice) tea.Cmd {
+	command := m.run(r.Sandbox.ID, store.CodeManagement, "Sandbox connection choice saved", func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		return m.setEnabledFn(ctx, r.Scope, r.Sandbox.ID, choice)
+	})
+	return func() tea.Msg {
+		result := command().(operationMsg)
+		settled := r.Enabled
+		choices, err := store.ReadEnabled()
+		if err == nil {
+			settled = choices[store.StatusKey(r.Scope, r.Sandbox.ID)]
+			if settled == "" {
+				settled = store.Enabled
+			}
+		} else {
+			result.err = errors.Join(result.err, fmt.Errorf("cannot confirm saved enabled choice: %w", err))
+		}
+		result.enabledChoice = &settled
+		return result
+	}
+}
+
+func (m *model) applyDefaultPluginChoice(change pluginChoiceChange) {
+	if m.settings.Plugins == nil {
+		m.settings.Plugins = map[string]store.GuestPluginDefault{}
+	}
+	setting := m.settings.Plugins[change.pluginID]
+	setting.Enabled = *change.enabled
+	m.settings.Plugins[change.pluginID] = setting
+	for i := range m.plugins {
+		if m.plugins[i].ID == change.pluginID {
+			m.plugins[i].Enabled = *change.enabled
+		}
+	}
+	return
+}
+
+func (m *model) applyWorkerStatus(msg workerMsg) {
+	if msg.err == nil {
+		m.worker = msg.status
+		m.clearError(store.CodeDaemonStatus, "Host")
+		if msg.status.State == "reconnecting" {
+			m.addError(store.CodeDaemonReconnect, "Host", fmt.Errorf("%s", msg.status.Detail))
+		} else {
+			m.clearError(store.CodeDaemonReconnect, "Host")
+		}
+		if (msg.status.State == "stopped" || msg.status.State == "exited") && !m.pending["worker"] && !m.workerEnabled {
+			m.stopRequestedAt = time.Time{}
+			m.stopDelayReported = false
+			m.workerControlError = false
+			m.clearError(store.CodeDaemonUnreachable, "worker")
+			m.clearError(store.CodeDaemonUnreachable, "Host")
+			m.clearError(store.CodeDaemonStop, "worker")
+		} else if !m.workerEnabled && !m.workerControlError && m.stopRequestedAt.IsZero() {
+			m.stopRequestedAt = time.Now()
+		}
+	}
+}
+
+func (m *model) mergePartialRows(rows []registration.SandboxRow) {
+	if len(rows) > 0 {
+		partial := append([]registration.SandboxRow(nil), rows...)
+		for _, old := range m.rows {
+			if _, found := findRow(partial, old.Sandbox.ID); !found {
+				partial = append(partial, old)
+			}
+		}
+		m.mergeRows(partial)
+	}
+}
+
+func (m *model) failedDismissal(write errorWrite) {
+	for i := range m.errors {
+		if m.errors[i].code == write.dismissal.code && m.errors[i].scope == write.dismissal.scope {
+			m.errors[i].dismissed = false
+		}
+	}
+	if m.errorChanges[write.key].revision == write.revision {
+		delete(m.errorChanges, write.key)
+	}
+	m.addError(store.CodeDiagnosticDismiss, "Host", fmt.Errorf("Could not save the diagnostic dismissal. The item is still new; try Dismiss again. %v", write.err))
+}
+
+func (m *model) settleOperation(msg operationMsg) {
+	if msg.enabledChoice != nil {
+		for i := range m.rows {
+			if m.rows[i].Sandbox.ID == msg.target {
+				m.rows[i].Enabled = *msg.enabledChoice
+			}
+		}
+	}
+	if _, ok := m.pendingEnabled[msg.target]; ok {
+		delete(m.pendingEnabled, msg.target)
+		// Discard observations started before this action completed, then refresh.
+		m.generation++
+		m.refreshing = false
+	}
+	delete(m.pending, msg.target)
+	if m.noticeTarget == msg.target && !m.operationInContext(msg.target) {
+		m.notice, m.noticeTarget = "", ""
+	}
+}
+
+func (m *model) supersededWorkerOperation(msg operationMsg) (tea.Cmd, bool) {
+	if msg.target != "worker" {
+		return nil, false
+	}
+	if msg.code == store.CodeDaemonStop && msg.err == nil {
+		m.workerStopped()
+	}
+	// OFF invalidates the active start, including OFF followed by ON.
+	if msg.code == store.CodeDaemonStart && !m.stopRequestedAt.IsZero() {
+		return m.applyWorkerChoice(m.workerEnabled), true
+	}
+	switch msg.code {
+	case store.CodeDaemonStart, store.CodeDaemonStop:
+	default:
+		return nil, false
+	}
+	if m.workerEnabled == (msg.code == store.CodeDaemonStart) {
+		return nil, false
+	}
+	if msg.err != nil && msg.code != store.CodeDaemonStart {
+		return nil, false
+	}
+	if msg.code == store.CodeDaemonStop {
+		m.workerStopped()
+	}
+	return m.applyWorkerChoice(m.workerEnabled), true
+}
+func (m *model) workerStopped() {
+	m.stopRequestedAt = time.Time{}
+	m.worker.State, m.worker.Detail = "stopped", "Daemon is stopped."
+}
+
+func (m *model) operationFailed(msg operationMsg) {
+	code, detail := operationError(msg)
+	if msg.target == "worker" {
+		m.workerControlError = true
+	}
+	scope := msg.target
+	if code == store.CodeSafeEntryUnsupported {
+		if row, ok := findRow(m.rows, msg.target); ok {
+			scope = store.StatusKey(row.Scope, msg.target)
+		}
+	}
+	m.addError(code, scope, detail)
+	if m.operationInContext(msg.target) && (m.noticeTarget == "" || m.noticeTarget == msg.target) {
+		m.notice, m.noticeTarget = "", ""
+		if msg.code == store.CodeHerdrFix {
+			m.notice = "Fix herdr did not finish."
+		}
+	}
+}
+
+func (m *model) operationSucceeded(msg operationMsg) {
+	if msg.target == "worker" {
+		m.workerControlError = false
+		m.clearError(store.CodeDaemonUnreachable, "worker")
+	}
+	m.clearError(msg.code, msg.target)
+	if m.operationInContext(msg.target) && (m.noticeTarget == "" || m.noticeTarget == msg.target) {
+		m.notice, m.noticeTarget = msg.notice, ""
+		if msg.target == "worker" {
+			m.notice = ""
+		}
+	}
+	if msg.rename && m.input == msg.input && (msg.submittedText == "" || m.input.text == msg.submittedText) {
+		m.input = nil
+	}
+}
+
+func operationError(msg operationMsg) (string, error) {
+	code, detail := msg.code, msg.err
+	if strings.HasPrefix(msg.err.Error(), store.CodeSafeEntryUnsupported+":") {
+		code = store.CodeSafeEntryUnsupported
+		detail = errors.New(strings.TrimSpace(strings.TrimPrefix(msg.err.Error(), code+":")))
+	}
+	if code == store.CodePreparation {
+		detail = fmt.Errorf("Re-sync did not finish: %v", msg.err)
+	}
+	if errors.Is(msg.err, store.ErrStateLocked) {
+		detail = fmt.Errorf("The daemon is syncing sandbox registrations. This action did not finish; try again when syncing ends")
+	}
+	if msg.target == "worker" {
+		if errors.Is(msg.err, lifecycle.ErrDaemonStopUnconfirmed) {
+			code = store.CodeDaemonUnreachable
+		} else if errors.Is(msg.err, context.DeadlineExceeded) {
+			code, detail = store.CodeDaemonUnreachable, fmt.Errorf("Cannot reach daemon to change Management")
+		}
+	}
+	return code, detail
+}
+
+func persistErrorWrites(effects []errorWrite) tea.Msg {
+	var written, failed []errorWrite
+	for _, effect := range effects {
+		if err := effect.apply(); err == nil {
+			written = append(written, effect)
+		} else {
+			effect.err = err
+			failed = append(failed, effect)
+		}
+	}
+	return errorsPersistedMsg{writes: written, failed: failed, at: time.Now()}
+}
+
+func (m *model) expireErrorChanges(observed time.Time) {
+	for key, change := range m.errorChanges {
+		if !change.persistedAt.IsZero() && observed.After(change.persistedAt) {
+			delete(m.errorChanges, key)
+		}
+	}
+}
+
+func (m *model) preserveMissingRename(result []registration.SandboxRow) {
+	if m.input != nil && m.input.kind == "rename" {
+		if _, ok := findRow(result, m.input.target); !ok {
+			m.addError(store.CodeRename, m.input.target, fmt.Errorf("registration is no longer available; the proposed label is preserved"))
+		}
+	}
+}
+
+func (m *model) updateMouseMotion(msg tea.MouseMotionMsg) {
+	if m.textSelection != nil && m.textSelection.pressed && msg.Button == tea.MouseLeft {
+		m.textSelection.move(msg.X, msg.Y)
+	}
+}
+
+func (m *model) applyPendingDismissals(merged []uiError) {
+	// Apply in-flight group dismissal to incoming children without suppressing
+	// their details. A stale poll cannot make an acknowledged group new again.
+	for i := range merged {
+		if _, pending := m.errorChanges[diagnosticGroupKey(merged[i].code, merged[i].scope)]; pending {
+			merged[i].dismissed = true
+		}
+	}
+}
+
+func (m *model) focusAvailableDetail(focus string, count int) {
+	m.focus = "table"
+	if count > 0 {
+		m.focus = focus
+	}
+}

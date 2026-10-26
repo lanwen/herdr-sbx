@@ -203,58 +203,8 @@ func TestReconcileRetriesPendingRegistrationWhenCatalogIsEmpty(t *testing.T) {
 	fixture := newRegistrationFixture(t, `[{"uuid":"sandbox-1","name":"demo","status":"running"}]`)
 	scope := store.ScopeID("/tmp/test-sandboxd.sock")
 	require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {{SandboxID: "sandbox-1", Label: "sbx · demo", Target: "demo.sbx", Pending: true, ProjectWorkspacePending: "/workspace/demo"}}}}))
-	adds, lists := 0, 0
-	handedOff := false
-	fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
-		joined := strings.Join(command.Args, " ")
-		switch command.Name + " " + joined {
-		case "herdr --version":
-			return "herdr 0.9.1\n", nil
-		case "sbx version":
-			return "sbx version: 0.45.1\n", nil
-		case "ssh -V":
-			return "OpenSSH_9.9\n", nil
-		case "sbx daemon status --help", "sbx ls --help":
-			return "--json\n", nil
-		case "sbx daemon status --json":
-			return `{"status":"running","socket":"/tmp/test-sandboxd.sock"}`, nil
-		case "sbx diagnose --json":
-			return `{"checks":[{"name":"Authentication","status":"pass"}]}`, nil
-		case "ssh -G herdr-sandbox-probe.sbx":
-			return "proxycommand sbx ssh proxy %n\n", nil
-		case "ssh -o BatchMode=yes -o ConnectTimeout=8 demo.sbx " + remoteHerdrStatusShell():
-			return remoteHerdrOnPath + "\nherdr 0.9.1\n", nil
-		case "herdr machine list --json":
-			lists++
-			if adds == 0 {
-				return `[]`, nil
-			}
-			return `[{"id":"machine-1","label":"sbx · demo","target":"demo.sbx","session":"default"}]`, nil
-		case "herdr machine add --label sbx · demo demo.sbx":
-			adds++
-			return "Saved SSH machine machine-1. Remote server is ready.\n", nil
-		case "herdr --machine machine-1 pane list":
-			return `{"result":{"panes":[{"workspace_id":"w1","cwd":"/workspace/demo"}]}}`, nil
-		case "herdr --machine machine-1 status server":
-			return "running\n", nil
-		default:
-			if command.Name == "ssh" && strings.HasSuffix(joined, "status server --json") {
-				if !handedOff {
-					return `{"running":true,"version":"0.9.4"}`, nil
-				}
-				return `{"running":true,"version":"0.9.1"}`, nil
-			}
-			if command.Name == "ssh" && strings.Contains(joined, "server live-handoff") {
-				handedOff = true
-				return "done", nil
-			}
-			if command.Name == "ssh" && strings.Contains(joined, "HERDR_STARTUP_CWD=") {
-				require.True(t, handedOff, "queried project panes before version alignment")
-				return `{"result":{"panes":[{"workspace_id":"w1","cwd":"/workspace/demo"}]}}`, nil
-			}
-			return "", fmt.Errorf("unexpected command: %s %s", command.Name, joined)
-		}
-	}
+	commands := &pendingRegistrationCommands{t: t}
+	fixture.runner.Execute = commands.execute
 	fixture.rebuildClients()
 
 	for range 2 {
@@ -263,9 +213,71 @@ func TestReconcileRetriesPendingRegistrationWhenCatalogIsEmpty(t *testing.T) {
 	state, err := store.LoadState()
 	require.NoError(t, err)
 	items := state.Scopes[store.ScopeID("/tmp/test-sandboxd.sock")]
-	require.EqualValues(t, 1, adds)
-	require.False(t, lists < 3)
+	require.EqualValues(t, 1, commands.adds)
+	require.False(t, commands.lists < 3)
 	require.Len(t, items, 1)
 	require.EqualValues(t, "machine-1", items[0].ProfileID)
 	require.False(t, items[0].Pending)
+}
+
+type pendingRegistrationCommands struct {
+	t           *testing.T
+	adds, lists int
+	handedOff   bool
+}
+
+func (f *pendingRegistrationCommands) execute(_ context.Context, command process.Command) (string, error) {
+
+	joined := strings.Join(command.Args, " ")
+	switch command.Name + " " + joined {
+	case "herdr --version":
+		return "herdr 0.9.1\n", nil
+	case "sbx version":
+		return "sbx version: 0.45.1\n", nil
+	case "ssh -V":
+		return "OpenSSH_9.9\n", nil
+	case "sbx daemon status --help", "sbx ls --help":
+		return "--json\n", nil
+	case "sbx daemon status --json":
+		return `{"status":"running","socket":"/tmp/test-sandboxd.sock"}`, nil
+	case "sbx diagnose --json":
+		return `{"checks":[{"name":"Authentication","status":"pass"}]}`, nil
+	case "ssh -G herdr-sandbox-probe.sbx":
+		return "proxycommand sbx ssh proxy %n\n", nil
+	case "ssh -o BatchMode=yes -o ConnectTimeout=8 demo.sbx " + remoteHerdrStatusShell():
+		return remoteHerdrOnPath + "\nherdr 0.9.1\n", nil
+	case "herdr machine list --json":
+		f.lists++
+		if f.adds == 0 {
+			return `[]`, nil
+		}
+		return `[{"id":"machine-1","label":"sbx · demo","target":"demo.sbx","session":"default"}]`, nil
+	case "herdr machine add --label sbx · demo demo.sbx":
+		f.adds++
+		return "Saved SSH machine machine-1. Remote server is ready.\n", nil
+	case "herdr --machine machine-1 pane list":
+		return `{"result":{"panes":[{"workspace_id":"w1","cwd":"/workspace/demo"}]}}`, nil
+	case "herdr --machine machine-1 status server":
+		return "running\n", nil
+	default:
+		return f.ssh(command, joined)
+	}
+}
+func (f *pendingRegistrationCommands) ssh(command process.Command, joined string) (string, error) {
+
+	if command.Name == "ssh" && strings.HasSuffix(joined, "status server --json") {
+		if !f.handedOff {
+			return `{"running":true,"version":"0.9.4"}`, nil
+		}
+		return `{"running":true,"version":"0.9.1"}`, nil
+	}
+	if command.Name == "ssh" && strings.Contains(joined, "server live-handoff") {
+		f.handedOff = true
+		return "done", nil
+	}
+	if command.Name == "ssh" && strings.Contains(joined, "HERDR_STARTUP_CWD=") {
+		require.True(f.t, f.handedOff, "queried project panes before version alignment")
+		return `{"result":{"panes":[{"workspace_id":"w1","cwd":"/workspace/demo"}]}}`, nil
+	}
+	return "", fmt.Errorf("unexpected command: %s %s", command.Name, joined)
 }

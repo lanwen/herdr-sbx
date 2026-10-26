@@ -60,33 +60,7 @@ func TestWorkerLogRotationKeepsInheritedOutputAndRecentArchives(t *testing.T) {
 func TestWorkerLogRotationBoundsLargeBursts(t *testing.T) {
 	for _, size := range []int{workerLogLimit, workerLogLimit + 1, 2 * workerLogLimit, 4*workerLogLimit + 23} {
 		t.Run(strconv.Itoa(size), func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "worker.log")
-			data := make([]byte, size)
-			for i := range data {
-				data[i] = byte(i % 251)
-			}
-			require.NoError(t, os.WriteFile(path, data, 0600))
-			require.NoError(t, rotateWorkerLog(path))
-			active, err := os.ReadFile(path)
-			require.NoError(t, err)
-			if size <= workerLogLimit {
-				require.Equal(t, data, active)
-				return
-			}
-			require.Len(t, active, (size-1)%workerLogLimit+1)
-			retained := []byte{}
-			for _, suffix := range []string{".2", ".1"} {
-				archived, err := os.ReadFile(path + suffix)
-				if suffix == ".2" && size <= 2*workerLogLimit {
-					require.ErrorIs(t, err, os.ErrNotExist)
-					continue
-				}
-				require.NoError(t, err)
-				require.Len(t, archived, workerLogLimit)
-				retained = append(retained, archived...)
-			}
-			retained = append(retained, active...)
-			require.Equal(t, data[len(data)-len(retained):], retained)
+			testWorkerLogBurst(t, size)
 		})
 	}
 }
@@ -255,31 +229,69 @@ func TestWorkerLogConcurrentProcessRotation(t *testing.T) {
 func TestWorkerLogRejectsFIFOsWithoutWaitingForPeers(t *testing.T) {
 	for _, operation := range []string{"startup", "active rotation", "archive rotation"} {
 		t.Run(operation, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "worker.log")
-			fifo := path
-			if operation == "archive rotation" {
-				require.NoError(t, os.WriteFile(path, bytes.Repeat([]byte("x"), workerLogLimit+1), 0600))
-				fifo += ".1"
-			}
-			require.NoError(t, syscall.Mkfifo(fifo, 0600))
-			done := make(chan error, 1)
-			go func() {
-				if operation == "startup" {
-					file, err := openWorkerLog(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY)
-					if file != nil {
-						_ = file.Close()
-					}
-					done <- err
-				} else {
-					done <- rotateWorkerLog(path)
-				}
-			}()
-			select {
-			case err := <-done:
-				require.Error(t, err)
-			case <-time.After(2 * time.Second):
-				t.Fatal("log validation waited for a FIFO peer")
-			}
+			testWorkerLogFIFO(t, operation)
 		})
 	}
+}
+
+func testWorkerLogBurst(t *testing.T, size int) {
+
+	path := filepath.Join(t.TempDir(), "worker.log")
+	data := make([]byte, size)
+	for i := range data {
+		data[i] = byte(i % 251)
+	}
+	require.NoError(t, os.WriteFile(path, data, 0600))
+	require.NoError(t, rotateWorkerLog(path))
+	active, err := os.ReadFile(path)
+	require.NoError(t, err)
+	if size <= workerLogLimit {
+		require.Equal(t, data, active)
+		return
+	}
+	require.Len(t, active, (size-1)%workerLogLimit+1)
+	retained := []byte{}
+	for _, suffix := range []string{".2", ".1"} {
+		archived, err := os.ReadFile(path + suffix)
+		if suffix == ".2" && size <= 2*workerLogLimit {
+			require.ErrorIs(t, err, os.ErrNotExist)
+			continue
+		}
+		require.NoError(t, err)
+		require.Len(t, archived, workerLogLimit)
+		retained = append(retained, archived...)
+	}
+	retained = append(retained, active...)
+	require.Equal(t, data[len(data)-len(retained):], retained)
+
+}
+
+func testWorkerLogFIFO(t *testing.T, operation string) {
+
+	path := filepath.Join(t.TempDir(), "worker.log")
+	fifo := path
+	if operation == "archive rotation" {
+		require.NoError(t, os.WriteFile(path, bytes.Repeat([]byte("x"), workerLogLimit+1), 0600))
+		fifo += ".1"
+	}
+	require.NoError(t, syscall.Mkfifo(fifo, 0600))
+	done := make(chan error, 1)
+	go func() {
+		if operation == "startup" {
+			file, err := openWorkerLog(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY)
+			if file != nil {
+				_ = file.Close()
+			}
+			done <- err
+		} else {
+			done <- rotateWorkerLog(path)
+		}
+	}()
+	select {
+	case err := <-done:
+		require.Error(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("log validation waited for a FIFO peer")
+	}
+
 }

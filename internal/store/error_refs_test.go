@@ -72,14 +72,14 @@ func TestReferenceAllocationRejectsActiveAndRecentCollisions(t *testing.T) {
 	require.EqualValues(t, 3, i)
 }
 
-func TestLegacyReferencesAreBackfilledOnUpdate(t *testing.T) {
+func TestOlderReferencesAreBackfilledOnUpdate(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	require.NoError(t, UpdateStatusStore(func(s *StatusStore) {
-		s.Errors["legacy"] = ErrorRecord{Code: CodeRegistration, Scope: "sandbox", Detail: "failed", Count: 2, Dismissed: true}
+		s.Errors["older"] = ErrorRecord{Code: CodeRegistration, Scope: "sandbox", Detail: "failed", Count: 2, Dismissed: true}
 	}))
 
 	before := mustPrimaryError(t, "sandbox")
-	require.Equal(t, "", before.Ref, "fixture not legacy: %+v", before)
+	require.Equal(t, "", before.Ref, "fixture not older: %+v", before)
 
 	require.NoError(t, UpdateStatusStore(func(s *StatusStore) {}))
 	updated := mustPrimaryError(t, "sandbox")
@@ -89,7 +89,7 @@ func TestLegacyReferencesAreBackfilledOnUpdate(t *testing.T) {
 	require.NoError(t, UpdateStatusStore(func(s *StatusStore) {}))
 
 	again := mustPrimaryError(t, "sandbox")
-	require.Equal(t, updated.Ref, again.Ref, "legacy reference not durable: %+v", again)
+	require.Equal(t, updated.Ref, again.Ref, "older reference not durable: %+v", again)
 }
 
 func TestPrimaryErrorUsesSeverityThenStablePluginOrder(t *testing.T) {

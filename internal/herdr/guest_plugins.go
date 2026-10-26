@@ -137,7 +137,15 @@ func (c *Client) InspectGuestPlugin(ctx context.Context, target, id string) (Gue
 	if !validGuestPluginID.MatchString(id) {
 		return GuestPluginState{}, fmt.Errorf("invalid plugin ID")
 	}
-	script := guestExecutable + guestConfigPath + `for tool in tar sha256sum base64 jq; do command -v "$tool" >/dev/null || { printf 'plugin requires %s in the sandbox\n' "$tool" >&2; exit 1; }; done
+	output, err := c.guestCommand(ctx, target, guestPluginInspectionScript(id))
+	if err != nil {
+		return GuestPluginState{}, guestPluginInspectionError(output, err)
+	}
+	return parseGuestPluginInspection(output)
+}
+
+func guestPluginInspectionScript(id string) string {
+	return guestExecutable + guestConfigPath + `for tool in tar sha256sum base64 jq; do command -v "$tool" >/dev/null || { printf 'plugin requires %s in the sandbox\n' "$tool" >&2; exit 1; }; done
 plugins=$("$h" --session default plugin list --plugin ` + quoteShell(id) + ` --json)
 root=$(printf '%s' "$plugins" | jq -r '.result.plugins[0].plugin_root // ""')
 manifest=$(printf '%s' "$plugins" | jq -r '.result.plugins[0].manifest_path // ""')
@@ -175,55 +183,52 @@ esac
 fi
 printf '%s\n%s' "$managed" "$config_sha"
 printf '\n` + guestPluginFrameEnd + `\n'`
-	output, err := c.guestCommand(ctx, target, script)
+}
+
+func guestPluginInspectionError(output string, err error) error {
+	for _, tool := range []string{"jq", "tar", "sha256sum", "base64"} {
+		message := "plugin requires " + tool + " in the sandbox"
+		if strings.TrimSpace(output) == message {
+			return fmt.Errorf("%s", message)
+		}
+	}
+	// A dropped connection can follow a partial response containing private
+	// guest configuration. Retain only diagnostics before that frame.
+	if start := strings.Index(output, guestPluginFrameStart); start >= 0 {
+		output = output[:start]
+	}
+	detail := safePluginDiagnostic(output)
+	if connection := guestPluginConnectionFailure(err, detail); connection != nil {
+		return connection
+	}
+	if detail != "" {
+		return fmt.Errorf("inspect guest plugin: %w: %s", err, detail)
+	}
+	return fmt.Errorf("inspect guest plugin: %w", err)
+}
+
+func guestPluginConnectionFailure(err error, detail string) error {
+	var exitError *exec.ExitError
+	var launchError *exec.Error
+	workspaceFailure := guestWorkspacePreflightFailure.FindStringSubmatch(detail)
+	failed := (errors.As(err, &exitError) && (exitError.ExitCode() == 255 || (exitError.ExitCode() == 1 && len(workspaceFailure) != 0))) || errors.As(err, &launchError)
+	if !failed {
+		return nil
+	}
+	connection := &GuestPluginConnectionError{Cause: err, Detail: detail}
+	if len(workspaceFailure) != 0 {
+		connection.HostWorkspacePath = workspaceFailure[1]
+		connection.Detail = fmt.Sprintf("sbx refused a new SSH connection: saved host workspace path %q no longer exists", connection.HostWorkspacePath)
+	} else if detail == "" {
+		connection.Detail = safePluginDiagnostic(err.Error())
+	}
+	return connection
+}
+
+func parseGuestPluginInspection(output string) (GuestPluginState, error) {
+	parts, err := guestPluginInspectionFields(output)
 	if err != nil {
-		for _, tool := range []string{"jq", "tar", "sha256sum", "base64"} {
-			message := "plugin requires " + tool + " in the sandbox"
-			if strings.TrimSpace(output) == message {
-				return GuestPluginState{}, fmt.Errorf("%s", message)
-			}
-		}
-		// A dropped connection can follow a partial response containing private
-		// guest configuration. Retain only diagnostics before that frame.
-		if start := strings.Index(output, guestPluginFrameStart); start >= 0 {
-			output = output[:start]
-		}
-		var exitError *exec.ExitError
-		var launchError *exec.Error
-		detail := safePluginDiagnostic(output)
-		workspaceFailure := guestWorkspacePreflightFailure.FindStringSubmatch(detail)
-		if (errors.As(err, &exitError) && (exitError.ExitCode() == 255 ||
-			(exitError.ExitCode() == 1 && len(workspaceFailure) != 0))) || errors.As(err, &launchError) {
-			connection := &GuestPluginConnectionError{Cause: err, Detail: detail}
-			if len(workspaceFailure) != 0 {
-				connection.HostWorkspacePath = workspaceFailure[1]
-				connection.Detail = fmt.Sprintf("sbx refused a new SSH connection: saved host workspace path %q no longer exists", connection.HostWorkspacePath)
-			} else if detail == "" {
-				connection.Detail = safePluginDiagnostic(err.Error())
-			}
-			return GuestPluginState{}, connection
-		}
-		if detail != "" {
-			return GuestPluginState{}, fmt.Errorf("inspect guest plugin: %w: %s", err, detail)
-		}
-		return GuestPluginState{}, fmt.Errorf("inspect guest plugin: %w", err)
-	}
-	output = strings.ReplaceAll(output, "\r\n", "\n")
-	start := strings.LastIndex(output, guestPluginFrameStart+"\n")
-	if start < 0 {
-		return GuestPluginState{}, fmt.Errorf("%w: response frame is missing", ErrGuestPluginResponse)
-	}
-	response := output[start+len(guestPluginFrameStart)+1:]
-	end := strings.Index(response, "\n"+guestPluginFrameEnd)
-	if end < 0 {
-		return GuestPluginState{}, fmt.Errorf("%w: response frame is incomplete", ErrGuestPluginResponse)
-	}
-	parts := strings.Split(response[:end], "\n")
-	for len(parts) > 7 && parts[len(parts)-1] == "" {
-		parts = parts[:len(parts)-1]
-	}
-	if len(parts) != 7 {
-		return GuestPluginState{}, fmt.Errorf("%w: expected 7 fields, got %d", ErrGuestPluginResponse, len(parts))
+		return GuestPluginState{}, err
 	}
 	path, err := base64.StdEncoding.DecodeString(parts[1])
 	if err != nil {
@@ -242,6 +247,27 @@ printf '\n` + guestPluginFrameEnd + `\n'`
 		return GuestPluginState{}, fmt.Errorf("%w: invalid plugin catalog", ErrGuestPluginResponse)
 	}
 	return GuestPluginState{Platform: parts[0], ConfigPath: string(path), Config: config, ConfigExists: parts[2] == "present", Plugin: plugin, Managed: parts[5] == "managed", AppliedConfigSHA: parts[6]}, nil
+}
+
+func guestPluginInspectionFields(output string) ([]string, error) {
+	output = strings.ReplaceAll(output, "\r\n", "\n")
+	start := strings.LastIndex(output, guestPluginFrameStart+"\n")
+	if start < 0 {
+		return nil, fmt.Errorf("%w: response frame is missing", ErrGuestPluginResponse)
+	}
+	response := output[start+len(guestPluginFrameStart)+1:]
+	end := strings.Index(response, "\n"+guestPluginFrameEnd)
+	if end < 0 {
+		return nil, fmt.Errorf("%w: response frame is incomplete", ErrGuestPluginResponse)
+	}
+	parts := strings.Split(response[:end], "\n")
+	for len(parts) > 7 && parts[len(parts)-1] == "" {
+		parts = parts[:len(parts)-1]
+	}
+	if len(parts) != 7 {
+		return nil, fmt.Errorf("%w: expected 7 fields, got %d", ErrGuestPluginResponse, len(parts))
+	}
+	return parts, nil
 }
 
 // GuestPluginSetupError separates the command failure from safe guest output.
@@ -268,19 +294,9 @@ func (c *Client) InstallGuestPlugin(ctx context.Context, target, id string, bund
 	if exists {
 		expected = configSHA
 	}
-	buildScript := ""
-	for i, argv := range buildCommands {
-		if len(argv) == 0 {
-			return errors.New("empty guest build command")
-		}
-		quoted := make([]string, len(argv))
-		for j, arg := range argv {
-			if strings.ContainsRune(arg, 0) {
-				return errors.New("invalid guest build argument")
-			}
-			quoted[j] = quoteShell(arg)
-		}
-		buildScript += fmt.Sprintf("(cd \"$root\" && %s) > \"$stage/build.log\" 2>&1 || { printf 'HERDR_SBX_PLUGIN_BUILD_FAILED\\n' >&2; printf 'Guest plugin build step %d failed\\n' >&2; printf 'Source kept at %%s\\n' \"$root\" >&2; tail -c 8192 \"$stage/build.log\" >&2; exit 1; }\n", strings.Join(quoted, " "), i+1)
+	buildScript, err := guestPluginBuildScript(buildCommands)
+	if err != nil {
+		return err
 	}
 	script := guestExecutable + guestConfigPath + `umask 077
 base="$HOME/.local/share/herdr-sbx/plugins"
@@ -338,6 +354,24 @@ sha=$(sha256sum "$config"); printf '%s' "${sha%% *}" > "$root/.herdr-sbx-config"
 		return &GuestPluginSetupError{Cause: err, Output: safePluginDiagnostic(output), BuildFailed: buildFailed}
 	}
 	return nil
+}
+
+func guestPluginBuildScript(buildCommands [][]string) (string, error) {
+	buildScript := ""
+	for i, argv := range buildCommands {
+		if len(argv) == 0 {
+			return "", errors.New("empty guest build command")
+		}
+		quoted := make([]string, len(argv))
+		for j, arg := range argv {
+			if strings.ContainsRune(arg, 0) {
+				return "", errors.New("invalid guest build argument")
+			}
+			quoted[j] = quoteShell(arg)
+		}
+		buildScript += fmt.Sprintf("(cd \"$root\" && %s) > \"$stage/build.log\" 2>&1 || { printf 'HERDR_SBX_PLUGIN_BUILD_FAILED\\n' >&2; printf 'Guest plugin build step %d failed\\n' >&2; printf 'Source kept at %%s\\n' \"$root\" >&2; tail -c 8192 \"$stage/build.log\" >&2; exit 1; }\n", strings.Join(quoted, " "), i+1)
+	}
+	return buildScript, nil
 }
 
 // safePluginDiagnostic keeps build output useful without retaining common

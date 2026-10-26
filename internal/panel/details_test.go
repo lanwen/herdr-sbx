@@ -79,51 +79,7 @@ func TestDetailsHomeEndAndNoPluginsStayInside(t *testing.T) {
 }
 func TestDetailsHeaderAndNestedPluginGeometry(t *testing.T) {
 	for _, width := range []int{60, 110} {
-		m := modelFixture(t)
-		unsetNoColor(t)
-		m.width, m.height = width, 18
-		m.expanded = "a"
-		m.rows[0].Status.Connection = "ready"
-		m.rows[0].Status.Stale = true
-		m.rows[0].Status.ObservedAt = time.Now().Add(-5 * time.Minute)
-		m.plugins = []guestplugins.Choice{{ID: strings.Repeat("long.plugin.", 5)}, {ID: "second.plugin"}}
-		details := m.sandboxDetails(m.rows[0])
-		header := ansi.Strip(details[0].text)
-		require.Contains(t, header, "✓ alpha")
-		require.False(t, ansi.StringWidth(header) != width-4)
-		require.False(t, width == 110 && !strings.Contains(header, "5m ago"), "wide header lost observation age")
-		require.Contains(t, details[0].text, colorSuccess, "runtime lost semantic color")
-		card := ansi.Strip(strings.Join(lineTexts(details), "\n"))
-		for _, text := range []string{"API desk", "? Stale", "observation", "running (stale)"} {
-			require.Contains(t, card, text, "summary lost %q: %s", text, card)
-		}
-
-		for _, l := range details {
-			require.NotContains(t, ansi.Strip(l.text), "Sandbox:")
-			require.NotContains(t, ansi.Strip(l.text), "Runtime:")
-			require.NotContains(t, ansi.Strip(l.text), "Registration:")
-			require.Equal(t, width-4, ansi.StringWidth(l.text), "nested width=%d want %d", ansi.StringWidth(l.text), width-4)
-		}
-		m.focus = "plugins"
-		m.detailIndex = 1
-		m.reveal = true
-		view := m.View().Content
-		var target hit
-		for _, h := range m.hits {
-			if h.action == "override" && h.id == "second.plugin" {
-				target = h
-			}
-		}
-		require.NotEqual(t, 0, target.w, "selected plugin not visible")
-		rendered := strings.Split(ansi.Strip(view), "\n")[target.y]
-		require.Equal(t, "> ", ansi.Cut(rendered, target.x, target.x+2), "highlight/mouse prefix shifted: %q %#v", rendered, target)
-		selected := ansi.Cut(strings.Split(view, "\n")[target.y], target.x, target.x+target.w)
-		require.Contains(t, selected, backgroundSelected)
-		require.True(t, strings.HasPrefix(ansi.Strip(selected), "> "))
-		command := clickAt(m, target.x, target.y)
-		require.NotNil(t, command)
-		require.EqualValues(t, "", m.dialog)
-		require.EqualValues(t, 1, m.detailIndex)
+		testDetailsGeometry(t, width)
 	}
 }
 
@@ -193,24 +149,7 @@ func TestDisabledDetailsSeparateAndIndentNotes(t *testing.T) {
 	lines := m.sandboxDetails(r)
 	card := ansi.Strip(strings.Join(lineTexts(lines), "\n"))
 	require.NotContains(t, card, r.Status.Detail, "guidance belongs in Hint")
-	firstAction, pluginIndex, identityIndex := -1, -1, -1
-	for i, l := range lines {
-		plain := ansi.Strip(l.text)
-		if strings.Trim(plain, " │") == "b" {
-			identityIndex = i
-		}
-		if strings.Contains(plain, "╭─ Plugins") {
-			pluginIndex = i
-		}
-		for _, h := range l.hits {
-			if h.action == "action" && h.id == "enable" {
-				firstAction = i
-				bg := strings.Replace(colorAccent, "[38;", "[48;", 1)
-				require.Contains(t, l.text, bg)
-				require.EqualValues(t, "Enable (space)", strings.TrimSpace(ansi.Cut(plain, h.x, h.x+h.w)))
-			}
-		}
-	}
+	firstAction, pluginIndex, identityIndex := disabledDetailPositions(t, lines)
 	require.False(t, firstAction < 1)
 	require.False(t, identityIndex <= firstAction)
 	require.False(t, pluginIndex <= identityIndex)
@@ -297,4 +236,88 @@ func TestDetailsHorizontalEntryAndReturnPreservesPreviewAndRenameInput(t *testin
 	require.NotNil(t, m.input)
 	require.EqualValues(t, 2, m.input.cursor)
 	require.EqualValues(t, "a", m.expanded)
+}
+
+func testDetailsGeometry(t *testing.T, width int) {
+	t.Helper()
+	m := modelFixture(t)
+	unsetNoColor(t)
+	m.width, m.height = width, 18
+	m.expanded = "a"
+	m.rows[0].Status.Connection = "ready"
+	m.rows[0].Status.Stale = true
+	m.rows[0].Status.ObservedAt = time.Now().Add(-5 * time.Minute)
+	m.plugins = []guestplugins.Choice{{ID: strings.Repeat("long.plugin.", 5)}, {ID: "second.plugin"}}
+	details := m.sandboxDetails(m.rows[0])
+	header := ansi.Strip(details[0].text)
+	require.Contains(t, header, "✓ alpha")
+	require.False(t, ansi.StringWidth(header) != width-4)
+	require.False(t, width == 110 && !strings.Contains(header, "5m ago"), "wide header lost observation age")
+	require.Contains(t, details[0].text, colorSuccess, "runtime lost semantic color")
+	card := ansi.Strip(strings.Join(lineTexts(details), "\n"))
+	for _, text := range []string{"API desk", "? Stale", "observation", "running (stale)"} {
+		require.Contains(t, card, text, "summary lost %q: %s", text, card)
+	}
+
+	for _, l := range details {
+		require.NotContains(t, ansi.Strip(l.text), "Sandbox:")
+		require.NotContains(t, ansi.Strip(l.text), "Runtime:")
+		require.NotContains(t, ansi.Strip(l.text), "Registration:")
+		require.Equal(t, width-4, ansi.StringWidth(l.text), "nested width=%d want %d", ansi.StringWidth(l.text), width-4)
+	}
+	m.focus = "plugins"
+	m.detailIndex = 1
+	m.reveal = true
+	view := m.View().Content
+	var target hit
+	for _, h := range m.hits {
+		if h.action == "override" && h.id == "second.plugin" {
+			target = h
+		}
+	}
+	require.NotEqual(t, 0, target.w, "selected plugin not visible")
+	rendered := strings.Split(ansi.Strip(view), "\n")[target.y]
+	require.Equal(t, "> ", ansi.Cut(rendered, target.x, target.x+2), "highlight/mouse prefix shifted: %q %#v", rendered, target)
+	selected := ansi.Cut(strings.Split(view, "\n")[target.y], target.x, target.x+target.w)
+	require.Contains(t, selected, backgroundSelected)
+	require.True(t, strings.HasPrefix(ansi.Strip(selected), "> "))
+	command := clickAt(m, target.x, target.y)
+	require.NotNil(t, command)
+	require.EqualValues(t, "", m.dialog)
+	require.EqualValues(t, 1, m.detailIndex)
+
+}
+
+func disabledDetailPositions(t *testing.T, lines []line) (firstAction, pluginIndex, identityIndex int) {
+	t.Helper()
+	firstAction, pluginIndex, identityIndex = -1, -1, -1
+	for i, l := range lines {
+		plain := ansi.Strip(l.text)
+		if strings.Trim(plain, " │") == "b" {
+			identityIndex = i
+		}
+		if strings.Contains(plain, "╭─ Plugins") {
+			pluginIndex = i
+		}
+		if assertEnabledDetailLine(t, l) {
+			firstAction = i
+		}
+
+	}
+	return firstAction, pluginIndex, identityIndex
+}
+
+func assertEnabledDetailLine(t *testing.T, l line) bool {
+	t.Helper()
+	found := false
+	plain := ansi.Strip(l.text)
+	for _, h := range l.hits {
+		if h.action == "action" && h.id == "enable" {
+			found = true
+			bg := strings.Replace(colorAccent, "[38;", "[48;", 1)
+			require.Contains(t, l.text, bg)
+			require.EqualValues(t, "Enable (space)", strings.TrimSpace(ansi.Cut(plain, h.x, h.x+h.w)))
+		}
+	}
+	return found
 }

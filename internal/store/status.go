@@ -174,6 +174,10 @@ func UpdateStatusStore(change func(*StatusStore)) error {
 	if err != nil {
 		return err
 	}
+	return writeStatusStore(path, data)
+}
+
+func writeStatusStore(path string, data []byte) error {
 	temporary, err := os.CreateTemp(filepath.Dir(path), ".status-*")
 	if err != nil {
 		return err

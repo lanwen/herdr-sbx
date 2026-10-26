@@ -3,10 +3,34 @@ version: "2"
 linters:
   default: none
   enable:
+    - gochecknoglobals
+    - gochecknoinits
+    - gocognit
+    - gocritic
     - ineffassign
+    - sloglint
     - staticcheck
     - unused
   settings:
+    gocognit:
+      min-complexity: 10
+    gocritic:
+      disable-all: true
+      enabled-checks:
+        - appendAssign
+        - argOrder
+        - badCall
+        - badCond
+        - caseOrder
+        - dupArg
+        - dupCase
+        - dupSubExpr
+        - exitAfterDefer
+        - offBy1
+    sloglint:
+      no-global: all
+      msg-style: capitalized
+      no-raw-keys: true
     staticcheck:
       # Keep correctness checks; style and quick fixes are not verification gates.
       checks: ["SA*"]

@@ -28,42 +28,7 @@ func TestManualPreparationInterrupt(t *testing.T) {
 	}
 	for _, action := range []string{"reconcile", "retry"} {
 		t.Run(action, func(t *testing.T) {
-			root := t.TempDir()
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestManualPreparationInterrupt$")
-			env := make([]string, 0, len(os.Environ()))
-			for _, item := range os.Environ() {
-				if !strings.HasPrefix(item, "HERDR") && !strings.HasPrefix(item, "XDG") && !strings.HasPrefix(item, "HOME=") && !strings.HasPrefix(item, "TMPDIR=") {
-					env = append(env, item)
-				}
-			}
-			command.Env = append(env, "HERDR_TEST_INTERRUPT_HELPER="+action, "HOME="+root, "TMPDIR="+root, "HERDR_PLUGIN_STATE_DIR="+filepath.Join(root, "state"))
-			stdout, err := command.StdoutPipe()
-			require.NoError(t, err)
-			var stderr strings.Builder
-			command.Stderr = &stderr
-			require.NoError(t, command.Start())
-			scanner := bufio.NewScanner(stdout)
-			ready := false
-			for scanner.Scan() {
-				if scanner.Text() == "download ready" {
-					ready = true
-					break
-				}
-			}
-			if !ready {
-				_ = command.Wait()
-				t.Fatalf("helper failed before download: %s", stderr.String())
-			}
-			require.NoError(t, command.Process.Signal(os.Interrupt))
-			_, _ = io.Copy(io.Discard, stdout)
-			{
-				err := command.Wait()
-				require.NoError(t, err, "signal did not unwind cleanly: %v %s", err, stderr.String())
-			}
-			leftovers, _ := filepath.Glob(filepath.Join(root, "herdr-sbx-download-*"))
-			require.Len(t, leftovers, 0, "download leaked: %v", leftovers)
+			testManualPreparationInterruptScenario(t, action)
 		})
 	}
 }
@@ -130,3 +95,44 @@ func (reader *interruptDownload) Read(buffer []byte) (int, error) {
 }
 
 func (*interruptDownload) Close() error { return nil }
+
+func testManualPreparationInterruptScenario(t *testing.T, action string) {
+	t.Helper()
+
+	root := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestManualPreparationInterrupt$")
+	env := make([]string, 0, len(os.Environ()))
+	for _, item := range os.Environ() {
+		if !strings.HasPrefix(item, "HERDR") && !strings.HasPrefix(item, "XDG") && !strings.HasPrefix(item, "HOME=") && !strings.HasPrefix(item, "TMPDIR=") {
+			env = append(env, item)
+		}
+	}
+	command.Env = append(append([]string(nil), env...), "HERDR_TEST_INTERRUPT_HELPER="+action, "HOME="+root, "TMPDIR="+root, "HERDR_PLUGIN_STATE_DIR="+filepath.Join(root, "state"))
+	stdout, err := command.StdoutPipe()
+	require.NoError(t, err)
+	var stderr strings.Builder
+	command.Stderr = &stderr
+	require.NoError(t, command.Start())
+	scanner := bufio.NewScanner(stdout)
+	ready := false
+	for scanner.Scan() {
+		if scanner.Text() == "download ready" {
+			ready = true
+			break
+		}
+	}
+	if !ready {
+		_ = command.Wait()
+		t.Fatalf("helper failed before download: %s", stderr.String())
+	}
+	require.NoError(t, command.Process.Signal(os.Interrupt))
+	_, _ = io.Copy(io.Discard, stdout)
+	{
+		err := command.Wait()
+		require.NoError(t, err, "signal did not unwind cleanly: %v %s", err, stderr.String())
+	}
+	leftovers, _ := filepath.Glob(filepath.Join(root, "herdr-sbx-download-*"))
+	require.Len(t, leftovers, 0, "download leaked: %v", leftovers)
+}

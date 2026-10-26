@@ -56,6 +56,21 @@ func readStatusReport() (statusReport, error) {
 	if err != nil {
 		return report, err
 	}
+	report.Sandboxes = observedSandboxes(saved)
+	for scope, attempt := range saved.Installations {
+		report.Errors = append(report.Errors, store.ErrorRecord{Code: store.CodePolicyCleanup, Scope: scope, Detail: attempt.Detail})
+	}
+	for _, item := range saved.Errors {
+		if !strings.HasPrefix(item.Code, "D") {
+			report.addIssue(item)
+		}
+	}
+	report.sortIssues()
+	return report, nil
+}
+
+func observedSandboxes(saved store.StatusStore) []statusSandbox {
+	report := statusReport{Sandboxes: []statusSandbox{}}
 	for key, row := range saved.Sandboxes {
 		if choice, ok := saved.EnabledChoices[key]; ok {
 			row.Enabled = choice
@@ -75,16 +90,7 @@ func readStatusReport() (statusReport, error) {
 		}
 		return store.StatusKey(a.Scope, a.SandboxID) < store.StatusKey(b.Scope, b.SandboxID)
 	})
-	for scope, attempt := range saved.Installations {
-		report.Errors = append(report.Errors, store.ErrorRecord{Code: store.CodePolicyCleanup, Scope: scope, Detail: attempt.Detail})
-	}
-	for _, item := range saved.Errors {
-		if !strings.HasPrefix(item.Code, "D") {
-			report.addIssue(item)
-		}
-	}
-	report.sortIssues()
-	return report, nil
+	return report.Sandboxes
 }
 
 func printStatus(out io.Writer, asJSON bool) error {
@@ -103,52 +109,64 @@ func printStatus(out io.Writer, asJSON bool) error {
 	if len(report.Sandboxes) == 0 {
 		fmt.Fprintln(out, "No sandbox observations yet. Open the manager to discover sandboxes.")
 	} else {
-		table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(table, "ENABLED\tSANDBOX\tHERDR LABEL\tSTATUS\tRUNTIME\tNATIVE ENABLED\tOBSERVED")
-		for _, row := range report.Sandboxes {
-			label := row.Label
-			if label == "" {
-				label = "—"
-			} else if row.Stale {
-				label += " (last known)"
-			}
-			readiness := row.Connection
-			if readiness == "" {
-				readiness = "unknown"
-			}
-			observed := "unknown"
-			if !row.ObservedAt.IsZero() {
-				observed = row.ObservedAt.Format(time.RFC3339)
-			}
-			if row.Stale {
-				observed += " (stale)"
-			}
-			native := "unknown"
-			if row.NativeEnabled != nil {
-				native = "OFF"
-				if *row.NativeEnabled {
-					native = "ON"
-				}
-			}
-			enabled := "Disabled"
-			if row.Enabled == store.Enabled {
-				enabled = "Enabled"
-			}
-			fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", enabled, terminalField(row.Name), terminalField(label), terminalField(readiness), terminalField(row.Observed), native, observed)
-			if row.Detail != "" {
-				fmt.Fprintf(table, "\t%s\n", terminalField(row.Detail))
-			}
-			if row.AssociationIssue != "" {
-				fmt.Fprintf(table, "\t%s\n", terminalField(row.AssociationIssue))
-			}
-		}
-		if err := table.Flush(); err != nil {
+		if err := printSandboxTable(out, report.Sandboxes); err != nil {
 			return err
 		}
 	}
 	fmt.Fprintln(out)
 	printStatusIssues(out, report.daemonStatusReport, paint)
 	return nil
+}
+
+func printSandboxTable(out io.Writer, sandboxes []statusSandbox) error {
+	table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(table, "ENABLED\tSANDBOX\tHERDR LABEL\tSTATUS\tRUNTIME\tNATIVE ENABLED\tOBSERVED")
+	for _, row := range sandboxes {
+		label, readiness, observed, native, enabled := sandboxFields(row)
+		fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", enabled, terminalField(row.Name), terminalField(label), terminalField(readiness), terminalField(row.Observed), native, observed)
+		if row.Detail != "" {
+			fmt.Fprintf(table, "\t%s\n", terminalField(row.Detail))
+		}
+		if row.AssociationIssue != "" {
+			fmt.Fprintf(table, "\t%s\n", terminalField(row.AssociationIssue))
+		}
+	}
+	if err := table.Flush(); err != nil {
+		return err
+	}
+	return nil
+}
+func sandboxFields(row statusSandbox) (label, readiness, observed, native, enabled string) {
+
+	label = row.Label
+	if label == "" {
+		label = "—"
+	} else if row.Stale {
+		label += " (last known)"
+	}
+	readiness = row.Connection
+	if readiness == "" {
+		readiness = "unknown"
+	}
+	observed = "unknown"
+	if !row.ObservedAt.IsZero() {
+		observed = row.ObservedAt.Format(time.RFC3339)
+	}
+	if row.Stale {
+		observed += " (stale)"
+	}
+	native = "unknown"
+	if row.NativeEnabled != nil {
+		native = "OFF"
+		if *row.NativeEnabled {
+			native = "ON"
+		}
+	}
+	enabled = "Disabled"
+	if row.Enabled == store.Enabled {
+		enabled = "Enabled"
+	}
+	return
 }
 
 // daemonReport uses the same fields and schema as the daemon subset of root status.

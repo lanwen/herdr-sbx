@@ -122,7 +122,7 @@ func TestInventoryWorkspaceMetadata(t *testing.T) {
 		{"direct", ``, false},
 		{"clone", `,"source_repo_dir":"/host/source","labels":{"com.docker.sandbox.cloneMode":"true"}`, false},
 		{"matching directory", `,"labels":{"com.docker.sandbox.workingDirectory":"/project","com.docker.sandbox.usesWorktree":"false"}`, false},
-		{"legacy worktree", `,"labels":{"com.docker.sandbox.usesWorktree":"true"}`, true},
+		{"older worktree", `,"labels":{"com.docker.sandbox.usesWorktree":"true"}`, true},
 		{"worktree override", `,"labels":{"com.docker.sandbox.worktreePath":"/different"}`, true},
 		{"different directory", `,"labels":{"com.docker.sandbox.workingDirectory":"/different"}`, true},
 		{"unknown labels", `,"labels":[]`, true},

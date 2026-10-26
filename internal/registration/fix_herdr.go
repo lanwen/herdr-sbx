@@ -58,32 +58,18 @@ func (s *Service) fixOwnedGuestHerdr(ctx context.Context, out io.Writer, scope, 
 	if err != nil {
 		return err
 	}
-	var tracked *store.Tracked
-	for i := range state.Scopes[scope] {
-		item := &state.Scopes[scope][i]
-		if item.SandboxID == id {
-			tracked = item
-			break
-		}
-	}
-	if tracked == nil || tracked.Pending || tracked.ProfileID == "" || tracked.Target != name+".sbx" {
+	tracked := trackedSandbox(&state, scope, id)
+	if !validFixAssociation(tracked, name) {
 		return errors.New("refresh the registration before fixing herdr")
 	}
-	machines, output, err := s.herdr.ListMachines(ctx)
-	if err != nil {
-		return fmt.Errorf("inspect herdr catalog: %s", commandError(err, output))
+	if err := s.checkFixMachine(ctx, *tracked); err != nil {
+		return err
 	}
-	if associatedTrackedMachine(machines, *tracked) == nil {
-		return errors.New("saved registration is no longer the associated herdr entry")
-	}
-	local, err := s.herdr.Version(ctx)
+	wanted, err := s.checkedHostVersion(ctx, expectedHostVersion)
 	if err != nil {
 		return err
 	}
-	wanted := version.Parse(local)
-	if wanted == "" || strings.TrimSpace(local) != "herdr "+wanted || version.Parse(expectedHostVersion) != wanted {
-		return errors.New("host herdr version changed or is not an exact release; refresh before fixing herdr")
-	}
+
 	sb := sbx.Sandbox{ID: id, Name: name, Status: "running"}
 	return s.recoverGuestVersionTo(ctx, scope, sb, func() bool {
 		return s.fixSandboxCurrent(ctx, socket, id, name) && sandboxWorkAllowed(ctx, scope, id)
@@ -104,4 +90,31 @@ func (s *Service) fixSandboxCurrent(ctx context.Context, socket, id, name string
 		}
 	}
 	return false
+}
+
+func (s *Service) checkedHostVersion(ctx context.Context, expectedHostVersion string) (string, error) {
+	local, err := s.herdr.Version(ctx)
+	if err != nil {
+		return "", err
+	}
+	wanted := version.Parse(local)
+	if wanted == "" || strings.TrimSpace(local) != "herdr "+wanted || version.Parse(expectedHostVersion) != wanted {
+		return "", errors.New("host herdr version changed or is not an exact release; refresh before fixing herdr")
+	}
+	return wanted, nil
+}
+
+func validFixAssociation(tracked *store.Tracked, name string) bool {
+	return tracked != nil && !tracked.Pending && tracked.ProfileID != "" && tracked.Target == name+".sbx"
+}
+
+func (s *Service) checkFixMachine(ctx context.Context, tracked store.Tracked) error {
+	machines, output, err := s.herdr.ListMachines(ctx)
+	if err != nil {
+		return fmt.Errorf("inspect herdr catalog: %s", commandError(err, output))
+	}
+	if associatedTrackedMachine(machines, tracked) == nil {
+		return errors.New("saved registration is no longer the associated herdr entry")
+	}
+	return nil
 }

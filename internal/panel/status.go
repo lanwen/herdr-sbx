@@ -13,45 +13,10 @@ import (
 func statusPrerequisites(checks []precheck.Check) []precheck.Check {
 	var rows []precheck.Check
 	for _, check := range checks {
-		switch check.Name {
-		case "Sandbox setup":
+		var keep bool
+		check, keep = groupStatusCheck(rows, check)
+		if !keep {
 			continue
-		case "Sandbox capability":
-			found := false
-			for i := range rows {
-				if rows[i].Name == "sbx" {
-					// Without a usable CLI, capability failure is a derivative observation.
-					if rows[i].Level == precheck.Ready {
-						rows[i] = mergeStatusChecks(rows[i], check)
-					}
-					found = true
-					break
-				}
-			}
-			if found {
-				continue
-			}
-			check.Name = "sbx"
-		case "Sandbox daemon":
-			check.Name = "Sandbox service"
-		case "Sandbox inventory":
-			found := false
-			for i := range rows {
-				if rows[i].Name == "Sandbox service" {
-					rows[i] = mergeStatusChecks(rows[i], check)
-					found = true
-					break
-				}
-			}
-			if found {
-				continue
-			}
-			check.Name = "Sandbox service"
-		case "Docker authorization":
-			check.Name = "Docker sign-in"
-			if check.Level == precheck.Unknown && strings.HasPrefix(check.Detail, "not checked ") {
-				check.Detail, check.Action = "Not checked", ""
-			}
 		}
 		check.Detail = statusDetail(check.Detail)
 		rows = append(rows, check)
@@ -109,4 +74,42 @@ func PrintChecks(out io.Writer, p precheck.Result) {
 			fmt.Fprintf(out, "           Next: %s\n", check.Action)
 		}
 	}
+}
+
+func mergeNamedStatusCheck(rows []precheck.Check, name string, check precheck.Check, readyOnly bool) bool {
+	for i := range rows {
+		if rows[i].Name != name {
+			continue
+		}
+		if !readyOnly || rows[i].Level == precheck.Ready {
+			rows[i] = mergeStatusChecks(rows[i], check)
+		}
+		return true
+	}
+	return false
+}
+
+func groupStatusCheck(rows []precheck.Check, check precheck.Check) (precheck.Check, bool) {
+	switch check.Name {
+	case "Sandbox setup":
+		return check, false
+	case "Sandbox capability":
+		if mergeNamedStatusCheck(rows, "sbx", check, true) {
+			return check, false
+		}
+		check.Name = "sbx"
+	case "Sandbox daemon":
+		check.Name = "Sandbox service"
+	case "Sandbox inventory":
+		if mergeNamedStatusCheck(rows, "Sandbox service", check, false) {
+			return check, false
+		}
+		check.Name = "Sandbox service"
+	case "Docker authorization":
+		check.Name = "Docker sign-in"
+		if check.Level == precheck.Unknown && strings.HasPrefix(check.Detail, "not checked ") {
+			check.Detail, check.Action = "Not checked", ""
+		}
+	}
+	return check, true
 }

@@ -181,26 +181,27 @@ func PrimaryError(scope string) (ErrorRecord, bool, error) {
 			entries = append(entries, entry)
 		}
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		a, b := entries[i], entries[j]
-		if SeverityForCode(a.Code) != SeverityForCode(b.Code) {
-			return SeverityForCode(a.Code) == SeverityError
-		}
-		if a.PluginID != b.PluginID {
-			return a.PluginID < b.PluginID
-		}
-		if a.Code != b.Code {
-			return a.Code < b.Code
-		}
-		if a.Detail != b.Detail {
-			return a.Detail < b.Detail
-		}
-		return a.Ref < b.Ref
-	})
+	sort.Slice(entries, func(i, j int) bool { return diagnosticLess(entries[i], entries[j]) })
 	if len(entries) == 0 {
 		return ErrorRecord{}, false, nil
 	}
 	return entries[0], true, nil
+}
+
+func diagnosticLess(a, b ErrorRecord) bool {
+	if SeverityForCode(a.Code) != SeverityForCode(b.Code) {
+		return SeverityForCode(a.Code) == SeverityError
+	}
+	if a.PluginID != b.PluginID {
+		return a.PluginID < b.PluginID
+	}
+	if a.Code != b.Code {
+		return a.Code < b.Code
+	}
+	if a.Detail != b.Detail {
+		return a.Detail < b.Detail
+	}
+	return a.Ref < b.Ref
 }
 
 func newErrorRef(s *StatusStore) string {
@@ -222,7 +223,7 @@ func unusedErrorRef(s *StatusStore, candidate func() string) string {
 	}
 }
 
-// Legacy diagnostics gain durable references on the next journal update.
+// Older diagnostics gain durable references on the next journal update.
 func ensureErrorRefs(s *StatusStore) {
 	for key, entry := range s.Errors {
 		if entry.Ref == "" {
@@ -241,12 +242,7 @@ func normalizeErrorDismissals(s *StatusStore) {
 	if s.DismissedErrorGroups == nil {
 		s.DismissedErrorGroups = map[string]bool{}
 	}
-	allDismissed := map[string]bool{}
-	for _, entry := range s.Errors {
-		key := errorGroupKey(entry.Scope, entry.Code)
-		previous, found := allDismissed[key]
-		allDismissed[key] = entry.Dismissed && (!found || previous)
-	}
+	allDismissed := dismissedGroups(s.Errors)
 	for key := range s.DismissedErrorGroups {
 		if _, active := allDismissed[key]; !active {
 			delete(s.DismissedErrorGroups, key)
@@ -263,6 +259,16 @@ func normalizeErrorDismissals(s *StatusStore) {
 		entry.Dismissed = s.DismissedErrorGroups[errorGroupKey(entry.Scope, entry.Code)]
 		s.Errors[key] = entry
 	}
+}
+
+func dismissedGroups(entries map[string]ErrorRecord) map[string]bool {
+	allDismissed := map[string]bool{}
+	for _, entry := range entries {
+		key := errorGroupKey(entry.Scope, entry.Code)
+		previous, found := allDismissed[key]
+		allDismissed[key] = entry.Dismissed && (!found || previous)
+	}
+	return allDismissed
 }
 
 // DismissError acknowledges the selected diagnostic's group without resolving it.
@@ -342,16 +348,7 @@ func recordPluginFailure(s *StatusStore, scope string, failure PluginFailure) {
 	if !IsGuestPluginCode(failure.Code) {
 		failure.Code = CodeGuestPluginSync
 	}
-	var previous ErrorRecord
-	for key, entry := range s.Errors {
-		if !IsGuestPluginCode(entry.Code) || entry.Scope != scope || entry.PluginID != failure.PluginID {
-			continue
-		}
-		if entry.LastSeen.After(previous.LastSeen) {
-			previous = entry
-		}
-		delete(s.Errors, key)
-	}
+	previous := takePluginFailure(s, scope, failure.PluginID)
 	same := previous.Code == failure.Code && previous.Detail == failure.Detail && previous.Output == failure.Output && previous.Command == failure.Command && previous.Recovery == failure.Recovery
 	at := failure.OccurredAt
 	if at.IsZero() {
@@ -375,6 +372,20 @@ func recordPluginFailure(s *StatusStore, scope string, failure PluginFailure) {
 	}
 	key := entry.Code + "\x00" + scope + "\x00" + entry.PluginID + "\x00" + entry.Detail
 	s.Errors[key] = entry
+}
+
+func takePluginFailure(s *StatusStore, scope, pluginID string) ErrorRecord {
+	var previous ErrorRecord
+	for key, entry := range s.Errors {
+		if !IsGuestPluginCode(entry.Code) || entry.Scope != scope || entry.PluginID != pluginID {
+			continue
+		}
+		if entry.LastSeen.After(previous.LastSeen) {
+			previous = entry
+		}
+		delete(s.Errors, key)
+	}
+	return previous
 }
 
 // RecordPolicyCleanupChecked retains a successful temporary access cleanup check.

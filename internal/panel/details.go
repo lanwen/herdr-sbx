@@ -7,6 +7,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/lanwen/herdr-sbx/internal/guestplugins"
 	"github.com/lanwen/herdr-sbx/internal/registration"
 	"github.com/lanwen/herdr-sbx/internal/store"
 	"github.com/lanwen/herdr-sbx/internal/version"
@@ -14,110 +15,16 @@ import (
 
 func (m *model) sandboxDetails(r registration.SandboxRow) []line {
 	id := r.Sandbox.ID
-	label := ink(colorSand, highlight(m.queries["Sandboxes"], safeText(r.Label)))
-	if m.input != nil && m.input.kind == "rename" && m.input.target == id {
-		label = ink(colorSand, m.renderedInput(max(1, m.width-18)))
-	}
-	status := statusStyle(r.Status.Connection, statusDescription(r))
-	if r.Status.Stale || r.AssociationIssue != "" {
-		status = ink(colorWarning, statusDescription(r))
-	}
-	if m.pending[id] {
-		status = m.sandboxProgress(id)
-	}
-	mark := enabledMark(r)
-	if choice, ok := m.pendingEnabled[id]; ok {
-		mark = ink(colorMuted, "·")
-		if choice == store.Enabled {
-			mark = ink(colorAccent, "✓")
-		}
-	}
-	name := ink(colorText, highlight(m.queries["Sandboxes"], safeText(r.Sandbox.Name)))
-	runtime := runtimeStyle(r.Sandbox.Status, runtimeDescription(r))
-	title := mark + " " + name + " (" + runtime + ") → " + label + " (" + status + ")"
+	title := m.detailTitle(r)
 	width, indent := m.width-4, 2
-	observed := detailsObservationAge(r.Status.ObservedAt, time.Now())
-	badge := ""
-	if server := m.guestServerLabel(r); server != "" {
-		badge = badgeStyle(colorMuted, server)
-	}
-	// Preserve the identity and status before spending narrow title space on metadata.
-	if width-indent-ansi.StringWidth(badge)-6 < 24 {
-		badge = ""
-	}
-	if ansi.StringWidth(title)+ansi.StringWidth(badge)+ansi.StringWidth(observed)+8 > width-indent {
-		observed = ""
-	}
-	observedWidth := ansi.StringWidth(observed)
-	if observed != "" {
-		observedWidth += 2
-	}
-	titleWidth := max(1, width-indent-ansi.StringWidth(badge)-observedWidth-6)
-	summary := strings.Split(lipgloss.Wrap(title, titleWidth, ""), "\n")
+	observed, badge, titleWidth, summary := m.detailHeading(r, title, width, indent)
 	title = summary[0]
 	var lines []line
 	for _, continuation := range summary[1:] {
 		lines = append(lines, textLine(continuation))
 	}
 	lines = append(lines, textLine(""))
-	availableActions := m.sandboxActions(r)
-	renaming := m.input != nil && m.input.kind == "rename" && m.input.target == id
-	var actions []line
-	capacity := max(1, m.width-10)
-	for i, action := range availableActions {
-		label := action.label
-		primary := action.id == "enable" || action.id == "disable"
-		if primary {
-			label += " (space)"
-		}
-		focused := m.focus == "actions" && m.button%len(availableActions) == i
-		if m.dialog == "fix-herdr" {
-			focused = action.id == "fix-herdr"
-		}
-		if renaming {
-			focused = action.id == "rename"
-		}
-		activePrimary := primary && !renaming && m.focus != "plugins" && (m.focus != "actions" || focused)
-		if focused {
-			label = "› " + label
-		}
-		button := controlLine([]string{label}, []string{"action"}, []string{action.id})
-		if activePrimary {
-			button.text = primaryButtonStyle(label, focused)
-		}
-		if renaming && action.id == "rename" {
-			button.text = styledButton(label, true, false, colorSand)
-		}
-		button.hits[0].w = ansi.StringWidth(button.text)
-		if ansi.StringWidth(button.text) > capacity {
-			text := strings.TrimPrefix(label, "› ")
-			if focused && ansi.StringWidth(text)+2 <= capacity {
-				text += " ↵"
-			}
-			text = buttonLabelWeight(text)
-			button.text = filled(colorText, backgroundTab, text)
-			if focused || activePrimary {
-				button.text = filled(foregroundSelected, backgroundSelected, text)
-			}
-			if renaming && action.id == "rename" {
-				button.text = filled("\x1b[38;2;0;0;0m", strings.Replace(colorSand, "[38;", "[48;", 1), text)
-			}
-			button.hits[0].w = ansi.StringWidth(text)
-		}
-		if len(actions) == 0 || ansi.StringWidth(actions[len(actions)-1].text)+2+ansi.StringWidth(button.text) > capacity {
-			actions = append(actions, button)
-			continue
-		}
-		row := &actions[len(actions)-1]
-		x := ansi.StringWidth(row.text) + 2
-		row.text += "  " + button.text
-		for _, h := range button.hits {
-			h.x += x
-			row.hits = append(row.hits, h)
-		}
-	}
-	lines = append(lines, fitLines(actions, capacity)...)
-	lines = append(lines, textLine(""))
+	lines = append(lines, m.detailActionLines(r)...)
 	identity := safeText(id)
 	if r.ProfileID != "" {
 		identity += " → " + safeText(r.ProfileID)
@@ -168,17 +75,8 @@ func (m *model) sandboxActions(r registration.SandboxRow) []detailAction {
 	if canRemoveEntry(r) {
 		actions = append(actions, detailAction{"remove", "Remove from herdr"})
 	}
-	if r.Enabled == store.Enabled && strings.EqualFold(r.Sandbox.Status, "running") {
-		needsResync := !strings.EqualFold(r.Status.Connection, "ready")
-		for _, e := range m.errors {
-			if (e.code == store.CodePreparation || store.IsGuestPluginCode(e.code)) && (e.scope == r.Sandbox.ID || e.scope == r.Scope || e.scope == store.StatusKey(r.Scope, r.Sandbox.ID)) {
-				needsResync = true
-				break
-			}
-		}
-		if needsResync {
-			actions = append(actions, detailAction{"resync", "Re-sync"})
-		}
+	if m.needsResync(r) {
+		actions = append(actions, detailAction{"resync", "Re-sync"})
 	}
 	if m.canFixHerdr(r) {
 		actions = append(actions, detailAction{"fix-herdr", "Fix herdr"})
@@ -209,49 +107,7 @@ func (m *model) detailPluginLines(r registration.SandboxRow) []line {
 		lines = nil
 	}
 	for i, p := range m.plugins {
-		choice, loading := m.pluginChoiceDisplay(r.Scope, r.Sandbox.ID, p.ID)
-		effective := m.settings.Effective(r.Scope, r.Sandbox.ID).Plugins[p.ID].Enabled
-		prefix := "  "
-		if m.focus == "plugins" && i == m.detailIndex {
-			prefix = "> "
-		}
-		effectiveText := enabledStyle(effective, onOff(effective))
-		source := ""
-		if !loading && p.UnsupportedReason == "" {
-			source = "default"
-			if choice != "Inherit" {
-				source = "override"
-			}
-			effectiveText += ink(colorMuted, " · "+source)
-		}
-		if loading {
-			effectiveText = ink(colorInfo, m.actionSpinner()+" Loading")
-		} else if p.UnsupportedReason != "" {
-			effectiveText = ink(colorError, "Unsupported")
-		}
-		l := textLine(render(prefix, p.ID, ink(colorInfo, choice), effectiveText))
-		l.hits = []hit{{x: 0, w: inner, action: "override", id: p.ID}}
-		if m.width < 60 {
-			l.text = prefix + padded(p.ID, nameWidth)
-		}
-		lines = append(lines, l)
-		if m.width < 60 {
-			text := "  " + ink(colorInfo, choice) + " → " + effectiveText
-			if ansi.StringWidth(text) > inner {
-				lines = append(lines, line{text: "  " + ink(colorInfo, choice), hits: []hit{{x: 0, w: inner, action: "override", id: p.ID}}})
-				text = "  → " + effectiveText
-			}
-			if source != "" && ansi.StringWidth(text) > inner {
-				lines = append(lines, line{text: "  → " + enabledStyle(effective, onOff(effective)), hits: []hit{{x: 0, w: inner, action: "override", id: p.ID}}})
-				text = "  " + ink(colorMuted, source)
-			}
-			lines = append(lines, line{text: text, hits: []hit{{x: 0, w: inner, action: "override", id: p.ID}}})
-		}
-		if p.UnsupportedReason != "" {
-			for _, part := range strings.Split(ansi.Hardwrap(safeText(p.UnsupportedReason), max(10, inner-2), true), "\n") {
-				lines = append(lines, textLine("  "+ink(colorWarning, part)))
-			}
-		}
+		lines = append(lines, m.detailPluginRow(r, p, i, inner, nameWidth, render)...)
 	}
 	if len(m.plugins) == 0 {
 		lines = append(lines, textLine(ink(colorMuted, "No herdr plugins available")))
@@ -382,4 +238,208 @@ func (m *model) sandboxProgress(id string) string {
 		}
 	}
 	return ink(colorInfo, m.actionSpinner()+" "+text)
+}
+
+func (m *model) detailTitle(r registration.SandboxRow) string {
+	id := r.Sandbox.ID
+	label := ink(colorSand, highlight(m.queries["Sandboxes"], safeText(r.Label)))
+	if m.input != nil && m.input.kind == "rename" && m.input.target == id {
+		label = ink(colorSand, m.renderedInput(max(1, m.width-18)))
+	}
+	status := statusStyle(r.Status.Connection, statusDescription(r))
+	if r.Status.Stale || r.AssociationIssue != "" {
+		status = ink(colorWarning, statusDescription(r))
+	}
+	if m.pending[id] {
+		status = m.sandboxProgress(id)
+	}
+	mark := enabledMark(r)
+	if choice, ok := m.pendingEnabled[id]; ok {
+		mark = ink(colorMuted, "·")
+		if choice == store.Enabled {
+			mark = ink(colorAccent, "✓")
+		}
+	}
+	name := ink(colorText, highlight(m.queries["Sandboxes"], safeText(r.Sandbox.Name)))
+	runtime := runtimeStyle(r.Sandbox.Status, runtimeDescription(r))
+	title := mark + " " + name + " (" + runtime + ") → " + label + " (" + status + ")"
+	return title
+}
+
+func (m *model) detailHeading(r registration.SandboxRow, title string, width, indent int) (string, string, int, []string) {
+	observed := detailsObservationAge(r.Status.ObservedAt, time.Now())
+	badge := ""
+	if server := m.guestServerLabel(r); server != "" {
+		badge = badgeStyle(colorMuted, server)
+	}
+	// Preserve the identity and status before spending narrow title space on metadata.
+	if width-indent-ansi.StringWidth(badge)-6 < 24 {
+		badge = ""
+	}
+	if ansi.StringWidth(title)+ansi.StringWidth(badge)+ansi.StringWidth(observed)+8 > width-indent {
+		observed = ""
+	}
+	observedWidth := ansi.StringWidth(observed)
+	if observed != "" {
+		observedWidth += 2
+	}
+	titleWidth := max(1, width-indent-ansi.StringWidth(badge)-observedWidth-6)
+	summary := strings.Split(lipgloss.Wrap(title, titleWidth, ""), "\n")
+	return observed, badge, titleWidth, summary
+}
+
+func (m *model) detailActionLines(r registration.SandboxRow) []line {
+	id := r.Sandbox.ID
+	availableActions := m.sandboxActions(r)
+	renaming := m.input != nil && m.input.kind == "rename" && m.input.target == id
+	var actions []line
+	capacity := max(1, m.width-10)
+	for i, action := range availableActions {
+		button := m.detailActionButton(action, i, len(availableActions), renaming, capacity)
+		if len(actions) == 0 || ansi.StringWidth(actions[len(actions)-1].text)+2+ansi.StringWidth(button.text) > capacity {
+			actions = append(actions, button)
+			continue
+		}
+		row := &actions[len(actions)-1]
+		x := ansi.StringWidth(row.text) + 2
+		row.text += "  " + button.text
+		for _, h := range button.hits {
+			h.x += x
+			row.hits = append(row.hits, h)
+		}
+	}
+	return append(fitLines(actions, capacity), textLine(""))
+}
+
+func (m *model) detailActionButton(action detailAction, i, count int, renaming bool, capacity int) line {
+	label := action.label
+	primary := action.id == "enable" || action.id == "disable"
+	if primary {
+		label += " (space)"
+	}
+	focused := m.detailActionFocused(action, i, count, renaming)
+	activePrimary := primary && m.primaryActionActive(renaming, focused)
+	if focused {
+		label = "› " + label
+	}
+	button := controlLine([]string{label}, []string{"action"}, []string{action.id})
+	if activePrimary {
+		button.text = primaryButtonStyle(label, focused)
+	}
+	if renaming && action.id == "rename" {
+		button.text = styledButton(label, true, false, colorSand)
+	}
+	button.hits[0].w = ansi.StringWidth(button.text)
+	if ansi.StringWidth(button.text) > capacity {
+		return compactActionButton(button, label, action.id, focused, activePrimary, renaming, capacity)
+	}
+	return button
+}
+
+func compactActionButton(button line, label, id string, focused, activePrimary, renaming bool, capacity int) line {
+	text := strings.TrimPrefix(label, "› ")
+	if focused && ansi.StringWidth(text)+2 <= capacity {
+		text += " ↵"
+	}
+	text = buttonLabelWeight(text)
+	button.text = filled(colorText, backgroundTab, text)
+	if focused || activePrimary {
+		button.text = filled(foregroundSelected, backgroundSelected, text)
+	}
+	if renaming && id == "rename" {
+		button.text = filled("\x1b[38;2;0;0;0m", strings.Replace(colorSand, "[38;", "[48;", 1), text)
+	}
+	button.hits[0].w = ansi.StringWidth(text)
+	return button
+}
+
+func (m *model) needsResync(r registration.SandboxRow) bool {
+	if r.Enabled != store.Enabled || !strings.EqualFold(r.Sandbox.Status, "running") {
+		return false
+	}
+	if !strings.EqualFold(r.Status.Connection, "ready") {
+		return true
+	}
+	for _, e := range m.errors {
+		if (e.code == store.CodePreparation || store.IsGuestPluginCode(e.code)) && diagnosticMatchesRow(e, r) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *model) detailPluginRow(r registration.SandboxRow, p guestplugins.Choice, i, inner, nameWidth int, render func(string, string, string, string) string) []line {
+	var lines []line
+	choice, loading := m.pluginChoiceDisplay(r.Scope, r.Sandbox.ID, p.ID)
+	effective := m.settings.Effective(r.Scope, r.Sandbox.ID).Plugins[p.ID].Enabled
+	prefix := "  "
+	if m.focus == "plugins" && i == m.detailIndex {
+		prefix = "> "
+	}
+	effectiveText, source := m.detailPluginState(p, choice, loading, effective)
+	l := textLine(render(prefix, p.ID, ink(colorInfo, choice), effectiveText))
+	l.hits = []hit{{x: 0, w: inner, action: "override", id: p.ID}}
+	if m.width < 60 {
+		l.text = prefix + padded(p.ID, nameWidth)
+	}
+	lines = append(lines, l)
+	if m.width < 60 {
+		lines = append(lines, compactPluginChoice(p.ID, choice, effectiveText, source, effective, inner)...)
+	}
+	if p.UnsupportedReason != "" {
+		for _, part := range strings.Split(ansi.Hardwrap(safeText(p.UnsupportedReason), max(10, inner-2), true), "\n") {
+			lines = append(lines, textLine("  "+ink(colorWarning, part)))
+		}
+	}
+	return lines
+}
+
+func (m *model) detailPluginState(p guestplugins.Choice, choice string, loading, effective bool) (string, string) {
+	effectiveText := enabledStyle(effective, onOff(effective))
+	source := ""
+	if !loading && p.UnsupportedReason == "" {
+		source = "default"
+		if choice != "Inherit" {
+			source = "override"
+		}
+		effectiveText += ink(colorMuted, " · "+source)
+	}
+	if loading {
+		effectiveText = ink(colorInfo, m.actionSpinner()+" Loading")
+	} else if p.UnsupportedReason != "" {
+		effectiveText = ink(colorError, "Unsupported")
+	}
+
+	return effectiveText, source
+}
+
+func compactPluginChoice(id, choice, effectiveText, source string, effective bool, inner int) []line {
+	var lines []line
+	text := "  " + ink(colorInfo, choice) + " → " + effectiveText
+	if ansi.StringWidth(text) > inner {
+		lines = append(lines, line{text: "  " + ink(colorInfo, choice), hits: []hit{{x: 0, w: inner, action: "override", id: id}}})
+		text = "  → " + effectiveText
+	}
+	if source != "" && ansi.StringWidth(text) > inner {
+		lines = append(lines, line{text: "  → " + enabledStyle(effective, onOff(effective)), hits: []hit{{x: 0, w: inner, action: "override", id: id}}})
+		text = "  " + ink(colorMuted, source)
+	}
+	lines = append(lines, line{text: text, hits: []hit{{x: 0, w: inner, action: "override", id: id}}})
+	return lines
+}
+
+func (m *model) primaryActionActive(renaming, focused bool) bool {
+	return !renaming && m.focus != "plugins" && (m.focus != "actions" || focused)
+}
+
+func (m *model) detailActionFocused(action detailAction, i, count int, renaming bool) bool {
+	focused := m.focus == "actions" && m.button%count == i
+	if m.dialog == "fix-herdr" {
+		focused = action.id == "fix-herdr"
+	}
+	if renaming {
+		focused = action.id == "rename"
+	}
+
+	return focused
 }

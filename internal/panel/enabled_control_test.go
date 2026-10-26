@@ -62,77 +62,7 @@ func TestStoppedMissingEntryEnableIsQuiet(t *testing.T) {
 func TestEnabledChoiceChangesBeforeOperationAndSurvivesPoll(t *testing.T) {
 	for _, initial := range []store.EnabledChoice{store.Enabled, store.Disabled} {
 		for _, outcome := range []string{"success", "failed", "lost acknowledgement"} {
-			m := modelFixture(t)
-			m.refreshing = true
-			m.rows[0].Enabled = initial
-			native := initial == store.Enabled
-			m.rows[0].NativeEnabled = &native
-			old := m.rows[0]
-			choice, progress, symbol := store.Enabled, "Enabling…", "✓"
-			if initial == store.Enabled {
-				choice, progress, symbol = store.Disabled, "Disabling…", "·"
-			}
-			settled := choice
-			if outcome == "failed" {
-				settled = initial
-			}
-			m.setEnabledFn = func(_ context.Context, scope, id string, got store.EnabledChoice) error {
-				require.Equal(t, choice, got, "wrong operation")
-				if err := store.SetEnabled(scope, id, settled); err != nil {
-					return err
-				}
-				if outcome != "success" {
-					return fmt.Errorf("native change %s", outcome)
-				}
-				return nil
-			}
-			cmd := m.toggleEnabled()
-			require.NotNil(t, cmd)
-			require.False(t, m.rows[0].Enabled != choice)
-			assertPending := func() {
-				t.Helper()
-				frame := ansi.Strip(m.View().Content)
-				require.Contains(t, frame, progress, "transition missing: %s", frame)
-				line := m.sandboxLines()[3]
-				found := false
-				for _, h := range line.hits {
-					if h.action == "enabled" && h.id == "a" {
-						found = strings.TrimSpace(ansi.Cut(ansi.Strip(line.text), h.x, h.x+h.w)) == symbol
-					}
-				}
-				require.True(t, found, "choice symbol: %s", ansi.Strip(line.text))
-				require.False(t, m.rows[0].Label != old.Label)
-				require.False(t, m.rows[0].EntryPresent != old.EntryPresent)
-			}
-			assertPending()
-			m.expanded = "a"
-			require.Contains(t, ansi.Strip(m.sandboxLines()[3].text), progress, "expanded row hid active transition")
-
-			details := ansi.Strip(strings.Join(lineTexts(m.sandboxDetails(m.rows[0])), "\n"))
-			require.Contains(t, details, progress, "expanded details lost progress")
-
-			m.expanded = ""
-			m.Update(observationMsg{generation: m.generation, rows: []registration.SandboxRow{old}})
-			require.Equal(t, choice, m.rows[0].Enabled, "poll replaced pending choice")
-			assertPending()
-			require.Nil(t, m.toggleEnabled(), "overlapping operation dispatched")
-			generation := m.generation
-			m.Update(cmd())
-			require.False(t, m.pending["a"])
-			require.False(t, m.rows[0].Enabled != settled)
-			m.Update(observationMsg{generation: generation, rows: []registration.SandboxRow{old}})
-			require.Equal(t, settled, m.rows[0].Enabled, "old poll replaced settled state")
-			observed := m.rows[0]
-			actual := settled == store.Enabled
-			observed.NativeEnabled = &actual
-			observed.Status.Connection = "ready"
-			if !actual {
-				observed.Status.Connection = "disabled"
-			}
-			m.Update(observationMsg{generation: m.generation, rows: []registration.SandboxRow{observed}})
-			require.NotContains(t, ansi.Strip(m.View().Content), progress, "completed transition remained")
-			require.False(t, outcome != "success" && len(m.errors) == 0, "operation failure hidden")
-			require.NotNil(t, m.toggleEnabled(), "settled operation not actionable")
+			testPendingEnabledChoice(t, initial, outcome)
 		}
 	}
 }
@@ -312,41 +242,127 @@ func TestCancellationHintUsesGrayWithoutSpinner(t *testing.T) {
 
 func TestEnabledResultUsesSavedChoiceWhenRefreshFails(t *testing.T) {
 	for _, quietNoop := range []bool{false, true} {
-		m := modelFixture(t)
-		m.refreshing = true
-		original := m.rows[0]
-		requested, settled := store.Disabled, store.Enabled
-		if quietNoop {
-			original.EntryPresent, original.Label, original.Enabled = false, "", store.Disabled
-			m.rows[0] = original
-			requested, settled = store.Enabled, store.Disabled
+		testEnabledRefreshFailure(t, quietNoop)
+	}
+}
+
+func testPendingEnabledChoice(t *testing.T, initial store.EnabledChoice, outcome string) {
+	t.Helper()
+	m := modelFixture(t)
+	m.refreshing = true
+	m.rows[0].Enabled = initial
+	native := initial == store.Enabled
+	m.rows[0].NativeEnabled = &native
+	old := m.rows[0]
+	choice, progress, symbol := store.Enabled, "Enabling…", "✓"
+	if initial == store.Enabled {
+		choice, progress, symbol = store.Disabled, "Disabling…", "·"
+	}
+	settled := choice
+	if outcome == "failed" {
+		settled = initial
+	}
+	m.setEnabledFn = func(_ context.Context, scope, id string, got store.EnabledChoice) error {
+		require.Equal(t, choice, got, "wrong operation")
+		if err := store.SetEnabled(scope, id, settled); err != nil {
+			return err
 		}
-		require.NoError(t, store.SetEnabled("scope", "a", settled))
-		m.setEnabledFn = func(context.Context, string, string, store.EnabledChoice) error {
-			if quietNoop {
-				return store.SetEnabled("scope", "a", store.Disabled)
-			}
-			return fmt.Errorf("saving enabled choice failed")
+		if outcome != "success" {
+			return fmt.Errorf("native change %s", outcome)
 		}
-		cmd := m.toggleEnabled()
-		require.NotNil(t, cmd)
-		require.False(t, m.rows[0].Enabled != requested)
-		generation := m.generation
-		m.Update(observationMsg{generation: generation, rows: []registration.SandboxRow{original}})
-		require.Equal(t, requested, m.rows[0].Enabled, "poll reset pending request")
-		m.Update(cmd())
-		require.Equal(t, settled, m.rows[0].Enabled, "completion ignored unchanged saved choice")
-		stale := original
-		stale.Enabled = requested
-		m.Update(observationMsg{generation: generation, rows: []registration.SandboxRow{stale}})
-		m.Update(observationMsg{generation: m.generation, err: fmt.Errorf("catalog unavailable")})
-		require.False(t, m.rows[0].Enabled != settled)
-		require.False(t, m.rows[0].Label != original.Label)
-		require.False(t, m.rows[0].EntryPresent != original.EntryPresent)
+		return nil
+	}
+	cmd := m.toggleEnabled()
+	require.NotNil(t, cmd)
+	require.False(t, m.rows[0].Enabled != choice)
+	assertPending := func() { assertPendingEnabledChoice(t, m, old, progress, symbol) }
+
+	assertPending()
+	m.expanded = "a"
+	require.Contains(t, ansi.Strip(m.sandboxLines()[3].text), progress, "expanded row hid active transition")
+
+	details := ansi.Strip(strings.Join(lineTexts(m.sandboxDetails(m.rows[0])), "\n"))
+	require.Contains(t, details, progress, "expanded details lost progress")
+
+	m.expanded = ""
+	m.Update(observationMsg{generation: m.generation, rows: []registration.SandboxRow{old}})
+	require.Equal(t, choice, m.rows[0].Enabled, "poll replaced pending choice")
+	assertPending()
+	require.Nil(t, m.toggleEnabled(), "overlapping operation dispatched")
+	generation := m.generation
+	m.Update(cmd())
+	require.False(t, m.pending["a"])
+	require.False(t, m.rows[0].Enabled != settled)
+	m.Update(observationMsg{generation: generation, rows: []registration.SandboxRow{old}})
+	require.Equal(t, settled, m.rows[0].Enabled, "old poll replaced settled state")
+	observed := m.rows[0]
+	actual := settled == store.Enabled
+	observed.NativeEnabled = &actual
+	observed.Status.Connection = "ready"
+	if !actual {
+		observed.Status.Connection = "disabled"
+	}
+	m.Update(observationMsg{generation: m.generation, rows: []registration.SandboxRow{observed}})
+	require.NotContains(t, ansi.Strip(m.View().Content), progress, "completed transition remained")
+	require.False(t, outcome != "success" && len(m.errors) == 0, "operation failure hidden")
+	require.NotNil(t, m.toggleEnabled(), "settled operation not actionable")
+
+}
+
+func testEnabledRefreshFailure(t *testing.T, quietNoop bool) {
+	t.Helper()
+	m := modelFixture(t)
+	m.refreshing = true
+	original := m.rows[0]
+	requested, settled := store.Disabled, store.Enabled
+	if quietNoop {
+		original.EntryPresent, original.Label, original.Enabled = false, "", store.Disabled
+		m.rows[0] = original
+		requested, settled = store.Enabled, store.Disabled
+	}
+	require.NoError(t, store.SetEnabled("scope", "a", settled))
+	m.setEnabledFn = func(context.Context, string, string, store.EnabledChoice) error {
 		if quietNoop {
-			for _, e := range m.errors {
-				require.NotEqual(t, store.CodeManagement, e.code, "quiet no-op complained")
-			}
+			return store.SetEnabled("scope", "a", store.Disabled)
+		}
+		return fmt.Errorf("saving enabled choice failed")
+	}
+	cmd := m.toggleEnabled()
+	require.NotNil(t, cmd)
+	require.False(t, m.rows[0].Enabled != requested)
+	generation := m.generation
+	m.Update(observationMsg{generation: generation, rows: []registration.SandboxRow{original}})
+	require.Equal(t, requested, m.rows[0].Enabled, "poll reset pending request")
+	m.Update(cmd())
+	require.Equal(t, settled, m.rows[0].Enabled, "completion ignored unchanged saved choice")
+	stale := original
+	stale.Enabled = requested
+	m.Update(observationMsg{generation: generation, rows: []registration.SandboxRow{stale}})
+	m.Update(observationMsg{generation: m.generation, err: fmt.Errorf("catalog unavailable")})
+	require.False(t, m.rows[0].Enabled != settled)
+	require.False(t, m.rows[0].Label != original.Label)
+	require.False(t, m.rows[0].EntryPresent != original.EntryPresent)
+	if quietNoop {
+		for _, e := range m.errors {
+			require.NotEqual(t, store.CodeManagement, e.code, "quiet no-op complained")
 		}
 	}
+
+}
+
+func assertPendingEnabledChoice(t *testing.T, m *model, old registration.SandboxRow, progress, symbol string) {
+
+	t.Helper()
+	frame := ansi.Strip(m.View().Content)
+	require.Contains(t, frame, progress, "transition missing: %s", frame)
+	line := m.sandboxLines()[3]
+	found := false
+	for _, h := range line.hits {
+		if h.action == "enabled" && h.id == "a" {
+			found = strings.TrimSpace(ansi.Cut(ansi.Strip(line.text), h.x, h.x+h.w)) == symbol
+		}
+	}
+	require.True(t, found, "choice symbol: %s", ansi.Strip(line.text))
+	require.False(t, m.rows[0].Label != old.Label)
+	require.False(t, m.rows[0].EntryPresent != old.EntryPresent)
 }

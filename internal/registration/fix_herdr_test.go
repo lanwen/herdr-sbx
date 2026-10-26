@@ -121,50 +121,62 @@ func newFixHerdrFixture(t *testing.T, failHandoff bool) (*registrationFixture, s
 	require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {{SandboxID: "sandbox-1", Label: "custom label", Target: "demo.sbx", ProfileID: "machine-1", ProjectWorkspaceDone: true}}}}))
 	require.NoError(t, store.SetEnabled(scope, "sandbox-1", store.Enabled))
 	require.NoError(t, store.ObserveSandbox(scope, sbx.Sandbox{ID: "sandbox-1", Name: "demo", Status: "running"}))
-	sshCalls, handoffs := 0, 0
-	f.runner.Execute = func(_ context.Context, c process.Command) (string, error) {
-		args := strings.Join(c.Args, " ")
-		switch c.Name + " " + args {
-		case "herdr --version":
-			return "herdr 0.9.3", nil
-		case "sbx version":
-			return "sbx 0.45.1", nil
-		case "ssh -V":
-			return "OpenSSH", nil
-		case "sbx daemon status --help", "sbx ls --help":
-			return "--json", nil
-		case "sbx daemon status --json":
-			return `{"status":"running","socket":"/tmp/fix-herdr.sock"}`, nil
-		case "sbx diagnose --json":
-			return `{"checks":[{"name":"Authentication","status":"pass"}]}`, nil
-		case "ssh -G herdr-sandbox-probe.sbx":
-			return "proxycommand sbx ssh proxy %n", nil
-		case "herdr machine list --json":
-			return `[{"id":"machine-1","label":"custom label","target":"demo.sbx","session":"default"}]`, nil
-		case "herdr plugin list --json":
-			return `{"result":{"plugins":[]}}`, nil
-		}
-		if c.Name == "ssh" {
-			sshCalls++
-			if strings.HasSuffix(args, remoteHerdrStatusShell()) {
-				return remoteHerdrOnPath + "\nherdr 0.9.3", nil
-			}
-			if strings.Contains(args, "server live-handoff") {
-				handoffs++
-				if failHandoff {
-					return "unsupported live handoff", errors.New("exit 1")
-				}
-				return "complete", nil
-			}
-			if strings.Contains(args, "status server --json") {
-				if handoffs == 0 {
-					return `{"running":true,"version":"0.9.2"}`, nil
-				}
-				return `{"running":true,"version":"0.9.3"}`, nil
-			}
-		}
-		return "", fmt.Errorf("unexpected command %s %s", c.Name, args)
-	}
+	commands := &fixHerdrCommands{failHandoff: failHandoff}
+	f.runner.Execute = commands.execute
 	f.rebuildClients()
-	return f, scope, &sshCalls, &handoffs
+	return f, scope, &commands.sshCalls, &commands.handoffs
+}
+
+type fixHerdrCommands struct {
+	sshCalls, handoffs int
+	failHandoff        bool
+}
+
+func (f *fixHerdrCommands) execute(_ context.Context, c process.Command) (string, error) {
+
+	args := strings.Join(c.Args, " ")
+	switch c.Name + " " + args {
+	case "herdr --version":
+		return "herdr 0.9.3", nil
+	case "sbx version":
+		return "sbx 0.45.1", nil
+	case "ssh -V":
+		return "OpenSSH", nil
+	case "sbx daemon status --help", "sbx ls --help":
+		return "--json", nil
+	case "sbx daemon status --json":
+		return `{"status":"running","socket":"/tmp/fix-herdr.sock"}`, nil
+	case "sbx diagnose --json":
+		return `{"checks":[{"name":"Authentication","status":"pass"}]}`, nil
+	case "ssh -G herdr-sandbox-probe.sbx":
+		return "proxycommand sbx ssh proxy %n", nil
+	case "herdr machine list --json":
+		return `[{"id":"machine-1","label":"custom label","target":"demo.sbx","session":"default"}]`, nil
+	case "herdr plugin list --json":
+		return `{"result":{"plugins":[]}}`, nil
+	}
+	if c.Name == "ssh" {
+		return f.ssh(args)
+	}
+	return "", fmt.Errorf("unexpected command %s %s", c.Name, args)
+}
+func (f *fixHerdrCommands) ssh(args string) (string, error) {
+	f.sshCalls++
+	if strings.HasSuffix(args, remoteHerdrStatusShell()) {
+		return remoteHerdrOnPath + "\nherdr 0.9.3", nil
+	}
+	if strings.Contains(args, "server live-handoff") {
+		f.handoffs++
+		if f.failHandoff {
+			return "unsupported live handoff", errors.New("exit 1")
+		}
+		return "complete", nil
+	}
+	if strings.Contains(args, "status server --json") {
+		if f.handoffs == 0 {
+			return `{"running":true,"version":"0.9.2"}`, nil
+		}
+		return `{"running":true,"version":"0.9.3"}`, nil
+	}
+	return "", fmt.Errorf("unexpected SSH command %s", args)
 }

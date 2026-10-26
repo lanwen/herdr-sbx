@@ -129,24 +129,22 @@ func statusStyle(state, text string) string {
 }
 func (m *model) selectedLine(l line) bool {
 	for _, h := range l.hits {
-		switch h.action {
-		case "select":
-			if m.page == "Sandboxes" && m.focus == "table" && m.input == nil && m.dialog == "" && h.id == m.selected && h.id != m.expanded {
-				return true
-			}
-		case "plugin":
-			if h.id == m.pluginSelected {
-				return true
-			}
-		case "error":
-			if m.focus == "errors" && h.id == strconv.Itoa(m.errorIndex) {
-				return true
-			}
-		case "override":
-			if m.focus == "plugins" && len(m.plugins) > 0 && h.id == m.plugins[min(m.detailIndex, len(m.plugins)-1)].ID {
-				return true
-			}
+		if m.selectedHit(h) {
+			return true
 		}
+	}
+	return false
+}
+func (m *model) selectedHit(h hit) bool {
+	switch h.action {
+	case "select":
+		return m.page == "Sandboxes" && m.focus == "table" && m.input == nil && m.dialog == "" && h.id == m.selected && h.id != m.expanded
+	case "plugin":
+		return h.id == m.pluginSelected
+	case "error":
+		return m.focus == "errors" && h.id == strconv.Itoa(m.errorIndex)
+	case "override":
+		return m.focus == "plugins" && len(m.plugins) > 0 && h.id == m.plugins[min(m.detailIndex, len(m.plugins)-1)].ID
 	}
 	return false
 }
@@ -286,17 +284,7 @@ func (m *model) managementStatus() string {
 	return text
 }
 func (m *model) statusFooter() line {
-	dockerState := "unknown"
-	for _, check := range m.checks.Checks {
-		if check.Name == "Sandbox daemon" {
-			switch check.Level {
-			case precheck.Ready:
-				dockerState = "running"
-			case precheck.Blocked:
-				dockerState = "failed"
-			}
-		}
-	}
+	dockerState := m.dockerState()
 	management := "Management " + enabledStyle(m.workerEnabled, strings.ToUpper(onOff(m.workerEnabled)))
 	if m.managementCancelling() && m.width >= 42 {
 		management += " " + ink(colorMuted, "Cancelling")
@@ -312,4 +300,19 @@ func (m *model) statusFooter() line {
 	gap := 2
 	start := max(0, m.width-ansi.StringWidth(management)-gap-ansi.StringWidth(docker))
 	return line{text: strings.Repeat(" ", start) + management + strings.Repeat(" ", gap) + docker, hits: []hit{{x: start, w: ansi.StringWidth(management), action: "worker"}, {x: start + ansi.StringWidth(management) + gap, w: ansi.StringWidth(docker), action: "docker"}}}
+}
+
+func (m *model) dockerState() string {
+	dockerState := "unknown"
+	for _, check := range m.checks.Checks {
+		if check.Name == "Sandbox daemon" {
+			switch check.Level {
+			case precheck.Ready:
+				dockerState = "running"
+			case precheck.Blocked:
+				dockerState = "failed"
+			}
+		}
+	}
+	return dockerState
 }

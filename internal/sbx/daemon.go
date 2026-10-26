@@ -75,12 +75,8 @@ func workspaceNeedsProbe(item map[string]any) bool {
 		return true
 	}
 	const prefix = "com.docker.sandbox."
-	for _, key := range []string{"usesWorktree", "worktreePath", "workingDirectory"} {
-		if value, exists := labels[prefix+key]; exists {
-			if _, ok := value.(string); !ok {
-				return true
-			}
-		}
+	if !validWorkspaceLabels(labels) {
+		return true
 	}
 	worktree, _ := labels[prefix+"usesWorktree"].(string)
 	worktreePath, _ := labels[prefix+"worktreePath"].(string)
@@ -97,6 +93,18 @@ var ErrSandboxIdentityChanged = errors.New("sandbox identity changed")
 
 // SandboxAbsent proves that the sandbox name is not found. A replacement is
 // an identity conflict, never permission to remove an entry using that target.
+func validWorkspaceLabels(labels map[string]any) bool {
+	const prefix = "com.docker.sandbox."
+	for _, key := range []string{"usesWorktree", "worktreePath", "workingDirectory"} {
+		if value, exists := labels[prefix+key]; exists {
+			if _, ok := value.(string); !ok {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func (c *Client) SandboxAbsent(ctx context.Context, socket, name, expectedID string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -232,19 +240,7 @@ func objects(raw string, keys ...string) ([]map[string]any, error) {
 	if err := decodeJSON(raw, &value); err != nil {
 		return nil, err
 	}
-	if object, ok := value.(map[string]any); ok {
-		if nested, ok := object["result"]; ok {
-			value = nested
-		}
-	}
-	if object, ok := value.(map[string]any); ok {
-		for _, key := range keys {
-			if nested, ok := object[key]; ok {
-				value = nested
-				break
-			}
-		}
-	}
+	value = objectListValue(value, keys)
 	array, ok := value.([]any)
 	if !ok {
 		return nil, fmt.Errorf("expected a list")
@@ -258,6 +254,23 @@ func objects(raw string, keys ...string) ([]map[string]any, error) {
 		result = append(result, object)
 	}
 	return result, nil
+}
+
+func objectListValue(value any, keys []string) any {
+	if object, ok := value.(map[string]any); ok {
+		if nested, ok := object["result"]; ok {
+			value = nested
+		}
+	}
+	if object, ok := value.(map[string]any); ok {
+		for _, key := range keys {
+			if nested, ok := object[key]; ok {
+				value = nested
+				break
+			}
+		}
+	}
+	return value
 }
 
 func first(item map[string]any, keys ...string) string {

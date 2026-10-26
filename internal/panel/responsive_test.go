@@ -16,62 +16,7 @@ func TestPhoneFramesFitAndControlsRemainReachable(t *testing.T) {
 	for _, plain := range []bool{false, true} {
 		for _, width := range []int{30, 31, 32, 36, 40, 44, 45, 59, 60, 71, 72, 110} {
 			t.Run(fmt.Sprintf("%d/plain=%v", width, plain), func(t *testing.T) {
-				m := modelFixture(t)
-				if plain {
-					t.Setenv("NO_COLOR", "")
-				} else {
-					unsetNoColor(t)
-				}
-				m.width, m.height = width, 10
-				m.rows[0].Status.Detail = strings.Repeat("Long status explanation. ", 20)
-				m.plugins = []guestplugins.Choice{{ID: "example.very-long-plugin-name"}}
-				check := func() {
-					t.Helper()
-					content := ansi.Strip(m.View().Content)
-					lines := strings.Split(content, "\n")
-					require.Len(t, lines, m.height, "height %d want %d: %s", len(lines), m.height, content)
-					for _, line := range lines {
-						require.False(t, ansi.StringWidth(line) > width, "overflow: %q", line)
-					}
-					for _, h := range m.hits {
-						require.False(t, h.x < 0)
-						require.False(t, h.w < 1)
-						require.False(t, h.x+h.w > width)
-						require.False(t, h.y < 0)
-						require.False(t, h.y >= m.height)
-					}
-					require.NotContains(t, content, "Resize", "phone was rejected")
-				}
-				check()
-				for _, page := range []string{"Status", "Plugins", "Sandboxes"} {
-					m.openTab(page)
-					check()
-				}
-				m.key(keyMsg(tea.KeyEnter, ""))
-				m.focus = "actions"
-				for i, action := range m.sandboxActions(m.rows[0]) {
-					m.button = i
-					m.reveal = true
-					check()
-					found := false
-					for _, h := range m.hits {
-						if h.action == "action" && h.id == action.id {
-							found = true
-						}
-					}
-					require.True(t, found, "action %s unreachable", action.id)
-				}
-				m.focus = "plugins"
-				m.detailIndex = 0
-				m.reveal = true
-				check()
-				found := false
-				for _, h := range m.hits {
-					if h.action == "override" {
-						found = true
-					}
-				}
-				require.True(t, found, "plugin choice unreachable")
+				testPhoneFrame(t, width, plain)
 			})
 		}
 	}
@@ -147,55 +92,132 @@ func TestNarrowPluginHintIdentifiesSamePrefixPlugins(t *testing.T) {
 	for _, width := range []int{30, 32} {
 		for _, page := range []string{"Plugins", "Sandboxes"} {
 			t.Run(fmt.Sprintf("%d/%s", width, page), func(t *testing.T) {
-				m := modelFixture(t)
-				m.width, m.height = width, 10
-				m.plugins = []guestplugins.Choice{{ID: "same.plugin.prefix.first"}, {ID: "same.plugin.prefix.second"}}
-				m.openTab(page)
-				if page == "Sandboxes" {
-					m.expanded = "a"
-					m.focus = "plugins"
-				}
-				for index, plugin := range m.plugins {
-					if index > 0 {
-						m.key(keyMsg(tea.KeyDown, ""))
-						{
-							hint, _ := m.contextHint()
-							require.Contains(t, hint, plugin.ID, "keyboard focus ID missing: %q", hint)
-						}
-					}
-					m.pluginIndex, m.detailIndex = index, index
-					m.pluginSelected = plugin.ID
-					hint, _ := m.contextHint()
-					require.Contains(t, hint, plugin.ID, "focused ID missing: %q", hint)
-					found := false
-					for attempt := 0; attempt < 30; attempt++ {
-						if strings.Contains(ansi.Strip(m.View().Content), plugin.ID) {
-							found = true
-							break
-						}
-						if !m.hintInBody {
-							break
-						}
-						m.key(keyMsg(tea.KeyPgDown, ""))
-					}
-					require.True(t, found, "full focused ID not reachable at %d/%s", width, page)
-					m.reveal = true
-					m.View()
-					clicked := false
-					for _, h := range m.hits {
-						if h.id == plugin.ID && (h.action == "plugin" || h.action == "override") {
-							clickAt(m, h.x, h.y)
-							clicked = true
-							break
-						}
-					}
-					require.True(t, clicked, "focused plugin missing mouse hit")
-					{
-						hint, _ := m.contextHint()
-						require.Contains(t, hint, plugin.ID, "mouse focus ID missing: %q", hint)
-					}
-				}
+				testNarrowPluginHint(t, width, page)
 			})
 		}
 	}
+}
+
+func testPhoneFrame(t *testing.T, width int, plain bool) {
+	t.Helper()
+	m := modelFixture(t)
+	if plain {
+		t.Setenv("NO_COLOR", "")
+	} else {
+		unsetNoColor(t)
+	}
+	m.width, m.height = width, 10
+	m.rows[0].Status.Detail = strings.Repeat("Long status explanation. ", 20)
+	m.plugins = []guestplugins.Choice{{ID: "example.very-long-plugin-name"}}
+	check := func() { assertPhoneFrame(t, m, width) }
+
+	check()
+	for _, page := range []string{"Status", "Plugins", "Sandboxes"} {
+		m.openTab(page)
+		check()
+	}
+	m.key(keyMsg(tea.KeyEnter, ""))
+	m.focus = "actions"
+	for i, action := range m.sandboxActions(m.rows[0]) {
+		m.button = i
+		m.reveal = true
+		check()
+		_, found := matchingPanelHit(m.hits, func(h hit) bool { return h.action == "action" && h.id == action.id })
+		require.True(t, found, "action %s unreachable", action.id)
+	}
+	m.focus = "plugins"
+	m.detailIndex = 0
+	m.reveal = true
+	check()
+	_, found := matchingPanelHit(m.hits, func(h hit) bool { return h.action == "override" })
+	require.True(t, found, "plugin choice unreachable")
+
+}
+
+func testNarrowPluginHint(t *testing.T, width int, page string) {
+	t.Helper()
+	m := modelFixture(t)
+	m.width, m.height = width, 10
+	m.plugins = []guestplugins.Choice{{ID: "same.plugin.prefix.first"}, {ID: "same.plugin.prefix.second"}}
+	m.openTab(page)
+	if page == "Sandboxes" {
+		m.expanded = "a"
+		m.focus = "plugins"
+	}
+	for index, plugin := range m.plugins {
+		assertNarrowPluginFocus(t, m, width, page, index, plugin.ID)
+	}
+
+}
+
+func assertPhoneFrame(t *testing.T, m *model, width int) {
+
+	t.Helper()
+	content := ansi.Strip(m.View().Content)
+	lines := strings.Split(content, "\n")
+	require.Len(t, lines, m.height, "height %d want %d: %s", len(lines), m.height, content)
+	for _, line := range lines {
+		require.False(t, ansi.StringWidth(line) > width, "overflow: %q", line)
+	}
+	for _, h := range m.hits {
+		require.False(t, h.x < 0)
+		require.False(t, h.w < 1)
+		require.False(t, h.x+h.w > width)
+		require.False(t, h.y < 0)
+		require.False(t, h.y >= m.height)
+	}
+	require.NotContains(t, content, "Resize", "phone was rejected")
+}
+
+func assertNarrowPluginFocus(t *testing.T, m *model, width int, page string, index int, pluginID string) {
+	t.Helper()
+
+	if index > 0 {
+		m.key(keyMsg(tea.KeyDown, ""))
+		{
+			hint, _ := m.contextHint()
+			require.Contains(t, hint, pluginID, "keyboard focus ID missing: %q", hint)
+		}
+	}
+	m.pluginIndex, m.detailIndex = index, index
+	m.pluginSelected = pluginID
+	hint, _ := m.contextHint()
+	require.Contains(t, hint, pluginID, "focused ID missing: %q", hint)
+	assertFocusedPluginHintReachable(t, m, width, page, pluginID)
+	m.reveal = true
+	m.View()
+	target, clicked := matchingPanelHit(m.hits, func(h hit) bool { return h.id == pluginID && (h.action == "plugin" || h.action == "override") })
+	if clicked {
+		clickAt(m, target.x, target.y)
+	}
+	require.True(t, clicked, "focused plugin missing mouse hit")
+	{
+		hint, _ := m.contextHint()
+		require.Contains(t, hint, pluginID, "mouse focus ID missing: %q", hint)
+	}
+}
+
+func assertFocusedPluginHintReachable(t *testing.T, m *model, width int, page, pluginID string) {
+	t.Helper()
+	found := false
+	for attempt := 0; attempt < 30; attempt++ {
+		if strings.Contains(ansi.Strip(m.View().Content), pluginID) {
+			found = true
+			break
+		}
+		if !m.hintInBody {
+			break
+		}
+		m.key(keyMsg(tea.KeyPgDown, ""))
+	}
+	require.True(t, found, "full focused ID not reachable at %d/%s", width, page)
+}
+
+func matchingPanelHit(hits []hit, match func(hit) bool) (hit, bool) {
+	for _, h := range hits {
+		if match(h) {
+			return h, true
+		}
+	}
+	return hit{}, false
 }

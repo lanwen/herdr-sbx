@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"strings"
 
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
@@ -65,16 +64,7 @@ func (s *Service) RetrySelected(ctx context.Context, out io.Writer, scope, socke
 		return errors.New("clear preparation retry state: " + err.Error())
 	}
 	return s.ReconcileSandbox(context.WithValue(WithExplicitAction(ctx), guestPluginRetryKey{}, true), out, id, name, func() bool {
-		items, err := s.inventory(ctx, socket)
-		if err != nil {
-			return false
-		}
-		for _, candidate := range items {
-			if candidate.ID == id && candidate.Name == name && strings.EqualFold(candidate.Status, "running") {
-				return true
-			}
-		}
-		return false
+		return s.fixSandboxCurrent(ctx, socket, id, name)
 	})
 }
 
@@ -86,5 +76,5 @@ func (s *Service) RecoverPendingPolicy(scope, socket string) error {
 // InstallationAccess returns the exact HTTPS endpoints requested by the
 // temporary installer, in display order.
 func (s *Service) InstallationAccess() []sbx.PolicyAccess {
-	return append([]sbx.PolicyAccess(nil), installerAccess[:]...)
+	return installerAccess()
 }

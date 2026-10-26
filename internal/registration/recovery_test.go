@@ -17,53 +17,8 @@ import (
 
 func TestRegistrationMismatchRecoversThenRegistersOnce(t *testing.T) {
 	fixture := newRegistrationFixture(t, `[{"uuid":"sandbox-1","name":"demo","status":"running"}]`)
-	adds, handoffs, notifications := 0, 0, 0
-	fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
-		call := command.Name + " " + strings.Join(command.Args, " ")
-		switch call {
-		case "herdr --version":
-			return "herdr 0.9.3", nil
-		case "sbx version":
-			return "sbx 0.45.1", nil
-		case "ssh -V":
-			return "OpenSSH", nil
-		case "sbx daemon status --help", "sbx ls --help":
-			return "--json", nil
-		case "sbx daemon status --json":
-			return `{"status":"running","socket":"/tmp/recovery.sock"}`, nil
-		case "sbx diagnose --json":
-			return `{"checks":[{"name":"Authentication","status":"pass"}]}`, nil
-		case "ssh -G herdr-sandbox-probe.sbx":
-			return "proxycommand sbx ssh proxy %n", nil
-		case "ssh -o BatchMode=yes -o ConnectTimeout=8 demo.sbx " + remoteHerdrStatusShell():
-			return remoteHerdrOnPath + "\nherdr 0.9.3", nil
-		case "herdr machine list --json":
-			if adds < 2 {
-				return "[]", nil
-			}
-			return `[{"id":"machine-1","label":"sbx · demo","target":"demo.sbx","session":"default"}]`, nil
-		case "herdr machine add --label sbx · demo demo.sbx":
-			adds++
-			if handoffs == 0 {
-				return "remote herdr server is still running v0.9.4; it will use 0.9.3 after it restarts. error: remote server is not ready for saved machines", errors.New("exit 1")
-			}
-			return "Saved SSH machine machine-1. Remote server is ready.", nil
-		case "herdr --machine machine-1 status server":
-			return "running", nil
-		}
-		if command.Name == "ssh" && strings.Contains(call, "server live-handoff") {
-			handoffs++
-			return "live handoff complete", nil
-		}
-		if command.Name == "ssh" && strings.Contains(call, "status server --json") {
-			return `{"running":true,"version":"0.9.3"}`, nil
-		}
-		if command.Name == "herdr" && command.Args[0] == "notification" {
-			notifications++
-			return "{}", nil
-		}
-		return "", fmt.Errorf("unexpected call %s", call)
-	}
+	commands := &registrationRecoveryCommands{}
+	fixture.runner.Execute = commands.execute
 	fixture.rebuildClients()
 	for range 3 {
 		require.NoError(t, fixture.service.ReconcileContext(context.Background(), io.Discard))
@@ -72,9 +27,9 @@ func TestRegistrationMismatchRecoversThenRegistersOnce(t *testing.T) {
 	state, err := store.LoadState()
 	require.NoError(t, err)
 	items := state.Scopes[store.ScopeID("/tmp/recovery.sock")]
-	require.EqualValues(t, 2, adds)
-	require.EqualValues(t, 1, handoffs)
-	require.EqualValues(t, 0, notifications)
+	require.EqualValues(t, 2, commands.adds)
+	require.EqualValues(t, 1, commands.handoffs)
+	require.EqualValues(t, 0, commands.notifications)
 	require.Len(t, items, 1)
 	require.False(t, items[0].Pending)
 	require.EqualValues(t, "machine-1", items[0].ProfileID)
@@ -159,4 +114,57 @@ func TestRegistrationDiagnosticSaveFailureIsReported(t *testing.T) {
 
 	err := saveResultError("scope", result{Status: "setup required", Detail: "unreachable"})
 	require.Error(t, err, "diagnostic persistence failure was discarded")
+}
+
+type registrationRecoveryCommands struct{ adds, handoffs, notifications int }
+
+func (f *registrationRecoveryCommands) execute(_ context.Context, command process.Command) (string, error) {
+
+	call := command.Name + " " + strings.Join(command.Args, " ")
+	switch call {
+	case "herdr --version":
+		return "herdr 0.9.3", nil
+	case "sbx version":
+		return "sbx 0.45.1", nil
+	case "ssh -V":
+		return "OpenSSH", nil
+	case "sbx daemon status --help", "sbx ls --help":
+		return "--json", nil
+	case "sbx daemon status --json":
+		return `{"status":"running","socket":"/tmp/recovery.sock"}`, nil
+	case "sbx diagnose --json":
+		return `{"checks":[{"name":"Authentication","status":"pass"}]}`, nil
+	case "ssh -G herdr-sandbox-probe.sbx":
+		return "proxycommand sbx ssh proxy %n", nil
+	case "ssh -o BatchMode=yes -o ConnectTimeout=8 demo.sbx " + remoteHerdrStatusShell():
+		return remoteHerdrOnPath + "\nherdr 0.9.3", nil
+	case "herdr machine list --json":
+		if f.adds < 2 {
+			return "[]", nil
+		}
+		return `[{"id":"machine-1","label":"sbx · demo","target":"demo.sbx","session":"default"}]`, nil
+	case "herdr machine add --label sbx · demo demo.sbx":
+		f.adds++
+		if f.handoffs == 0 {
+			return "remote herdr server is still running v0.9.4; it will use 0.9.3 after it restarts. error: remote server is not ready for saved machines", errors.New("exit 1")
+		}
+		return "Saved SSH machine machine-1. Remote server is ready.", nil
+	case "herdr --machine machine-1 status server":
+		return "running", nil
+	}
+	return f.other(command, call)
+}
+func (f *registrationRecoveryCommands) other(command process.Command, call string) (string, error) {
+	if command.Name == "ssh" && strings.Contains(call, "server live-handoff") {
+		f.handoffs++
+		return "live handoff complete", nil
+	}
+	if command.Name == "ssh" && strings.Contains(call, "status server --json") {
+		return `{"running":true,"version":"0.9.3"}`, nil
+	}
+	if command.Name == "herdr" && command.Args[0] == "notification" {
+		f.notifications++
+		return "{}", nil
+	}
+	return "", fmt.Errorf("unexpected call %s", call)
 }

@@ -8,6 +8,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/lanwen/herdr-sbx/internal/guestplugins"
+	"github.com/lanwen/herdr-sbx/internal/registration"
 	"github.com/lanwen/herdr-sbx/internal/store"
 )
 
@@ -62,128 +64,9 @@ func (m *model) helpKeys() panelKeys {
 		helpKey = binding("?", "close help")
 		back = binding("esc", "close help")
 	}
-	var context, toggle, rename, inherit, arrows key.Binding
-	row, hasRow := m.row()
-	toggleAvailable := hasRow && row.AssociationIssue == "" && !m.pending[row.Sandbox.ID] && (row.EntryPresent || !strings.EqualFold(row.Sandbox.Status, "stopped"))
-	primary := "enable"
-	if hasRow && row.EntryPresent && row.Enabled == store.Enabled {
-		primary = "disable"
-	}
-	if m.page == "Sandboxes" && (m.focus == "table" || m.focus == "actions") && toggleAvailable {
-		toggle = binding("space", primary)
-	}
-	if m.page == "Sandboxes" && m.focus == "table" && hasRow {
-		if len(m.sandboxActions(row)) > 0 || len(m.plugins) > 0 {
-			context = binding("enter/→", "details")
-		}
-		if row.EntryPresent && row.AssociationIssue == "" && !m.pending[row.Sandbox.ID] {
-			rename = binding("r", "rename herdr label")
-		}
-	}
-	if m.page == "Sandboxes" && m.focus == "actions" && hasRow {
-		actions := m.sandboxActions(row)
-		if m.button >= 0 && m.button < len(actions) && !m.pending[row.Sandbox.ID] {
-			a := actions[m.button]
-			if a.id != "enable" && a.id != "disable" || toggleAvailable {
-				context = binding("enter", strings.ToLower(a.label))
-			}
-		}
-		if m.button == 0 {
-			if len(actions) > 1 {
-				arrows = binding("→", "next action")
-			}
-			if !m.helpOpen {
-				back = binding("esc/←", "list")
-			}
-		} else {
-			arrows = binding("←/→", "actions")
-			if m.button == len(actions)-1 {
-				arrows = binding("←", "previous action")
-			}
-			if !m.helpOpen {
-				back = binding("esc", "list")
-			}
-		}
-	}
-	if m.page == "Plugins" && m.focus == "table" {
-		items := m.visiblePlugins()
-		if m.pluginIndex >= 0 && m.pluginIndex < len(items) {
-			p := items[m.pluginIndex]
-			if !m.pending["plugin:"+p.ID] && (p.Enabled || p.UnsupportedReason == "") {
-				description := "enable herdr plugin sync"
-				if p.Enabled {
-					description = "disable herdr plugin sync"
-				}
-				context = binding("enter/space", description)
-			}
-		}
-	}
-	if m.page == "Sandboxes" && m.focus == "plugins" {
-		if !m.helpOpen {
-			back = binding("esc/←", "list")
-		}
-		if r, ok := findRow(m.rows, m.expanded); ok && !m.pending[r.Sandbox.ID] && m.detailIndex >= 0 && m.detailIndex < len(m.plugins) {
-			p := m.plugins[m.detailIndex]
-			value, overridden := m.settings.Overrides[store.StatusKey(r.Scope, r.Sandbox.ID)][p.ID]
-			nextEnabled := !overridden || !value && m.settings.Plugins[p.ID].Enabled
-			if p.UnsupportedReason == "" || !nextEnabled {
-				context = binding("enter/space", "cycle choice")
-			}
-			if overridden && (p.UnsupportedReason == "" || !m.settings.Plugins[p.ID].Enabled) {
-				inherit = binding("i", "inherit default")
-			}
-		}
-	}
-	if m.focus == "events" && len(m.events) > 0 {
-		context = binding("enter/space", "expand/collapse")
-	}
-	if m.focus == "diagnostics" && len(m.errors) > 0 {
-		context = binding("enter/space", "new/all")
-		arrows = binding("←/→", "new/all")
-	}
-	if m.focus == "errors" && len(m.visibleErrors()) > 0 {
-		context = binding("enter", "recovery")
-	}
-	if m.page == "Status" && m.focus == "table" {
-		actions := m.statusActions()
-		if m.button >= 0 && m.button < len(actions) {
-			a := actions[m.button]
-			if a.id == "toggle" {
-				description := "enable Management"
-				if m.workerEnabled {
-					description = "disable Management"
-				}
-				if m.workerControlError {
-					description = "retry disable Management"
-					if m.workerEnabled {
-						description = "retry enable Management"
-					}
-				}
-				context = binding("enter/space", description)
-			} else if a.id == "refresh" && m.canRefresh() || a.id == "ssh" {
-				context = binding("enter", strings.ToLower(a.label))
-			}
-		}
-	}
-	var dismiss, diagnostics, newAll, refresh, filter key.Binding
-	if len(m.errors) > 0 {
-		diagnostics = binding("e", "diagnostics")
-	}
-	if len(m.errors) > 0 && (m.focus == "errors" || m.focus == "diagnostics") {
-		newAll = binding("n", "new/all")
-	}
-	if m.focus == "errors" {
-		entries := m.visibleErrors()
-		if m.errorIndex >= 0 && m.errorIndex < len(entries) && !entries[m.errorIndex].dismissed && !entries[m.errorIndex].firstSeen.IsZero() {
-			dismiss = binding("d", "dismiss")
-		}
-	}
-	if m.canRefresh() {
-		refresh = binding("c", "refresh")
-	}
-	if m.page == "Sandboxes" || m.page == "Plugins" {
-		filter = binding("/", "fuzzy filter")
-	}
+	localKeys := m.localHelpBindings(back)
+	context, toggle, rename, inherit, arrows, back := localKeys.context, localKeys.toggle, localKeys.rename, localKeys.inherit, localKeys.arrows, localKeys.back
+	dismiss, diagnostics, newAll, refresh, filter := m.globalHelpBindings()
 	navigation := []key.Binding{binding("↑/↓", "move"), binding("home/end", "first/last"), binding("pgup/pgdown", "page"), arrows, back, binding("tab/shift+tab", "next/previous tab")}
 	if m.focus == "diagnostics" {
 		navigation[1] = key.Binding{}
@@ -195,25 +78,7 @@ func (m *model) helpKeys() panelKeys {
 	}
 	local := []key.Binding{context, toggle, rename, inherit, filter}
 	global := []key.Binding{binding("s", "status"), binding("p", "herdr plugin defaults"), binding("b", "status / Management"), diagnostics, dismiss, newAll, refresh, helpKey, closeKey, binding("ctrl+c", "cancel/close")}
-	short := []key.Binding{helpKey, context, toggle, closeKey}
-	if m.width < 60 {
-		short = []key.Binding{helpKey, toggle, context, closeKey}
-	}
-	if m.focus == "actions" || m.focus == "plugins" {
-		short = append(short, back)
-	}
-	if m.focus == "errors" {
-		short = []key.Binding{helpKey, context, dismiss, newAll, closeKey}
-	}
-	if m.focus == "diagnostics" {
-		short = []key.Binding{helpKey, arrows, context, closeKey}
-	}
-	if m.width >= 100 {
-		short = append(short, binding("tab/shift+tab", "tabs"))
-	}
-	if m.helpOpen {
-		short = []key.Binding{helpKey, back, binding("↑/↓", "scroll help")}
-	}
+	short := m.shortHelpBindings(helpKey, closeKey, localKeys, dismiss, newAll)
 	return panelKeys{short, [][]key.Binding{navigation, local, global}}
 }
 func (m *model) renderHelp(width int, full bool) string {
@@ -318,4 +183,217 @@ func (m *model) helpView() tea.View {
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeCellMotion
 	return view
+}
+
+type localHelpBindings struct{ context, toggle, rename, inherit, arrows, back key.Binding }
+
+func (m *model) localHelpBindings(back key.Binding) localHelpBindings {
+	keys := localHelpBindings{back: back}
+	m.sandboxHelpBindings(&keys)
+	m.pluginDefaultHelpBindings(&keys)
+	m.pluginOverrideHelpBindings(&keys)
+	m.diagnosticHelpBindings(&keys)
+	m.managementHelpBindings(&keys)
+	return keys
+}
+func (m *model) sandboxHelpBindings(keys *localHelpBindings) {
+	if m.page != "Sandboxes" {
+		return
+	}
+	row, ok := m.row()
+	if !ok {
+		return
+	}
+	toggleAvailable := row.AssociationIssue == "" && !m.pending[row.Sandbox.ID] && (row.EntryPresent || !strings.EqualFold(row.Sandbox.Status, "stopped"))
+	primary := "enable"
+	if row.EntryPresent && row.Enabled == store.Enabled {
+		primary = "disable"
+	}
+	if (m.focus == "table" || m.focus == "actions") && toggleAvailable {
+		keys.toggle = binding("space", primary)
+	}
+	switch m.focus {
+	case "table":
+		m.sandboxTableHelp(keys, row)
+	case "actions":
+		m.sandboxActionHelp(keys, row, toggleAvailable)
+	}
+}
+func (m *model) sandboxTableHelp(keys *localHelpBindings, row registration.SandboxRow) {
+	if len(m.sandboxActions(row)) > 0 || len(m.plugins) > 0 {
+		keys.context = binding("enter/→", "details")
+	}
+	if row.EntryPresent && row.AssociationIssue == "" && !m.pending[row.Sandbox.ID] {
+		keys.rename = binding("r", "rename herdr label")
+	}
+}
+
+func (m *model) pluginDefaultHelpBindings(keys *localHelpBindings) {
+	if m.page != "Plugins" || m.focus != "table" {
+		return
+	}
+	items := m.visiblePlugins()
+	if m.pluginIndex < 0 || m.pluginIndex >= len(items) {
+		return
+	}
+	p := items[m.pluginIndex]
+	if m.pending["plugin:"+p.ID] || (!p.Enabled && p.UnsupportedReason != "") {
+		return
+	}
+	description := "enable herdr plugin sync"
+	if p.Enabled {
+		description = "disable herdr plugin sync"
+	}
+	keys.context = binding("enter/space", description)
+}
+
+func (m *model) pluginOverrideHelpBindings(keys *localHelpBindings) {
+	if m.page != "Sandboxes" || m.focus != "plugins" {
+		return
+	}
+	if !m.helpOpen {
+		keys.back = binding("esc/←", "list")
+	}
+	r, ok := findRow(m.rows, m.expanded)
+	if !ok || m.pending[r.Sandbox.ID] || m.detailIndex < 0 || m.detailIndex >= len(m.plugins) {
+		return
+	}
+	m.overrideChoiceHelp(keys, r, m.plugins[m.detailIndex])
+}
+func (m *model) overrideChoiceHelp(keys *localHelpBindings, r registration.SandboxRow, p guestplugins.Choice) {
+	value, overridden := m.settings.Overrides[store.StatusKey(r.Scope, r.Sandbox.ID)][p.ID]
+	nextEnabled := !overridden || !value && m.settings.Plugins[p.ID].Enabled
+	if p.UnsupportedReason == "" || !nextEnabled {
+		keys.context = binding("enter/space", "cycle choice")
+	}
+	if overridden && (p.UnsupportedReason == "" || !m.settings.Plugins[p.ID].Enabled) {
+		keys.inherit = binding("i", "inherit default")
+	}
+}
+
+func (m *model) diagnosticHelpBindings(keys *localHelpBindings) {
+	if m.focus == "events" && len(m.events) > 0 {
+		keys.context = binding("enter/space", "expand/collapse")
+	}
+	if m.focus == "diagnostics" && len(m.errors) > 0 {
+		keys.context = binding("enter/space", "new/all")
+		keys.arrows = binding("←/→", "new/all")
+	}
+	if m.focus == "errors" && len(m.visibleErrors()) > 0 {
+		keys.context = binding("enter", "recovery")
+	}
+
+}
+
+func (m *model) managementHelpBindings(keys *localHelpBindings) {
+	if m.page != "Status" || m.focus != "table" {
+		return
+	}
+	actions := m.statusActions()
+	if m.button < 0 || m.button >= len(actions) {
+		return
+	}
+	a := actions[m.button]
+	if a.id == "toggle" {
+		keys.context = binding("enter/space", m.managementChoiceHelp())
+		return
+	}
+	if a.id == "refresh" && m.canRefresh() || a.id == "ssh" {
+		keys.context = binding("enter", strings.ToLower(a.label))
+	}
+}
+func (m *model) managementChoiceHelp() string {
+	description := "enable Management"
+	if m.workerEnabled {
+		description = "disable Management"
+	}
+	if m.workerControlError {
+		description = "retry disable Management"
+		if m.workerEnabled {
+			description = "retry enable Management"
+		}
+	}
+	return description
+}
+
+func (m *model) shortHelpBindings(helpKey, closeKey key.Binding, keys localHelpBindings, dismiss, newAll key.Binding) []key.Binding {
+	context, toggle, back, arrows := keys.context, keys.toggle, keys.back, keys.arrows
+	short := []key.Binding{helpKey, context, toggle, closeKey}
+	if m.width < 60 {
+		short = []key.Binding{helpKey, toggle, context, closeKey}
+	}
+	if m.focus == "actions" || m.focus == "plugins" {
+		short = append(short, back)
+	}
+	if m.focus == "errors" {
+		short = []key.Binding{helpKey, context, dismiss, newAll, closeKey}
+	}
+	if m.focus == "diagnostics" {
+		short = []key.Binding{helpKey, arrows, context, closeKey}
+	}
+	if m.width >= 100 {
+		short = append(short, binding("tab/shift+tab", "tabs"))
+	}
+	if m.helpOpen {
+		short = []key.Binding{helpKey, back, binding("↑/↓", "scroll help")}
+	}
+	return short
+}
+
+func (m *model) globalHelpBindings() (dismiss, diagnostics, newAll, refresh, filter key.Binding) {
+	if len(m.errors) > 0 {
+		diagnostics = binding("e", "diagnostics")
+	}
+	if len(m.errors) > 0 && (m.focus == "errors" || m.focus == "diagnostics") {
+		newAll = binding("n", "new/all")
+	}
+	if m.canDismissSelectedError() {
+		dismiss = binding("d", "dismiss")
+	}
+	if m.canRefresh() {
+		refresh = binding("c", "refresh")
+	}
+	if m.page == "Sandboxes" || m.page == "Plugins" {
+		filter = binding("/", "fuzzy filter")
+	}
+
+	return
+}
+
+func (m *model) sandboxActionHelp(keys *localHelpBindings, row registration.SandboxRow, toggleAvailable bool) {
+	actions := m.sandboxActions(row)
+	if m.button >= 0 && m.button < len(actions) && !m.pending[row.Sandbox.ID] {
+		a := actions[m.button]
+		if a.id != "enable" && a.id != "disable" || toggleAvailable {
+			keys.context = binding("enter", strings.ToLower(a.label))
+		}
+	}
+	m.actionNavigationHelp(keys, len(actions))
+}
+
+func (m *model) canDismissSelectedError() bool {
+	if m.focus != "errors" {
+		return false
+	}
+	entries := m.visibleErrors()
+	return m.errorIndex >= 0 && m.errorIndex < len(entries) && !entries[m.errorIndex].dismissed && !entries[m.errorIndex].firstSeen.IsZero()
+}
+
+func (m *model) actionNavigationHelp(keys *localHelpBindings, count int) {
+	if m.button == 0 {
+		if count > 1 {
+			keys.arrows = binding("→", "next action")
+		}
+		if !m.helpOpen {
+			keys.back = binding("esc/←", "list")
+		}
+	} else {
+		keys.arrows = binding("←/→", "actions")
+		if m.button == count-1 {
+			keys.arrows = binding("←", "previous action")
+		}
+		if !m.helpOpen {
+			keys.back = binding("esc", "list")
+		}
+	}
 }

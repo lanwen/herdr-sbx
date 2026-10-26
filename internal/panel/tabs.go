@@ -28,14 +28,17 @@ func (m *model) tabStrip() line {
 		}
 		text := padding + page + padding
 		x := ansi.StringWidth(l.text)
-		if m.page == page {
-			text = ink(colorAccent, text)
-		} else {
-			text = ink(colorMuted, text)
-		}
+		text = m.tabLabel(text, page)
 		l.text += text
 		l.hits = append(l.hits, hit{x: x, w: ansi.StringWidth(text), action: "page", id: page})
 	}
 	l.text += ink(colorSeparator, strings.Repeat("─", max(0, m.width-ansi.StringWidth(l.text)-1))+"╮")
 	return l
+}
+
+func (m *model) tabLabel(text, page string) string {
+	if m.page == page {
+		return ink(colorAccent, text)
+	}
+	return ink(colorMuted, text)
 }

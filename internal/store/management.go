@@ -38,16 +38,7 @@ func BeginEnabledChange(scope, id string, choice EnabledChoice) (revision uint64
 	}
 	err = UpdateStatusStore(func(s *StatusStore) {
 		key := StatusKey(scope, id)
-		previous = s.EnabledChoices[key]
-		if previous == "" {
-			previous = Disabled
-		}
-		if cached := s.Sandboxes[key]; cached.EntryPresent && cached.NativeEnabled != nil {
-			previous = Disabled
-			if *cached.NativeEnabled {
-				previous = Enabled
-			}
-		}
+		previous = s.confirmedEnabledChoice(key)
 		pending = s.EnabledObservationPending[key]
 		s.EnabledChoices[key] = choice
 		delete(s.EnabledObservationPending, key)
@@ -138,4 +129,19 @@ func SettleEnabledChoice(scope, id string, choice EnabledChoice, revision uint64
 		applied = true
 	})
 	return applied, err
+}
+
+func (s *StatusStore) confirmedEnabledChoice(key string) EnabledChoice {
+	var previous EnabledChoice
+	previous = s.EnabledChoices[key]
+	if previous == "" {
+		previous = Disabled
+	}
+	if cached := s.Sandboxes[key]; cached.EntryPresent && cached.NativeEnabled != nil {
+		previous = Disabled
+		if *cached.NativeEnabled {
+			previous = Enabled
+		}
+	}
+	return previous
 }

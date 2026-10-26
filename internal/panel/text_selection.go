@@ -39,20 +39,7 @@ func (m *model) beginTextSelection(x, y int) {
 	s := &textSelection{frame: m.renderedFrame, pressed: true, page: m.page, dialog: m.dialog, dialogTarget: m.dialogTarget, expanded: m.expanded}
 	s.anchor = s.point(x, y)
 	s.end = s.anchor
-	for _, h := range m.hits {
-		if y == h.y && x >= h.x && x < h.x+h.w {
-			s.target = &h
-			index, _ := strconv.Atoi(h.id)
-			if h.action == "status-action" && index >= 0 && index < len(m.statusActions()) {
-				s.statusAction = m.statusActions()[index].id
-			}
-			if entries := m.visibleErrors(); h.action == "error" && index >= 0 && index < len(entries) {
-				error := entries[index].uiError
-				s.errorTarget = &error
-			}
-			break
-		}
-	}
+	m.bindSelectionTarget(s, x, y)
 	m.textSelection = s
 }
 
@@ -85,26 +72,7 @@ func (m *model) releaseTextSelection(x, y int) tea.Cmd {
 	m.textSelection = nil
 	// A poll during the press must not turn a click into a different action.
 	if s.target != nil && m.page == s.page && m.dialog == s.dialog && m.dialogTarget == s.dialogTarget && m.expanded == s.expanded {
-		target := *s.target
-		switch target.action {
-		case "status-action":
-			for index, action := range m.statusActions() {
-				if action.id == s.statusAction {
-					target.id = strconv.Itoa(index)
-					return m.hitAction(target)
-				}
-			}
-			return nil
-		case "error":
-			for index, current := range m.visibleErrors() {
-				if s.errorTarget != nil && current.code == s.errorTarget.code && current.scope == s.errorTarget.scope {
-					target.id = strconv.Itoa(index)
-					return m.hitAction(target)
-				}
-			}
-			return nil
-		}
-		return m.hitAction(target)
+		return m.releaseSelectionTarget(s)
 	}
 	return nil
 }
@@ -173,4 +141,51 @@ func (s *textSelection) view() string {
 		lines[y] = ansi.Cut(line, 0, left) + "\x1b[7m" + ansi.Strip(ansi.Cut(line, left, right)) + "\x1b[27m" + ansi.Cut(line, right, ansi.StringWidth(line))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (m *model) bindSelectionTarget(s *textSelection, x, y int) {
+	for _, h := range m.hits {
+		if y != h.y || x < h.x || x >= h.x+h.w {
+			continue
+		}
+		{
+			s.target = &h
+			index, _ := strconv.Atoi(h.id)
+			if h.action == "status-action" && index >= 0 && index < len(m.statusActions()) {
+				s.statusAction = m.statusActions()[index].id
+			}
+			if entries := m.visibleErrors(); h.action == "error" && index >= 0 && index < len(entries) {
+				error := entries[index].uiError
+				s.errorTarget = &error
+			}
+			break
+		}
+	}
+}
+
+func (m *model) releaseSelectionTarget(s *textSelection) tea.Cmd {
+	target := *s.target
+	switch target.action {
+	case "status-action":
+		for index, action := range m.statusActions() {
+			if action.id == s.statusAction {
+				target.id = strconv.Itoa(index)
+				return m.hitAction(target)
+			}
+		}
+		return nil
+	case "error":
+		return m.releaseDiagnosticTarget(s, target)
+	}
+	return m.hitAction(target)
+}
+
+func (m *model) releaseDiagnosticTarget(s *textSelection, target hit) tea.Cmd {
+	for index, current := range m.visibleErrors() {
+		if s.errorTarget != nil && current.code == s.errorTarget.code && current.scope == s.errorTarget.scope {
+			target.id = strconv.Itoa(index)
+			return m.hitAction(target)
+		}
+	}
+	return nil
 }

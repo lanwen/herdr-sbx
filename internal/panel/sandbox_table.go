@@ -20,18 +20,7 @@ func (m *model) sandboxColumns(rows []registration.SandboxRow) sandboxColumns {
 		c.enabled, c.label = 1, 5
 	}
 	for _, r := range rows {
-		if c.status > 0 {
-			c.status = max(c.status, min(24, ansi.StringWidth(statusDescription(r))))
-			if m.pending[r.Sandbox.ID] {
-				c.status = max(c.status, ansi.StringWidth(m.sandboxProgress(r.Sandbox.ID)))
-			}
-		}
-		c.name = max(c.name, ansi.StringWidth(safeText(r.Sandbox.Name)))
-		label := r.Label
-		if m.input != nil && m.input.kind == "rename" && m.input.target == r.Sandbox.ID {
-			label = m.input.text
-		}
-		c.label = max(c.label, ansi.StringWidth(safeText(label)))
+		m.growSandboxColumns(&c, r)
 	}
 	gaps := 2
 	if c.status > 0 {
@@ -101,4 +90,19 @@ func runtimeDot(state string) string {
 	default:
 		return "?"
 	}
+}
+
+func (m *model) growSandboxColumns(c *sandboxColumns, r registration.SandboxRow) {
+	if c.status > 0 {
+		c.status = max(c.status, min(24, ansi.StringWidth(statusDescription(r))))
+		if m.pending[r.Sandbox.ID] {
+			c.status = max(c.status, ansi.StringWidth(m.sandboxProgress(r.Sandbox.ID)))
+		}
+	}
+	c.name = max(c.name, ansi.StringWidth(safeText(r.Sandbox.Name)))
+	label := r.Label
+	if m.input != nil && m.input.kind == "rename" && m.input.target == r.Sandbox.ID {
+		label = m.input.text
+	}
+	c.label = max(c.label, ansi.StringWidth(safeText(label)))
 }

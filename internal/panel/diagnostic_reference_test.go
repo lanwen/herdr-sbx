@@ -67,10 +67,10 @@ func TestDiagnosticReferencesAreMutedAndKeepMouseTargets(t *testing.T) {
 	}
 	{
 		got := ansi.Strip(m.errorLines()[2].text)
-		require.Equal(t, "  build failed", got, "legacy diagnostic gained an empty reference spacer: %q", got)
+		require.Equal(t, "  build failed", got, "older diagnostic gained an empty reference spacer: %q", got)
 	}
 	for _, l := range m.errorLines() {
-		require.False(t, strings.Contains(ansi.Strip(l.text), "R0005") && !strings.HasPrefix(ansi.Strip(l.text), "  R0005 · beta"), "legacy diagnostic has an empty reference prefix: %q", l.text)
+		require.False(t, strings.Contains(ansi.Strip(l.text), "R0005") && !strings.HasPrefix(ansi.Strip(l.text), "  R0005 · beta"), "older diagnostic has an empty reference prefix: %q", l.text)
 	}
 }
 
@@ -95,7 +95,7 @@ func TestDiagnosticReferenceSurvivesDismissalPollAndReopen(t *testing.T) {
 	require.True(t, reopened.errors[0].dismissed)
 }
 
-func TestAssigningLegacyReferenceKeepsDiagnosticSelection(t *testing.T) {
+func TestAssigningOlderReferenceKeepsDiagnosticSelection(t *testing.T) {
 	m := modelFixture(t)
 	now := time.Now()
 	m.errors = []uiError{{code: store.CodeRename, scope: "a", detail: "label taken", firstSeen: now, seen: now}}

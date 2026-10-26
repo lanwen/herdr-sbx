@@ -344,18 +344,19 @@ func TestDisableDuringFixDownloadPreventsTransferAndHandoff(t *testing.T) {
 	execute := f.runner.Execute
 	transfers := 0
 	f.runner.Execute = func(ctx context.Context, c process.Command) (string, error) {
-		if c.Name == "ssh" {
-			if c.Stdin != nil {
-				transfers++
-				return "", errors.New("unexpected transfer")
-			}
-			args := strings.Join(c.Args, " ")
-			if strings.HasSuffix(args, remoteHerdrStatusShell()) {
-				return remoteHerdrOnPath + "\nherdr 0.9.2", nil
-			}
-			if strings.HasSuffix(args, "uname -sm") {
-				return "Linux x86_64", nil
-			}
+		if c.Name != "ssh" {
+			return execute(ctx, c)
+		}
+		if c.Stdin != nil {
+			transfers++
+			return "", errors.New("unexpected transfer")
+		}
+		args := strings.Join(c.Args, " ")
+		if strings.HasSuffix(args, remoteHerdrStatusShell()) {
+			return remoteHerdrOnPath + "\nherdr 0.9.2", nil
+		}
+		if strings.HasSuffix(args, "uname -sm") {
+			return "Linux x86_64", nil
 		}
 		return execute(ctx, c)
 	}
@@ -363,14 +364,7 @@ func TestDisableDuringFixDownloadPreventsTransferAndHandoff(t *testing.T) {
 	payload := "isolated executable"
 	digest := sha256.Sum256([]byte(payload))
 	f.service.releaseTransport = releaseTestTransport(func(r *http.Request) (*http.Response, error) {
-		body := payload
-		if r.URL.String() == releaseManifestURL {
-			raw, _ := json.Marshal(herdrRelease{Version: "0.9.3", Assets: map[string]string{"linux-x86_64": "https://github.com/herdrdev/herdr/releases/download/v0.9.3/herdr-linux-x86_64"}, SHA256: map[string]string{"linux-x86_64": hex.EncodeToString(digest[:])}})
-			body = string(raw)
-		} else {
-			require.NoError(t, store.SetEnabled(scope, "sandbox-1", store.Disabled))
-		}
-		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+		return interruptedFixDownload(t, scope, payload, digest, r)
 	})
 	err := f.service.FixGuestHerdr(context.Background(), io.Discard, scope, "/tmp/fix-herdr.sock", "sandbox-1", "demo", "herdr 0.9.3")
 	require.ErrorIs(t, err, context.Canceled)
@@ -667,96 +661,27 @@ func TestStoppedReconciliationPreservesEnabledAndRetriesDisabled(t *testing.T) {
 }
 
 func TestStoppedExplicitEnableVerifiesNativeOutcome(t *testing.T) {
-	for _, test := range []struct {
-		name                     string
-		applied, failed, unknown bool
-	}{
+	for _, test := range []stoppedEnableCase{
 		{"rejected", false, true, false},
 		{"unconfirmed success", false, false, false},
 		{"unknown native state", false, false, true},
 		{"lost acknowledgement", true, true, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f, scope, machines, _ := newManagementFixture(t, "stopped")
-			*machines = []herdr.Machine{{ID: "machine", Label: "External", Target: "demo.sbx", Session: "default", Enabled: boolPointer(false)}}
-			execute := f.runner.Execute
-			f.runner.Execute = func(ctx context.Context, c process.Command) (string, error) {
-				if c.Name == "herdr" && strings.Join(c.Args, " ") == "machine enable machine" {
-					if test.applied {
-						(*machines)[0].Enabled = boolPointer(true)
-					}
-					if test.unknown {
-						(*machines)[0].Enabled = nil
-					}
-					if test.failed {
-						return "response lost", errors.New("response lost")
-					}
-					return "", nil
-				}
-				return execute(ctx, c)
-			}
-			f.rebuildClients()
-			err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled)
-			require.Equal(t, test.applied, (err == nil), "applied=%t error=%v", test.applied, err)
-			rows, err := f.service.SandboxRows(context.Background(), "/tmp/test-sandboxd.sock")
-			require.NoError(t, err)
-			require.False(t, (rows[0].NativeEnabled == nil) != test.unknown)
-			require.False(t, rows[0].NativeEnabled != nil && *rows[0].NativeEnabled != test.applied)
-			require.NoError(t, f.service.ReconcileContext(context.Background(), io.Discard))
-			status, err := store.ReadStatusStore()
-			require.NoError(t, err)
-			want := "disabled"
-			if test.applied {
-				want = "waiting for start"
-			} else if test.unknown {
-				want = "observation unavailable"
-			}
-			require.False(t, rows[0].Status.Connection != want)
-			require.False(t, status.Sandboxes[store.StatusKey(scope, "one")].Connection != want)
+			testStoppedExplicitEnableOutcome(t, test)
 		})
 	}
 }
 
 func TestNativeToggleSettlesToObservedChoice(t *testing.T) {
-	for _, test := range []struct {
-		name                        string
-		initial, requested, applied bool
-	}{
+	for _, test := range []nativeToggleCase{
 		{"rejected enable", false, true, false},
 		{"rejected disable", true, false, false},
 		{"applied enable with lost acknowledgement", false, true, true},
 		{"applied disable with lost acknowledgement", true, false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f, scope, machines, _ := newManagementFixture(t, "stopped")
-			*machines = []herdr.Machine{{ID: "machine", Label: "External", Target: "demo.sbx", Session: "default", Enabled: boolPointer(test.initial)}}
-			oldChoice, requested := store.Disabled, store.Disabled
-			if test.initial {
-				oldChoice = store.Enabled
-			}
-			if test.requested {
-				requested = store.Enabled
-			}
-			_ = store.SetEnabled(scope, "one", oldChoice)
-			execute := f.runner.Execute
-			f.runner.Execute = func(ctx context.Context, c process.Command) (string, error) {
-				if c.Name == "herdr" && (strings.Join(c.Args, " ") == "machine enable machine" || strings.Join(c.Args, " ") == "machine disable machine") {
-					if test.applied {
-						(*machines)[0].Enabled = boolPointer(test.requested)
-					}
-					return "request failed", errors.New("request failed")
-				}
-				return execute(ctx, c)
-			}
-			f.rebuildClients()
-			err := f.service.SetEnabled(context.Background(), scope, "one", requested)
-			require.Equal(t, test.applied, (err == nil), "applied=%t err=%v", test.applied, err)
-			want := oldChoice
-			if test.applied {
-				want = requested
-			}
-			choices, _ := store.ReadEnabled()
-			require.Equal(t, want, choices[store.StatusKey(scope, "one")], "requested choice retained: choices=%v want=%s", choices, want)
+			testNativeToggleOutcome(t, test)
 		})
 	}
 }
@@ -764,55 +689,7 @@ func TestNativeToggleSettlesToObservedChoice(t *testing.T) {
 func TestUnverifiedNativeToggleWaitsForObservationWithoutReplay(t *testing.T) {
 	for _, catalogUnavailable := range []bool{false, true} {
 		t.Run(fmt.Sprintf("catalog_unavailable_%t", catalogUnavailable), func(t *testing.T) {
-			f, scope, machines, calls := newManagementFixture(t, "stopped")
-			*machines = []herdr.Machine{{ID: "machine", Label: "External", Target: "demo.sbx", Session: "default", Enabled: boolPointer(false)}}
-			_ = store.SetEnabled(scope, "one", store.Disabled)
-			{
-				_, err := f.service.SandboxRows(context.Background(), "/tmp/test-sandboxd.sock")
-				require.NoError(t, err)
-			}
-			mutated := false
-			execute := f.runner.Execute
-			f.runner.Execute = func(ctx context.Context, c process.Command) (string, error) {
-				switch c.Name + " " + strings.Join(c.Args, " ") {
-				case "herdr machine enable machine":
-					*calls = append(*calls, "herdr machine enable machine")
-					mutated = true
-					(*machines)[0].Enabled = nil
-					return "lost response", errors.New("lost response")
-				case "herdr machine list --json":
-					if mutated && catalogUnavailable {
-						return "catalog unavailable", errors.New("catalog unavailable")
-					}
-				}
-				return execute(ctx, c)
-			}
-			f.rebuildClients()
-			{
-				err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled)
-				require.Error(t, err, "unverified change reported success")
-			}
-			status, _ := store.ReadStatusStore()
-			key := store.StatusKey(scope, "one")
-			require.False(t, status.EnabledChoices[key] != store.Disabled)
-			require.True(t, status.Sandboxes[key].Stale)
-			_ = f.service.ReconcileContext(context.Background(), io.Discard)
-			enables := 0
-			for _, call := range *calls {
-				if call == "herdr machine enable machine" {
-					enables++
-				}
-			}
-			require.Equal(t, 1, enables, "unverified action replayed: %d", enables)
-			catalogUnavailable = false
-			(*machines)[0].Enabled = boolPointer(true)
-			{
-				_, err := f.service.SandboxRows(context.Background(), "/tmp/test-sandboxd.sock")
-				require.NoError(t, err)
-			}
-			status, _ = store.ReadStatusStore()
-			require.False(t, status.EnabledChoices[key] != store.Enabled)
-			require.False(t, status.Sandboxes[key].Stale)
+			testUnverifiedNativeToggle(t, catalogUnavailable)
 		})
 	}
 }
@@ -874,45 +751,7 @@ func TestOldCatalogReadCannotResolveNewUnverifiedToggle(t *testing.T) {
 func TestExplicitAddRequiresVerifiedEnabledEntry(t *testing.T) {
 	for _, outcome := range []string{"absent", "disabled", "unknown"} {
 		t.Run(outcome, func(t *testing.T) {
-			f, scope, machines, _ := newManagementFixture(t, "running")
-			added, postAddReads := false, 0
-			execute := f.runner.Execute
-			f.runner.Execute = func(ctx context.Context, c process.Command) (string, error) {
-				call := c.Name + " " + strings.Join(c.Args, " ")
-				switch call {
-				case "ssh -o BatchMode=yes -o ConnectTimeout=8 demo.sbx " + remoteHerdrStatusShell():
-					return remoteHerdrOnPath + "\nherdr 0.9.3", nil
-				case "herdr machine add --label sbx · demo demo.sbx":
-					added = true
-					*machines = []herdr.Machine{{ID: "machine", Label: "sbx · demo", Target: "demo.sbx", Session: "default", Enabled: boolPointer(true)}}
-					return "Saved SSH machine machine. Remote server is ready.", nil
-				case "herdr machine list --json":
-					if added {
-						postAddReads++
-						if postAddReads > 1 {
-							switch outcome {
-							case "absent":
-								*machines = []herdr.Machine{}
-							case "disabled":
-								(*machines)[0].Enabled = boolPointer(false)
-							case "unknown":
-								(*machines)[0].Enabled = nil
-							}
-						}
-					}
-				}
-				return execute(ctx, c)
-			}
-			f.rebuildClients()
-
-			err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled)
-			require.Error(t, err, "unverified or disabled entry reported successful Enable")
-
-			status, _ := store.ReadStatusStore()
-			key := store.StatusKey(scope, "one")
-			require.Equal(t, store.EnabledChoice(store.Disabled), status.EnabledChoices[key], "requested choice retained: %+v", status.Sandboxes[key])
-			require.Equal(t, (outcome == "unknown"), status.EnabledObservationPending[key], "wrong observation wait: %+v", status.Sandboxes[key])
-			require.False(t, outcome == "unknown" && (!status.Sandboxes[key].EntryPresent || status.Sandboxes[key].Label == ""), "actual added entry lost: %+v", status.Sandboxes[key])
+			testExplicitAddOutcome(t, outcome)
 		})
 	}
 }
@@ -964,4 +803,214 @@ func TestRenameSkipsAlreadyCurrentLabel(t *testing.T) {
 	for _, call := range *calls {
 		require.False(t, strings.HasPrefix(call, "herdr machine rename "), "unchanged label caused mutation: %s", call)
 	}
+}
+
+type stoppedEnableCase struct {
+	name                     string
+	applied, failed, unknown bool
+}
+
+func testStoppedExplicitEnableOutcome(t *testing.T, test stoppedEnableCase) {
+	t.Helper()
+	f, scope, machines, _ := newManagementFixture(t, "stopped")
+	*machines = []herdr.Machine{{ID: "machine", Label: "External", Target: "demo.sbx", Session: "default", Enabled: boolPointer(false)}}
+	execute := f.runner.Execute
+	f.runner.Execute = stoppedEnableExecutor(test, machines, execute)
+	f.rebuildClients()
+	err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled)
+	require.Equal(t, test.applied, (err == nil), "applied=%t error=%v", test.applied, err)
+	rows, err := f.service.SandboxRows(context.Background(), "/tmp/test-sandboxd.sock")
+	require.NoError(t, err)
+	require.False(t, (rows[0].NativeEnabled == nil) != test.unknown)
+	require.False(t, rows[0].NativeEnabled != nil && *rows[0].NativeEnabled != test.applied)
+	require.NoError(t, f.service.ReconcileContext(context.Background(), io.Discard))
+	status, err := store.ReadStatusStore()
+	require.NoError(t, err)
+	want := "disabled"
+	if test.applied {
+		want = "waiting for start"
+	} else if test.unknown {
+		want = "observation unavailable"
+	}
+	require.False(t, rows[0].Status.Connection != want)
+	require.False(t, status.Sandboxes[store.StatusKey(scope, "one")].Connection != want)
+}
+
+type nativeToggleCase struct {
+	name                        string
+	initial, requested, applied bool
+}
+
+func testNativeToggleOutcome(t *testing.T, test nativeToggleCase) {
+	t.Helper()
+	f, scope, machines, _ := newManagementFixture(t, "stopped")
+	*machines = []herdr.Machine{{ID: "machine", Label: "External", Target: "demo.sbx", Session: "default", Enabled: boolPointer(test.initial)}}
+	oldChoice, requested := store.Disabled, store.Disabled
+	if test.initial {
+		oldChoice = store.Enabled
+	}
+	if test.requested {
+		requested = store.Enabled
+	}
+	_ = store.SetEnabled(scope, "one", oldChoice)
+	execute := f.runner.Execute
+	f.runner.Execute = nativeToggleExecutor(test, machines, execute)
+	f.rebuildClients()
+	err := f.service.SetEnabled(context.Background(), scope, "one", requested)
+	require.Equal(t, test.applied, (err == nil), "applied=%t err=%v", test.applied, err)
+	want := oldChoice
+	if test.applied {
+		want = requested
+	}
+	choices, _ := store.ReadEnabled()
+	require.Equal(t, want, choices[store.StatusKey(scope, "one")], "requested choice retained: choices=%v want=%s", choices, want)
+}
+
+func testUnverifiedNativeToggle(t *testing.T, catalogUnavailable bool) {
+	t.Helper()
+	f, scope, machines, calls := newManagementFixture(t, "stopped")
+	*machines = []herdr.Machine{{ID: "machine", Label: "External", Target: "demo.sbx", Session: "default", Enabled: boolPointer(false)}}
+	_ = store.SetEnabled(scope, "one", store.Disabled)
+	{
+		_, err := f.service.SandboxRows(context.Background(), "/tmp/test-sandboxd.sock")
+		require.NoError(t, err)
+	}
+	execute := f.runner.Execute
+	f.runner.Execute = unverifiedToggleExecutor(&catalogUnavailable, machines, calls, execute)
+	f.rebuildClients()
+	{
+		err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled)
+		require.Error(t, err, "unverified change reported success")
+	}
+	status, _ := store.ReadStatusStore()
+	key := store.StatusKey(scope, "one")
+	require.False(t, status.EnabledChoices[key] != store.Disabled)
+	require.True(t, status.Sandboxes[key].Stale)
+	_ = f.service.ReconcileContext(context.Background(), io.Discard)
+	enables := 0
+	for _, call := range *calls {
+		if call == "herdr machine enable machine" {
+			enables++
+		}
+	}
+	require.Equal(t, 1, enables, "unverified action replayed: %d", enables)
+	catalogUnavailable = false
+	(*machines)[0].Enabled = boolPointer(true)
+	{
+		_, err := f.service.SandboxRows(context.Background(), "/tmp/test-sandboxd.sock")
+		require.NoError(t, err)
+	}
+	status, _ = store.ReadStatusStore()
+	require.False(t, status.EnabledChoices[key] != store.Enabled)
+	require.False(t, status.Sandboxes[key].Stale)
+}
+
+func testExplicitAddOutcome(t *testing.T, outcome string) {
+	t.Helper()
+	f, scope, machines, _ := newManagementFixture(t, "running")
+	f.runner.Execute = explicitAddExecutor(outcome, machines, f.runner.Execute)
+	f.rebuildClients()
+
+	err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled)
+	require.Error(t, err, "unverified or disabled entry reported successful Enable")
+
+	status, _ := store.ReadStatusStore()
+	key := store.StatusKey(scope, "one")
+	require.Equal(t, store.EnabledChoice(store.Disabled), status.EnabledChoices[key], "requested choice retained: %+v", status.Sandboxes[key])
+	require.Equal(t, (outcome == "unknown"), status.EnabledObservationPending[key], "wrong observation wait: %+v", status.Sandboxes[key])
+	require.False(t, outcome == "unknown" && (!status.Sandboxes[key].EntryPresent || status.Sandboxes[key].Label == ""), "actual added entry lost: %+v", status.Sandboxes[key])
+}
+
+func stoppedEnableExecutor(test stoppedEnableCase, machines *[]herdr.Machine, execute func(context.Context, process.Command) (string, error)) func(context.Context, process.Command) (string, error) {
+	return func(ctx context.Context, c process.Command) (string, error) {
+		if c.Name != "herdr" || strings.Join(c.Args, " ") != "machine enable machine" {
+			return execute(ctx, c)
+		}
+		if test.applied {
+			(*machines)[0].Enabled = boolPointer(true)
+		}
+		if test.unknown {
+			(*machines)[0].Enabled = nil
+		}
+		if test.failed {
+			return "response lost", errors.New("response lost")
+		}
+		return "", nil
+	}
+}
+
+func nativeToggleExecutor(test nativeToggleCase, machines *[]herdr.Machine, execute func(context.Context, process.Command) (string, error)) func(context.Context, process.Command) (string, error) {
+	return func(ctx context.Context, c process.Command) (string, error) {
+		if c.Name == "herdr" && (strings.Join(c.Args, " ") == "machine enable machine" || strings.Join(c.Args, " ") == "machine disable machine") {
+			if test.applied {
+				(*machines)[0].Enabled = boolPointer(test.requested)
+			}
+			return "request failed", errors.New("request failed")
+		}
+		return execute(ctx, c)
+	}
+}
+
+func unverifiedToggleExecutor(catalogUnavailable *bool, machines *[]herdr.Machine, calls *[]string, execute func(context.Context, process.Command) (string, error)) func(context.Context, process.Command) (string, error) {
+	mutated := false
+	return func(ctx context.Context, c process.Command) (string, error) {
+		switch c.Name + " " + strings.Join(c.Args, " ") {
+		case "herdr machine enable machine":
+			*calls = append(*calls, "herdr machine enable machine")
+			mutated = true
+			(*machines)[0].Enabled = nil
+			return "lost response", errors.New("lost response")
+		case "herdr machine list --json":
+			if mutated && *catalogUnavailable {
+				return "catalog unavailable", errors.New("catalog unavailable")
+			}
+		}
+		return execute(ctx, c)
+	}
+}
+
+func explicitAddExecutor(outcome string, machines *[]herdr.Machine, execute func(context.Context, process.Command) (string, error)) func(context.Context, process.Command) (string, error) {
+	added, postAddReads := false, 0
+	return func(ctx context.Context, c process.Command) (string, error) {
+		call := c.Name + " " + strings.Join(c.Args, " ")
+		switch call {
+		case "ssh -o BatchMode=yes -o ConnectTimeout=8 demo.sbx " + remoteHerdrStatusShell():
+			return remoteHerdrOnPath + "\nherdr 0.9.3", nil
+		case "herdr machine add --label sbx · demo demo.sbx":
+			added = true
+			*machines = []herdr.Machine{{ID: "machine", Label: "sbx · demo", Target: "demo.sbx", Session: "default", Enabled: boolPointer(true)}}
+			return "Saved SSH machine machine. Remote server is ready.", nil
+		case "herdr machine list --json":
+			if added {
+				postAddReads++
+				if postAddReads > 1 {
+					applyExplicitAddOutcome(outcome, machines)
+				}
+			}
+		}
+		return execute(ctx, c)
+	}
+}
+
+func applyExplicitAddOutcome(outcome string, machines *[]herdr.Machine) {
+	switch outcome {
+	case "absent":
+		*machines = []herdr.Machine{}
+	case "disabled":
+		(*machines)[0].Enabled = boolPointer(false)
+	case "unknown":
+		(*machines)[0].Enabled = nil
+	}
+}
+
+func interruptedFixDownload(t *testing.T, scope, payload string, digest [32]byte, r *http.Request) (*http.Response, error) {
+	t.Helper()
+	body := payload
+	if r.URL.String() == releaseManifestURL {
+		raw, _ := json.Marshal(herdrRelease{Version: "0.9.3", Assets: map[string]string{"linux-x86_64": "https://github.com/herdrdev/herdr/releases/download/v0.9.3/herdr-linux-x86_64"}, SHA256: map[string]string{"linux-x86_64": hex.EncodeToString(digest[:])}})
+		body = string(raw)
+	} else {
+		require.NoError(t, store.SetEnabled(scope, "sandbox-1", store.Disabled))
+	}
+	return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
 }

@@ -301,46 +301,52 @@ func TestCooldownRetainsInstallationFailure(t *testing.T) {
 func TestFailedRecreationRetainsCompletedGuestState(t *testing.T) {
 	for _, scenario := range []string{"cancel before add", "deterministic add failure"} {
 		t.Run(scenario, func(t *testing.T) {
-			f := newRegistrationFixture(t, "[]")
-			checked := time.Now()
-			previous := store.Tracked{SandboxID: "one", Target: "demo.sbx", Label: "Previous", ProjectWorkspaceDone: true, GuestSync: &store.GuestSyncObservation{Fingerprint: "completed", CheckedAt: checked, Status: "ready"}}
-			state := store.State{Version: 1, Scopes: map[string][]store.Tracked{"scope": {previous}}}
-			require.NoError(t, store.SaveState(state))
-			adds := 0
-			f.runner.Execute = func(_ context.Context, c process.Command) (string, error) {
-				call := c.Name + " " + strings.Join(c.Args, " ")
-				switch call {
-				case "ssh -o BatchMode=yes -o ConnectTimeout=8 demo.sbx " + remoteHerdrStatusShell():
-					return remoteHerdrOnPath + "\nherdr 0.9.3", nil
-				case "herdr machine add --label sbx · demo demo.sbx":
-					adds++
-					return "machine catalog capacity reached", errors.New("catalog full")
-				default:
-					return "", fmt.Errorf("unexpected repeated guest work: %s", call)
-				}
-			}
-			f.rebuildClients()
-			current := func() bool {
-				if scenario != "cancel before add" {
-					return true
-				}
-				saved, err := store.LoadState()
-				require.NoError(t, err)
-				return !saved.Scopes["scope"][0].Pending
-			}
-			outcome, _ := f.service.registerPreparedContext(context.Background(), "scope", &state, nil, sbx.Sandbox{ID: "one", Name: "demo", Status: "running", Workspace: "/workspace/demo"}, current)
-			require.False(t, scenario == "cancel before add" && (outcome.Status != "stale" || adds != 0), "cancel=%+v adds=%d", outcome, adds)
-			require.False(t, scenario == "deterministic add failure" && (outcome.Status != "catalog full" || adds != 1), "failure=%+v adds=%d", outcome, adds)
-			saved, err := store.LoadState()
-			require.NoError(t, err)
-			require.Len(t, saved.Scopes["scope"], 1, "guest history removed: %+v", saved)
-			item := saved.Scopes["scope"][0]
-			require.False(t, item.Pending)
-			require.EqualValues(t, "", item.ProfileID)
-			require.True(t, item.ProjectWorkspaceDone)
-			require.NotNil(t, item.GuestSync)
-			require.EqualValues(t, "completed", item.GuestSync.Fingerprint)
-			require.True(t, item.GuestSync.CheckedAt.Equal(checked))
+			testFailedRecreationRetainsCompletedGuestStateScenario(t, scenario)
 		})
 	}
+}
+
+func testFailedRecreationRetainsCompletedGuestStateScenario(t *testing.T, scenario string) {
+	t.Helper()
+
+	f := newRegistrationFixture(t, "[]")
+	checked := time.Now()
+	previous := store.Tracked{SandboxID: "one", Target: "demo.sbx", Label: "Previous", ProjectWorkspaceDone: true, GuestSync: &store.GuestSyncObservation{Fingerprint: "completed", CheckedAt: checked, Status: "ready"}}
+	state := store.State{Version: 1, Scopes: map[string][]store.Tracked{"scope": {previous}}}
+	require.NoError(t, store.SaveState(state))
+	adds := 0
+	f.runner.Execute = func(_ context.Context, c process.Command) (string, error) {
+		call := c.Name + " " + strings.Join(c.Args, " ")
+		switch call {
+		case "ssh -o BatchMode=yes -o ConnectTimeout=8 demo.sbx " + remoteHerdrStatusShell():
+			return remoteHerdrOnPath + "\nherdr 0.9.3", nil
+		case "herdr machine add --label sbx · demo demo.sbx":
+			adds++
+			return "machine catalog capacity reached", errors.New("catalog full")
+		default:
+			return "", fmt.Errorf("unexpected repeated guest work: %s", call)
+		}
+	}
+	f.rebuildClients()
+	current := func() bool {
+		if scenario != "cancel before add" {
+			return true
+		}
+		saved, err := store.LoadState()
+		require.NoError(t, err)
+		return !saved.Scopes["scope"][0].Pending
+	}
+	outcome, _ := f.service.registerPreparedContext(context.Background(), "scope", &state, nil, sbx.Sandbox{ID: "one", Name: "demo", Status: "running", Workspace: "/workspace/demo"}, current)
+	require.False(t, scenario == "cancel before add" && (outcome.Status != "stale" || adds != 0), "cancel=%+v adds=%d", outcome, adds)
+	require.False(t, scenario == "deterministic add failure" && (outcome.Status != "catalog full" || adds != 1), "failure=%+v adds=%d", outcome, adds)
+	saved, err := store.LoadState()
+	require.NoError(t, err)
+	require.Len(t, saved.Scopes["scope"], 1, "guest history removed: %+v", saved)
+	item := saved.Scopes["scope"][0]
+	require.False(t, item.Pending)
+	require.EqualValues(t, "", item.ProfileID)
+	require.True(t, item.ProjectWorkspaceDone)
+	require.NotNil(t, item.GuestSync)
+	require.EqualValues(t, "completed", item.GuestSync.Fingerprint)
+	require.True(t, item.GuestSync.CheckedAt.Equal(checked))
 }

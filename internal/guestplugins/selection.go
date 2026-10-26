@@ -2,6 +2,7 @@ package guestplugins
 
 import (
 	"context"
+	"slices"
 	"sort"
 
 	"github.com/lanwen/herdr-sbx/internal/herdr"
@@ -35,14 +36,8 @@ func unsupportedReason(plugin herdr.PluginInstall) string {
 		return "The local plugin manifest does not match the installed plugin."
 	}
 	platforms := keyNames(doc["platforms"])
-	if len(platforms) > 0 {
-		linux := false
-		for _, platform := range platforms {
-			linux = linux || platform == "linux"
-		}
-		if !linux {
-			return "The plugin does not support Linux sandboxes."
-		}
+	if len(platforms) > 0 && !slices.Contains(platforms, "linux") {
+		return "The plugin does not support Linux sandboxes."
 	}
 	if _, err := planPayload(plugin.Root, plugin.ManifestPath, doc, ""); err != nil {
 		return "The local plugin files cannot be synchronized: " + err.Error()
