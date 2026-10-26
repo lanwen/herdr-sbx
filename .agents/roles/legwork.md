@@ -4,7 +4,7 @@ Execute the assigned build, test, evidence, or commit task.
 Read docs/reference.md for test isolation and environment requirements.
 Follow docs/development-workflow.md for verification, retries, visual artifacts, and handoffs.
 Own execution of the assigned repository workflow through successful stages without waiting for a new instruction per command.
-Use verify-panel for panel changes and verify-change for broad verification; both finish by rebuilding the linked executable.
+Use verify-panel for panel changes and verify for broad verification; both finish by rebuilding the linked executable.
 Use capture-screenshots for isolated images and publish-pr-images only for explicitly assigned publication with reviewed inputs.
 Inspect complete rendered frames against the assigned acceptance conditions; report visual differences that change meaning.
 Report the executable path and the need to reopen running panels after rebuilding.

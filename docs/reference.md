@@ -273,6 +273,31 @@ These tasks install their pinned tools on first use and need network access for 
 The vulnerability check also needs network access to read the database and fails when it finds reachable vulnerabilities.
 Development tools are scoped to these tasks, so normal plugin installation still installs only Go.
 Follow the [development workflow](development-workflow.md) for assignments, contract tables, review, and artifact acceptance.
+
+### Commit messages
+
+New commits use [Conventional Commits](https://www.conventionalcommits.org/), for example `feat: add sandbox filtering` or `fix(panel): preserve the selected row`.
+Use `!` after the type or scope for a breaking change, for example `feat!: change the status format`.
+The pinned [Go commitlint](https://github.com/conventionalcommit/commitlint) checks messages without Node.js or npm.
+Version 0.12.0 has an upstream parser bug: a body followed by a `BREAKING CHANGE:` footer can crash the check even for a valid message.
+Until that bug is fixed, mark breaking changes with `!` in the header and omit that footer.
+Its default rules allow `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, and `revert`.
+Headers must contain 10–72 characters; body and footer lines must contain at most 100 characters.
+Git-generated merge, revert, and fixup messages use the tool's default exceptions.
+
+Check a message manually or enable the local hook for this checkout:
+
+```sh
+printf '%s\n' 'feat: add sandbox filtering' | mise run commitlint
+mise run commitlint -- --message /path/to/commit-message
+git config --local core.hooksPath .githooks
+```
+
+If you already use a custom `core.hooksPath`, add the commitlint invocation to your existing `commit-msg` hook instead of replacing that path.
+The `Commit messages` GitHub workflow checks all commits introduced by a pull request, including multiline messages, and leaves earlier repository history unchanged.
+
+### Verification
+
 The test tasks use isolated home directories and Herdr state:
 
 ```sh
@@ -286,14 +311,14 @@ Repeatable verification and artifact tasks:
 
 ```sh
 mise run verify-panel  # Isolated panel tests, then build bin/herdr-sbx
-mise run verify-change # Action pins, formatting, lint, vulnerabilities, isolated race tests, vet, then build
+mise run verify # Action pins, formatting, lint, vulnerabilities, isolated race tests, vet, then build
 mise run action-pins-check # Read-only GitHub Action SHA validation
 mise run capture-screenshots # macOS: simulated frames into docs/screenshots
 mise run capture-screenshots -- /tmp/herdr-sbx-contrast --terminal-background '#E8D8C8'
 python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
 
-GitHub CI runs `verify-change` and the workflow helpers' network-free tests.
+GitHub CI runs `verify` and the workflow helpers' network-free tests.
 The action-pin check uses Ruby's standard YAML parser (Psych); Ruby must be available locally and on CI.
 It checks workflow and tracked action metadata, rejects mutable remote references, and permits local `./` actions.
 Use literal YAML mappings and sequences for this check; aliases, anchors, explicit tags, and duplicate keys are rejected.

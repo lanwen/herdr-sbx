@@ -1,0 +1,2 @@
+#!/bin/sh
+exec mise run commitlint -- --message "$1" </dev/null

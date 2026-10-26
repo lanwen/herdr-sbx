@@ -1,0 +1,28 @@
+name: Commit messages
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  commitlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5
+        with:
+          cache_save_post: true
+      - name: Check pull request commits
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          commits=$(git rev-list --reverse "$BASE_SHA..$HEAD_SHA")
+          for commit in $commits; do
+            git show -s --format=%B "$commit" | mise run commitlint
+          done
