@@ -25,7 +25,7 @@ func (s *Service) projectReadiness(ctx context.Context, work registrationWork, i
 	if !known {
 		p.outcome.Detail = "registered"
 	}
-	if outcome := p.prepareWorkspace(); outcome != nil {
+	if outcome := p.prepareShellWorkspace(); outcome != nil {
 		return *outcome
 	}
 	p.explicit, _ = ctx.Value(guestPluginRetryKey{}).(bool)
@@ -34,9 +34,12 @@ func (s *Service) projectReadiness(ctx context.Context, work registrationWork, i
 	if err != nil {
 		return result{Name: sb.Name, Status: "plugin setup required", Detail: "herdr plugin sync could not read the local source: " + err.Error()}
 	}
-	p.fingerprint = item.Target + "\x00" + sb.ID + "\x00" + fingerprint
+	p.fingerprint = guestSetupFingerprint(item.Target, sb.ID, fingerprint)
 	if cached := p.cached(); cached != nil {
 		return *cached
+	}
+	if outcome := p.prepareShell(); outcome != nil {
+		return p.save(*outcome)
 	}
 	if err := guestplugins.ApplySandbox(ctx, s.herdr, guestplugins.SandboxTarget{Address: item.Target, Scope: scope, SandboxID: sb.ID}, guestplugins.ApplyOptions{Current: current, Attempts: []guestplugins.BeginAttempt{p.beginAttempt}}); err != nil {
 		return p.save(p.failed(err))
@@ -57,6 +60,41 @@ type projectPreparation struct {
 	explicit, fresh                bool
 	fingerprint                    string
 	attemptStarted, attemptBlocked bool
+	shellPrepared                  bool
+}
+
+func guestSetupFingerprint(target, sandboxID, plugins string) string {
+	return "shell-agent-v1\x00" + target + "\x00" + sandboxID + "\x00" + plugins
+}
+
+func (p *projectPreparation) prepareShellWorkspace() *result {
+	if !p.item.ProjectWorkspaceDone && (p.sandbox.Workspace != "" || p.item.ProjectWorkspacePending != "") {
+		if outcome := p.prepareShell(); outcome != nil {
+			return outcome
+		}
+	}
+	return p.prepareWorkspace()
+}
+
+func (p *projectPreparation) prepareShell() *result {
+	if p.shellPrepared {
+		return nil
+	}
+	if err := p.service.prepareGuestShell(p.ctx, p.sandbox, p.current); err != nil {
+		return &result{Name: p.sandbox.Name, Status: "setup required", Detail: err.Error()}
+	}
+	p.shellPrepared = true
+	return nil
+}
+
+func (s *Service) prepareGuestShell(ctx context.Context, sandbox sbx.Sandbox, current func() bool) error {
+	if err := CheckAutomaticWork(ctx); err != nil {
+		return err
+	}
+	if !strings.EqualFold(sandbox.Status, "running") || (current != nil && !current()) {
+		return errors.New("sandbox changed before shell setup")
+	}
+	return s.herdr.PrepareGuestShell(ctx, sandbox.Name+".sbx")
 }
 
 func (p *projectPreparation) prepareWorkspace() *result {
@@ -93,7 +131,7 @@ func (p *projectPreparation) save(observed result) result {
 		}
 	}
 	latest, fingerprintErr := guestplugins.DesiredFingerprint(p.ctx, p.service.herdr, p.scope, p.sandbox.ID)
-	latest = p.item.Target + "\x00" + p.sandbox.ID + "\x00" + latest
+	latest = guestSetupFingerprint(p.item.Target, p.sandbox.ID, latest)
 	if p.ctx.Err() != nil || p.current == nil || !p.current() {
 		return result{Name: p.sandbox.Name, Status: "stale", Detail: "sandbox changed during herdr plugin synchronization"}
 	}

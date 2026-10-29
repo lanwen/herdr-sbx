@@ -176,6 +176,7 @@ func (f *projectWorkspaceCommands) execute(_ context.Context, command process.Co
 		return fmt.Sprintf(`{"running":%t}`, f.scenario != "fresh server"), nil
 	}
 	if command.Name == "ssh" && strings.Contains(joined, "HERDR_STARTUP_CWD=") {
+		require.Positive(f.t, f.fixture.shellSetups, "initial pane started before sandbox shell setup")
 		f.bootstrapWorkspaces++
 		f.paneExists = true
 		return fmt.Sprintf(`{"result":{"panes":[{"workspace_id":"w1","cwd":%q}]}}`, f.cwd), nil
@@ -209,6 +210,7 @@ func (f *projectWorkspaceCommands) execute(_ context.Context, command process.Co
 		return f.panes()
 	}
 	if command.Name == "herdr" && len(command.Args) >= 7 && strings.Join(command.Args[:4], " ") == "--machine machine-1 workspace create" {
+		require.Positive(f.t, f.fixture.shellSetups, "project workspace created before sandbox shell setup")
 		return f.create(command)
 	}
 	return "", fmt.Errorf("unexpected command %q", command.Name+" "+joined)

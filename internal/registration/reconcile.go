@@ -519,6 +519,9 @@ func (a *registrationAttempt) prepareHerdr() *result {
 		return &result{Name: a.sandbox.Name, Status: "stale", Detail: "sandbox changed before registration"}
 	}
 
+	if err := a.service.prepareGuestShell(a.ctx, a.sandbox, a.current); err != nil {
+		return &result{Name: a.sandbox.Name, Status: "setup required", Detail: err.Error()}
+	}
 	return nil
 }
 
