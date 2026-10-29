@@ -48,6 +48,7 @@ func TestRegistrationIdentityChangesKeepSafeJournalState(t *testing.T) {
 
 	t.Run("changed after trusted add", func(t *testing.T) {
 		fixture := newRegistrationFixture(t, "[]")
+		current := true
 		fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
 			call := command.Name + " " + strings.Join(command.Args, " ")
 			switch call {
@@ -56,18 +57,15 @@ func TestRegistrationIdentityChangesKeepSafeJournalState(t *testing.T) {
 			case "herdr machine add --label sbx · demo demo.sbx":
 				return "Saved SSH machine machine-1. Remote server is ready.\n", nil
 			case "herdr machine list --json":
+				current = false
 				return `[{"id":"machine-1","label":"sbx · demo","target":"demo.sbx","session":"default"}]`, nil
 			default:
 				return "", fmt.Errorf("unexpected call: %s", call)
 			}
 		}
 		fixture.rebuildClients()
-		checks := 0
 		state := store.State{Version: 1, Scopes: map[string][]store.Tracked{}}
-		result, saved := fixture.service.registerPreparedContext(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sbx.Sandbox{ID: "old", Name: "demo", Status: "running"}, Current: func() bool {
-			checks++
-			return checks < 4
-		}}, nil)
+		result, saved := fixture.service.registerPreparedContext(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sbx.Sandbox{ID: "old", Name: "demo", Status: "running"}, Current: func() bool { return current }}, nil)
 		items := state.Scopes["scope"]
 		require.EqualValues(t, "stale", result.Status)
 		require.NotNil(t, saved)

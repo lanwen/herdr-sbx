@@ -182,6 +182,28 @@ An already-running daemon keeps its earlier executable and `daemon start` alone 
 A mixed-version daemon can rewrite the shared status journal without fields introduced by the new binary, including diagnostic references and dismissals.
 Run `mise run link` to build and relink the checkout after manifest changes.
 
+## Sandbox SSH agent
+
+Guest preparation installs a `herdr-sbx SSH agent` block in `~/.bashrc` and the first existing Bash login file: `~/.bash_profile`, `~/.bash_login`, or `~/.profile`.
+If none of those login files exists, it creates `~/.profile`.
+The block sets `SSH_AUTH_SOCK=/run/ssh-agent.sock` only when Docker's forwarded agent socket exists.
+This bypasses [Herdr's rejection of root-owned agent sockets](https://github.com/herdrdev/herdr/issues/5077) for interactive Bash panes and Git or agents started from those shells.
+It keeps the inherited agent address when that socket is absent.
+Direct process launches and restored agents that do not read Bash startup files are outside this workaround.
+
+| Starting state | Action | Immediate feedback | External effect | Settlement and failure |
+| --- | --- | --- | --- | --- |
+| Management ON, Enabled running sandbox, entry present or being prepared | Normal guest preparation | Existing preparation status | Install the shell block before creating the initial project pane or a missing project workspace | A new Bash shell uses Docker's socket when present; no guest server restart or agent-link changes |
+| Existing running guest server | Prepare or Re-sync | Existing preparation status | Update shell startup files without restarting the server | Existing shells keep their environment; open a new pane or source the updated startup file |
+| Prepared guest with unchanged choices | Reconcile | Retain readiness | Use the existing bounded guest audit; repeat preparation updates the same blocks | No duplicate blocks or changes to unrelated settings |
+| Native Docker agent socket absent | Start a Bash shell | Normal shell startup | Leave the inherited `SSH_AUTH_SOCK` unchanged | Other agent setups continue to work |
+| Guest startup file is a symlink, a special file, contains an incomplete owned block, or cannot be written | Prepare guest | Sandbox setup diagnostic `R0007` | Leave the failing file unchanged | Preparation does not claim readiness; resolve the file problem and choose Re-sync |
+| Management OFF, sandbox Disabled, or sandbox stopped | Automatic reconciliation | Existing inactive state | Do not install or update startup blocks | Previously installed blocks remain in place |
+
+The plugin owns only the marked blocks and preserves other startup settings and file permissions.
+It does not copy host shell configuration, change signing keys, or modify Docker's socket.
+Remove the marked blocks from the guest startup files to remove the workaround; active Management can install them again during preparation.
+
 ## Guest plugins
 
 Defaults, overrides, and visible recovery behavior are defined in [Herdr plugins](tui/plugins.md).

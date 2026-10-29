@@ -495,7 +495,7 @@ func TestRemoveEnablePreservesCompletedGuestSetup(t *testing.T) {
 	fingerprint, err := guestplugins.DesiredFingerprint(context.Background(), f.service.herdr, scope, "one")
 	require.NoError(t, err)
 	checked := time.Now()
-	sync := &store.GuestSyncObservation{Fingerprint: "demo.sbx\x00one\x00" + fingerprint, CheckedAt: checked, Status: "ready", Detail: "already registered"}
+	sync := &store.GuestSyncObservation{Fingerprint: guestSetupFingerprint("demo.sbx", "one", fingerprint), CheckedAt: checked, Status: "ready", Detail: "already registered"}
 	item := store.Tracked{SandboxID: "one", ProfileID: "machine", Target: "demo.sbx", Label: "Desk", ProjectWorkspaceDone: true, GuestSync: sync}
 	require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {item}}}))
 	_ = store.SetEnabled(scope, "one", store.Disabled)
