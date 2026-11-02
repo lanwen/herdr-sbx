@@ -53,3 +53,19 @@ func TestExpandedStatusAndInlineRename(t *testing.T) {
 	m.input.cursor = len([]rune(m.input.text))
 	require.Contains(t, ansi.Strip(m.View().Content), "label █", "rename cursor clipped")
 }
+
+func TestRunningSandboxShowsPreparationTimeout(t *testing.T) {
+	unsetNoColor(t)
+	m := modelFixture(t)
+	m.expanded = "a"
+	m.rows[0].Status.Connection = "preparation timed out"
+	m.rows[0].Status.Detail = "sandbox preparation timed out when trying to update Bash startup files for Docker's forwarded SSH agent"
+	require.Equal(t, ink(colorError, "preparation timed out"), statusStyle(m.rows[0].Status.Connection, statusDescription(m.rows[0])))
+	for _, width := range []int{110, 40} {
+		m.width, m.height = width, 32
+		frame := ansi.Strip(m.View().Content)
+		require.Contains(t, frame, "running")
+		require.Contains(t, frame, "timed out")
+		t.Logf("%dx32 preparation timeout frame:\n%s", width, frame)
+	}
+}

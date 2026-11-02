@@ -73,7 +73,7 @@ func lifecycleResponse(status int, body string) *http.Response {
 }
 
 func (f *lifecycleFixture) defaultRun(_ context.Context, cmd process.Command) (string, error) {
-	if cmd.Name == "ssh" && strings.Contains(strings.Join(cmd.Args, " "), "# herdr-sbx SSH agent begin") {
+	if cmd.Name == "sbx" && strings.Contains(strings.Join(cmd.Args, " "), "# herdr-sbx SSH agent begin") {
 		return "", nil
 	}
 	call := cmd.Name + " " + strings.Join(cmd.Args, " ")

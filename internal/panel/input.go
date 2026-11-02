@@ -15,6 +15,10 @@ import (
 func (m *model) key(key tea.KeyPressMsg) tea.Cmd {
 	m.diagnosticClickGroup = ""
 	k := key.String()
+	if m.closing && k == "ctrl+c" {
+		m.quitUntil = time.Time{}
+		return tea.Quit
+	}
 	if !m.popupQuitKey(k) {
 		m.quitUntil = time.Time{}
 	}

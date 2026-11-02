@@ -225,6 +225,10 @@ Automatic guest connections require Management ON and a running enabled sandbox.
 A fresh connection is opened only for actual pending guest work, first setup, explicit eligible Re-sync, or a bounded audit.
 Do not create entries or open automatic guest connections for stopped sandboxes; retain existing entries and wait until the sandbox runs before guest setup.
 A failed new connection reports the cause and affected action without declaring registration failed or advising duplicate registration.
+Guest inspection failures show `connection failed`; shell preparation failures show `preparation failed`.
+Show these states beside the independent sandbox runtime, with the failed action and cause in Hint.
+Shell preparation timeouts show `preparation timed out` with diagnostic `R0009` and name the attempted Bash startup file update for Docker's forwarded SSH agent.
+Other preparation and connection failures retain diagnostic `R0007`; `setup required` remains for missing SSH configuration or a confirmed missing, outdated, or conflicting guest installation.
 Preserve the existing machine, label, workspace completion, and prior successful observation.
 Prior success is historical, not proof of current reachability.
 Cache a successfully probed running guest herdr server version per sandbox identity and observation time.

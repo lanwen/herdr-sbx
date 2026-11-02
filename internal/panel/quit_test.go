@@ -119,6 +119,65 @@ func TestOrdinaryManagerQuitAndPopupPendingWork(t *testing.T) {
 	require.Empty(t, m.pending)
 }
 
+func TestCtrlCForcesCloseWhileOperationIsBlocked(t *testing.T) {
+	for _, popup := range []bool{false, true} {
+		t.Run(fmt.Sprintf("popup=%t", popup), func(t *testing.T) {
+			m := modelFixture(t)
+			m.popup = popup
+			startBlockedQuitOperation(t, m)
+			m.key(keyMsg('q', "q"))
+			if popup {
+				m.key(keyMsg('q', "q"))
+			}
+			require.True(t, m.closing)
+			require.Contains(t, m.notice, "Press Ctrl+C again to force close")
+			command := m.key(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+			require.NotNil(t, command, "Ctrl+C must close without waiting for the blocked operation")
+			require.IsType(t, tea.QuitMsg{}, command())
+			require.True(t, m.pending["a"], "force close must not claim that work settled")
+		})
+	}
+}
+
+func TestCtrlCForcesCloseFromLocalInputWhileClosing(t *testing.T) {
+	for _, local := range []string{"input", "dialog", "help"} {
+		t.Run(local, func(t *testing.T) {
+			m := modelFixture(t)
+			m.closing = true
+			switch local {
+			case "input":
+				m.input = &inputState{kind: "filter"}
+			case "dialog":
+				m.dialog = "startup"
+			case "help":
+				m.helpOpen = true
+			}
+			command := m.key(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+			require.NotNil(t, command)
+			require.IsType(t, tea.QuitMsg{}, command())
+		})
+	}
+}
+
+func startBlockedQuitOperation(t *testing.T, m *model) {
+	t.Helper()
+	started, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	command := m.run("a", store.CodeRename, "Saved", func() error {
+		close(started)
+		<-release
+		return nil
+	})
+	go func() {
+		command()
+		close(finished)
+	}()
+	<-started
+	t.Cleanup(func() {
+		close(release)
+		<-finished
+	})
+}
+
 func TestPopupQuitHintFrames(t *testing.T) {
 	for _, size := range [][2]int{{110, 32}, {40, 12}} {
 		m := modelFixture(t)

@@ -770,7 +770,7 @@ func (m *model) sandboxHint(row registration.SandboxRow) (string, string) {
 	switch strings.ToLower(row.Status.Connection) {
 	case "ready", "connected", "registered":
 		color = colorSuccess
-	case "failed", "blocked", "error", "manual intervention required":
+	case "failed", "connection failed", "preparation failed", "preparation timed out", "blocked", "error", "manual intervention required":
 		color = colorError
 	case "preparing", "installing", "pending":
 		color = colorWarning

@@ -119,7 +119,7 @@ func statusStyle(state, text string) string {
 	switch strings.ToLower(state) {
 	case "ready", "connected", "registered":
 		return ink(colorSuccess, text)
-	case "failed", "blocked", "error", "manual intervention required":
+	case "failed", "connection failed", "preparation failed", "preparation timed out", "blocked", "error", "manual intervention required":
 		return ink(colorError, text)
 	case "preparing", "installing", "pending", "entry ambiguous":
 		return ink(colorWarning, text)

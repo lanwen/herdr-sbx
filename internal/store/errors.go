@@ -69,6 +69,8 @@ const (
 	CodeSandboxSetup = "R0007"
 	// CodeSafeEntryUnsupported means herdr cannot safely create an offline entry.
 	CodeSafeEntryUnsupported = "R0008"
+	// CodeGuestShellTimeout means guest Bash startup preparation exceeded its command deadline.
+	CodeGuestShellTimeout = "R0009"
 	// CodePluginChoice means saving a plugin sync choice failed.
 	CodePluginChoice = "P0001"
 	// CodeGuestPluginSync means a guest plugin could not be synchronized.
@@ -92,7 +94,7 @@ func IsGuestPluginCode(code string) bool {
 
 func isRegistrationCode(code string) bool {
 	switch code {
-	case CodeSafeEntryUnsupported, CodeRegistration, CodeOwnershipConflict, CodeWorkspaceSetup, CodeSandboxSetup, CodeHerdrCompatibility:
+	case CodeSafeEntryUnsupported, CodeRegistration, CodeOwnershipConflict, CodeWorkspaceSetup, CodeSandboxSetup, CodeGuestShellTimeout, CodeHerdrCompatibility:
 		return true
 	}
 	return false

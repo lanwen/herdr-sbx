@@ -57,6 +57,9 @@ func TestSavedStatusDetailsFollowSelectedSandboxInHint(t *testing.T) {
 	}{
 		{"failed", "Herdr-sbx could not reach Herdr", "the plugin could not reach herdr", colorError},
 		{"error", "Connection refused", "Connection refused", colorError},
+		{"connection failed", "remote Herdr is unavailable: timed out:", "remote herdr is unavailable: timed out:", colorError},
+		{"preparation failed", "prepare sandbox shell: timed out:", "prepare sandbox shell: timed out:", colorError},
+		{"preparation timed out", "sandbox preparation timed out when trying to update Bash startup files", "sandbox preparation timed out when trying to update Bash startup files", colorError},
 		{"blocked", "SSH needs setup", "SSH needs setup", colorError},
 		{"manual intervention required", "Repair the guest plugin", "Repair the guest plugin", colorError},
 		{"stopped", "Sandbox is stopped", "Sandbox is stopped", colorMuted},
