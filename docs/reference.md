@@ -190,6 +190,10 @@ Run `mise run link` to build and relink the checkout after manifest changes.
 Guest preparation installs a `herdr-sbx SSH agent` block in `~/.bashrc` and the first existing Bash login file: `~/.bash_profile`, `~/.bash_login`, or `~/.profile`.
 For this preparation step, the plugin uses scoped `sbx exec` with `env -u BASH_ENV /bin/bash --noprofile --norc -c`.
 This updates startup files for the sandbox's default user without reading shell startup hooks first.
+On macOS and Linux, guest preparation and workspace probes unset host `SSH_AUTH_SOCK` in the outer `sbx exec` process.
+This preserves Sandboxes' saved forwarding target.
+The parent environment and explicit `sbx setup ssh` agent selection stay unchanged.
+Windows keeps the inherited environment because an unset `SSH_AUTH_SOCK` selects the [native OpenSSH agent fallback](https://docs.docker.com/ai/sandboxes/configuration/settings/#sshagentsocketpath).
 The running-sandbox eligibility check remains required because `sbx exec` can start a stopped sandbox.
 If none of those login files exists, it creates `~/.profile`.
 The block sets `SSH_AUTH_SOCK=/run/ssh-agent.sock` only when Docker's forwarded agent socket exists.
