@@ -210,6 +210,28 @@ The plugin owns only the marked blocks and preserves other startup settings and 
 It does not copy host shell configuration, change signing keys, or modify Docker's socket.
 Remove the marked blocks from the guest startup files to remove the workaround; active Management can install them again during preparation.
 
+## Guest agent integrations
+
+During guest preparation, the plugin reads `herdr api schema --json` from the guest without starting a daemon.
+It decodes the supported targets from `schemas.request.$defs.IntegrationTarget.enum`, available since the minimum supported Herdr version, 0.9.1.
+For every supported target with a matching guest directory at `/usr/share/sandbox/kit/<target>` or an external executable with that exact name on guest `PATH`, it runs `herdr integration install <target>`.
+Executable discovery excludes shell builtins and keywords and requires a regular executable file.
+Herdr supplies the integration hooks through its [integration installation command](https://herdr.dev/tui/docs/integrations/).
+Preparation supports multiple matches and skips targets without a matching kit directory or executable.
+Executable discovery supports sandboxes without kit directories, including the default v2 templates and renamed mixins whose executable matches.
+It uses exact names; differently named kits and executables do not match automatically.
+For example, `cursor-agent` or `agy` alone does not match a differently named Herdr target without that target's kit directory.
+It does not create kit or agent configuration directories, infer agents from sandbox names, or copy host agent configuration.
+It installs or refreshes matching integrations after shell preparation and before guest plugin synchronization, for both new and existing associations.
+Repeated preparation uses Herdr's installation command to update the existing integration.
+It does not restart agents or guest servers.
+
+Schema retrieval failures, malformed or empty target schemas, unsafe target names, and integration command failures show `preparation failed` with diagnostic `R0007` and preserve the machine association.
+If a matching executable has no usable agent configuration, Herdr's installation error follows this same failure path; the plugin does not create the missing configuration directory.
+Successful and failed preparation observations use the existing bounded readiness cache; Re-sync or a fresh lifecycle observation can retry sooner.
+Automatic integration installation requires Management ON and an enabled, running sandbox with verified identity.
+Turning Management OFF or disabling a sandbox leaves installed integration hooks in place.
+
 ## Guest plugins
 
 Defaults, overrides, and visible recovery behavior are defined in [Herdr plugins](tui/plugins.md).
