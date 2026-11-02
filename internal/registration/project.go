@@ -12,6 +12,7 @@ import (
 
 	"github.com/lanwen/herdr-sbx/internal/guestplugins"
 	"github.com/lanwen/herdr-sbx/internal/herdr"
+	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
 )
@@ -81,10 +82,19 @@ func (p *projectPreparation) prepareShell() *result {
 		return nil
 	}
 	if err := p.service.prepareGuestShell(p.ctx, p.sandbox, p.current); err != nil {
-		return &result{Name: p.sandbox.Name, Status: "setup required", Detail: err.Error()}
+		return guestShellFailure(p.sandbox.Name, err)
 	}
 	p.shellPrepared = true
 	return nil
+}
+
+func guestShellFailure(name string, err error) *result {
+	outcome := &result{Name: name, Status: "preparation failed", DiagnosticCode: store.CodeSandboxSetup, Detail: err.Error()}
+	if errors.Is(err, process.ErrTimeout) {
+		outcome.Status = "preparation timed out"
+		outcome.DiagnosticCode = store.CodeGuestShellTimeout
+	}
+	return outcome
 }
 
 func (s *Service) prepareGuestShell(ctx context.Context, sandbox sbx.Sandbox, current func() bool) error {
@@ -94,7 +104,7 @@ func (s *Service) prepareGuestShell(ctx context.Context, sandbox sbx.Sandbox, cu
 	if !strings.EqualFold(sandbox.Status, "running") || (current != nil && !current()) {
 		return errors.New("sandbox changed before shell setup")
 	}
-	return s.herdr.PrepareGuestShell(ctx, sandbox.Name+".sbx")
+	return s.sbx.PrepareGuestShell(ctx, sandbox.Name)
 }
 
 func (p *projectPreparation) prepareWorkspace() *result {

@@ -1,16 +1,31 @@
-package herdr
+package sbx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/lanwen/herdr-sbx/internal/process"
 )
 
 // PrepareGuestShell keeps Docker's forwarded agent available to sandbox shells.
-func (c *Client) PrepareGuestShell(ctx context.Context, target string) error {
-	output, err := c.guestCommand(ctx, target, guestShellSetup)
+// Callers must first verify eligibility and a running sandbox; exec can start it.
+func (c *Client) PrepareGuestShell(ctx context.Context, name string) error {
+	output, err := c.cli(ctx, 15*time.Second, true, "exec", name, "--", "env", "-u", "BASH_ENV", "/bin/bash", "--noprofile", "--norc", "-c", guestShellSetup)
 	if err != nil {
-		return fmt.Errorf("prepare sandbox shell: %w: %s", err, strings.TrimSpace(output))
+		if errors.Is(err, process.ErrTimeout) {
+			err = fmt.Errorf("sandbox preparation %w when trying to update Bash startup files for Docker's forwarded SSH agent", err)
+			if detail := strings.TrimSpace(output); detail != "" {
+				return fmt.Errorf("%w: %s", err, detail)
+			}
+			return err
+		}
+		if detail := strings.TrimSpace(output); detail != "" {
+			return fmt.Errorf("prepare sandbox shell: %w: %s", err, detail)
+		}
+		return fmt.Errorf("prepare sandbox shell: %w", err)
 	}
 	return nil
 }

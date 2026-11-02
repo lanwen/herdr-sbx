@@ -499,7 +499,7 @@ func (a *registrationAttempt) collision() *result {
 func (a *registrationAttempt) prepareHerdr() *result {
 	remote, err := a.service.remoteHerdrStatus(a.ctx, a.target)
 	if err != nil {
-		return &result{Name: a.sandbox.Name, Status: "setup required", Detail: "remote Herdr is unavailable: " + err.Error()}
+		return &result{Name: a.sandbox.Name, Status: "connection failed", DiagnosticCode: store.CodeSandboxSetup, Detail: "remote Herdr is unavailable: " + err.Error()}
 	}
 	versionOutput := remote.Version
 	if remote.Missing {
@@ -520,7 +520,7 @@ func (a *registrationAttempt) prepareHerdr() *result {
 	}
 
 	if err := a.service.prepareGuestShell(a.ctx, a.sandbox, a.current); err != nil {
-		return &result{Name: a.sandbox.Name, Status: "setup required", Detail: err.Error()}
+		return guestShellFailure(a.sandbox.Name, err)
 	}
 	return nil
 }
@@ -790,8 +790,10 @@ func resultDiagnosticCode(item result) string {
 		return store.CodeOwnershipConflict
 	case "workspace setup required":
 		return store.CodeWorkspaceSetup
-	case "setup required":
+	case "setup required", "connection failed", "preparation failed":
 		return store.CodeSandboxSetup
+	case "preparation timed out":
+		return store.CodeGuestShellTimeout
 	case "plugin setup required", "manual intervention required":
 		return store.CodeGuestPluginSync
 	default:

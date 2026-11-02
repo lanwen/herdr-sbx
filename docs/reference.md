@@ -68,6 +68,8 @@ The `open-status-tab` and `open-status-split` actions open the same manager in a
 The manager detects its popup context from `HERDR_ENV=1`, `HERDR_PLUGIN_ID=lanwen.herdr-sbx`, `HERDR_PLUGIN_ENTRYPOINT_ID=status`, and an empty `HERDR_PANE_ID`.
 Herdr gives tiled plugin panes a pane ID; popup pane commands have entrypoint context without a pane ID, as described in the [plugin environment documentation](https://herdr.dev/docs/plugins/#commands-and-environment).
 Only the popup uses the [two-step quit prompt](tui-spec.md#popup-closing); closing it exits the manager process without closing a tiled pane or stopping the daemon.
+When closing waits for active work and cleanup, press Ctrl+C again to force the manager to close.
+Force closing does not stop the daemon or sandbox and does not guarantee that external work or cleanup finishes or cancels.
 `herdr-sbx status` reads saved daemon and sandbox observations without contacting Docker, starting work, or changing choices.
 Its compact human summary includes Management, daemon health, sandbox choices, runtime, labels, status, and outstanding errors.
 Use text and symbols alongside color, honor `NO_COLOR`, and disable terminal styling when redirected.
@@ -120,6 +122,7 @@ The letters identify the daemon (D), sandbox inventory (S), herdr and SSH (H), r
 | `R0006` | Project workspace setup failed. |
 | `R0007` | Sandbox or guest setup failed. |
 | `R0008` | Herdr cannot safely create an offline entry. |
+| `R0009` | Preparing guest Bash startup files for Docker's forwarded SSH agent timed out. |
 | `P0001` | Saving a herdr plugin synchronization choice failed. |
 | `P0002` | A guest herdr plugin could not be synchronized. |
 | `P0003` | A guest herdr plugin inspection response was malformed. |
@@ -185,6 +188,9 @@ Run `mise run link` to build and relink the checkout after manifest changes.
 ## Sandbox SSH agent
 
 Guest preparation installs a `herdr-sbx SSH agent` block in `~/.bashrc` and the first existing Bash login file: `~/.bash_profile`, `~/.bash_login`, or `~/.profile`.
+For this preparation step, the plugin uses scoped `sbx exec` with `env -u BASH_ENV /bin/bash --noprofile --norc -c`.
+This updates startup files for the sandbox's default user without reading shell startup hooks first.
+The running-sandbox eligibility check remains required because `sbx exec` can start a stopped sandbox.
 If none of those login files exists, it creates `~/.profile`.
 The block sets `SSH_AUTH_SOCK=/run/ssh-agent.sock` only when Docker's forwarded agent socket exists.
 This bypasses [Herdr's rejection of root-owned agent sockets](https://github.com/herdrdev/herdr/issues/5077) for interactive Bash panes and Git or agents started from those shells.

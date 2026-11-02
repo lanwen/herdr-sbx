@@ -1,17 +1,91 @@
-package herdr
+package sbx
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lanwen/herdr-sbx/internal/process"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGuestShellFailureIncludesOnlyAvailableOutput(t *testing.T) {
+	for _, test := range []struct{ name, output, want string }{
+		{"empty", "", "prepare sandbox shell: timed out"},
+		{"whitespace", " \n\t ", "prepare sandbox shell: timed out"},
+		{"diagnostic", " permission denied\n", "prepare sandbox shell: timed out: permission denied"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cause := errors.New("timed out")
+			client := New(process.Runner{Execute: func(context.Context, process.Command) (string, error) {
+				return test.output, cause
+			}})
+			err := client.PrepareGuestShell(context.Background(), "test.sbx")
+			require.EqualError(t, err, test.want)
+			require.ErrorIs(t, err, cause)
+		})
+	}
+}
+
+func TestGuestShellTimeoutExplainsAttemptedWork(t *testing.T) {
+	for _, output := range []string{"", " \n\t ", "connection diagnostics\n"} {
+		t.Run(output, func(t *testing.T) {
+			client := New(process.Runner{Execute: func(context.Context, process.Command) (string, error) {
+				return output, process.ErrTimeout
+			}})
+			err := client.PrepareGuestShell(context.Background(), "test.sbx")
+			want := "sandbox preparation timed out when trying to update Bash startup files for Docker's forwarded SSH agent"
+			if detail := strings.TrimSpace(output); detail != "" {
+				want += ": " + detail
+			}
+			require.EqualError(t, err, want)
+			require.ErrorIs(t, err, process.ErrTimeout)
+		})
+	}
+}
+
+func TestGuestShellPreparationBypassesStartupHooks(t *testing.T) {
+	home := t.TempDir()
+	hook := filepath.Join(home, "startup-hook")
+	require.NoError(t, os.WriteFile(hook, []byte("printf 'startup hook executed\\n' >&2\nexit 73\n"), 0600))
+	client := New(process.Runner{Execute: func(ctx context.Context, command process.Command) (string, error) {
+		var cmd *exec.Cmd
+		if command.Name == "ssh" {
+			// Model sandboxd's outer Bash, which reads BASH_ENV before the command.
+			cmd = exec.CommandContext(ctx, "/bin/bash", "-c", command.Args[len(command.Args)-1])
+		} else {
+			separator := slices.Index(command.Args, "--")
+			require.Positive(t, separator)
+			argv := command.Args[separator+1:]
+			cmd = exec.CommandContext(ctx, argv[0], argv[1:]...)
+		}
+		cmd.Env = append(os.Environ(), "HOME="+home, "BASH_ENV="+hook)
+		output, err := cmd.CombinedOutput()
+		return string(output), err
+	}})
+	require.NoError(t, client.PrepareGuestShell(context.Background(), "test"))
+	content, err := os.ReadFile(filepath.Join(home, ".bashrc"))
+	require.NoError(t, err)
+	require.Contains(t, string(content), "# herdr-sbx SSH agent begin")
+}
+
+func TestGuestShellPreparationUsesScopedDirectExec(t *testing.T) {
+	t.Setenv("HERDR_SANDBOXES_SBX_APP_NAME", "herdr-sbx-test-shell")
+	client := New(process.Runner{Execute: func(_ context.Context, command process.Command) (string, error) {
+		require.Equal(t, "sbx", command.Name)
+		require.Equal(t, []string{"--app-name", "herdr-sbx-test-shell", "exec", "test", "--", "env", "-u", "BASH_ENV", "/bin/bash", "--noprofile", "--norc", "-c", guestShellSetup}, command.Args)
+		require.Equal(t, 15*time.Second, command.Timeout)
+		return "", nil
+	}})
+	require.NoError(t, client.PrepareGuestShell(context.Background(), "test"))
+}
 
 func TestGuestShellUsesDockerAgent(t *testing.T) {
 	home := t.TempDir()
@@ -46,9 +120,12 @@ func TestGuestShellUsesDockerAgent(t *testing.T) {
 func guestShellClient(t *testing.T, home, socket string) *Client {
 	t.Helper()
 	return New(process.Runner{Execute: func(ctx context.Context, command process.Command) (string, error) {
-		require.Equal(t, "ssh", command.Name)
-		script := strings.ReplaceAll(command.Args[len(command.Args)-1], "/run/ssh-agent.sock", socket)
-		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", script)
+		require.Equal(t, "sbx", command.Name)
+		separator := slices.Index(command.Args, "--")
+		require.Positive(t, separator)
+		argv := append([]string(nil), command.Args[separator+1:]...)
+		argv[len(argv)-1] = strings.ReplaceAll(argv[len(argv)-1], "/run/ssh-agent.sock", socket)
+		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 		cmd.Env = append(os.Environ(), "HOME="+home)
 		output, err := cmd.CombinedOutput()
 		return string(output), err

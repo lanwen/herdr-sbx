@@ -62,7 +62,7 @@ func (m *model) confirmQuit() tea.Cmd {
 func (m *model) quit() tea.Cmd {
 	if len(m.pending) > 0 {
 		m.closing = true
-		m.notice = "Finishing active work and cleanup before closing…"
+		m.notice = "Finishing active work and cleanup before closing… Press Ctrl+C again to force close. External work may continue."
 		return nil
 	}
 	return tea.Quit

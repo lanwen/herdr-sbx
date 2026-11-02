@@ -187,16 +187,16 @@ func (f *registrationFixture) rebuildClients() {
 	if transport == nil {
 		transport = fakeHTTP
 	}
-	sandboxClient := sbx.NewWithTransport(*f.runner, transport)
 	guestRunner := *f.runner
 	guestRunner.Execute = func(ctx context.Context, command process.Command) (string, error) {
-		if command.Name == "ssh" && strings.Contains(strings.Join(command.Args, " "), "# herdr-sbx SSH agent begin") {
+		if command.Name == "sbx" && strings.Contains(strings.Join(command.Args, " "), "# herdr-sbx SSH agent begin") {
 			f.shellSetups++
 			return "", f.shellSetupErr
 		}
 		return f.runner.Execute(ctx, command)
 	}
-	herdrClient := herdr.New(guestRunner)
+	sandboxClient := sbx.NewWithTransport(guestRunner, transport)
+	herdrClient := herdr.New(*f.runner)
 	inspector := precheck.New(sandboxClient, herdrClient, *f.runner)
 	f.service = New(sandboxClient, herdrClient, inspector, *f.runner)
 }

@@ -151,6 +151,8 @@ func registrationNotification(outcome result, entry store.ErrorRecord) string {
 		cause = "Project workspace setup failed"
 	case store.CodeSandboxSetup:
 		cause = "Sandbox setup failed"
+	case store.CodeGuestShellTimeout:
+		cause = "Sandbox preparation timed out"
 	case store.CodeGuestPluginSync:
 		cause = "herdr plugin sync failed"
 	case store.CodeGuestPluginResponse:

@@ -70,7 +70,7 @@ func TestRunnerCancellationAndTimeout(t *testing.T) {
 		command := outputHelper("sleep", 0)
 		command.Timeout = 100 * time.Millisecond
 		_, err := (Runner{}).CombinedOutput(context.Background(), command)
-		require.Error(t, err)
+		require.ErrorIs(t, err, ErrTimeout)
 		require.EqualValues(t, "timed out", err.Error())
 	})
 }

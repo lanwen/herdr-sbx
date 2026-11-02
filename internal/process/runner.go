@@ -18,6 +18,9 @@ const maxOutputBytes = 16 << 20
 
 var errOutputLimit = fmt.Errorf("command output exceeded %d-byte limit", maxOutputBytes)
 
+// ErrTimeout reports that a command's execution deadline expired.
+var ErrTimeout = errors.New("timed out")
+
 type cappedOutput struct {
 	buffer   bytes.Buffer
 	cancel   context.CancelFunc
@@ -96,7 +99,7 @@ func execute(parent context.Context, command Command) (string, error) {
 		output.buffer.Reset()
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return output.buffer.String(), fmt.Errorf("timed out")
+		return output.buffer.String(), ErrTimeout
 	}
 	if err != nil && ctx.Err() != nil {
 		return output.buffer.String(), ctx.Err()
