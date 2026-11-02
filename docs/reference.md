@@ -210,6 +210,22 @@ The plugin owns only the marked blocks and preserves other startup settings and 
 It does not copy host shell configuration, change signing keys, or modify Docker's socket.
 Remove the marked blocks from the guest startup files to remove the workaround; active Management can install them again during preparation.
 
+## Guest agent integrations
+
+During guest preparation, the plugin runs `herdr integration install claude` when `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` exists as a directory, and `herdr integration install codex` when `${CODEX_HOME:-$HOME/.codex}` exists as a directory.
+These are guest paths and guest environment overrides; host agent configuration is not copied.
+Herdr supplies the integration hooks through its [integration installation command](https://herdr.dev/tui/docs/integrations/).
+Both commands are available in the minimum supported Herdr version, 0.9.1.
+Preparation skips absent configuration directories without creating them.
+It installs or refreshes these integrations after shell preparation and before guest plugin synchronization, for both new and existing associations.
+Repeated preparation uses Herdr's installation command to update the existing integration.
+It does not restart agents or guest servers.
+
+Integration command failures show `preparation failed` with diagnostic `R0007` and preserve the machine association.
+Successful and failed preparation observations use the existing bounded readiness cache; Re-sync or a fresh lifecycle observation can retry sooner.
+Automatic integration installation requires Management ON and an enabled, running sandbox with verified identity.
+Turning Management OFF or disabling a sandbox leaves installed integration hooks in place.
+
 ## Guest plugins
 
 Defaults, overrides, and visible recovery behavior are defined in [Herdr plugins](tui/plugins.md).

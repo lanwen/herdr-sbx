@@ -42,6 +42,9 @@ func (s *Service) projectReadiness(ctx context.Context, work registrationWork, i
 	if outcome := p.prepareShell(); outcome != nil {
 		return p.save(*outcome)
 	}
+	if err := s.prepareGuestIntegrations(ctx, sb, item.Target, current); err != nil {
+		return p.save(result{Name: sb.Name, Status: "preparation failed", DiagnosticCode: store.CodeSandboxSetup, Detail: err.Error()})
+	}
 	if err := guestplugins.ApplySandbox(ctx, s.herdr, guestplugins.SandboxTarget{Address: item.Target, Scope: scope, SandboxID: sb.ID}, guestplugins.ApplyOptions{Current: current, Attempts: []guestplugins.BeginAttempt{p.beginAttempt}}); err != nil {
 		return p.save(p.failed(err))
 	}
@@ -65,7 +68,17 @@ type projectPreparation struct {
 }
 
 func guestSetupFingerprint(target, sandboxID, plugins string) string {
-	return "shell-agent-v1\x00" + target + "\x00" + sandboxID + "\x00" + plugins
+	return "shell-agent-v1\x00agent-integrations-v1\x00" + target + "\x00" + sandboxID + "\x00" + plugins
+}
+
+func (s *Service) prepareGuestIntegrations(ctx context.Context, sandbox sbx.Sandbox, target string, current func() bool) error {
+	if err := CheckAutomaticWork(ctx); err != nil {
+		return err
+	}
+	if !strings.EqualFold(sandbox.Status, "running") || current == nil || !current() {
+		return errors.New("sandbox changed before integration setup")
+	}
+	return s.herdr.PrepareGuestIntegrations(ctx, target)
 }
 
 func (p *projectPreparation) prepareShellWorkspace() *result {

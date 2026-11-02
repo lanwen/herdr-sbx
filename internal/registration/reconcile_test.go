@@ -146,13 +146,15 @@ func TestUncertainMachineAddRemainsPendingForManualInspection(t *testing.T) {
 }
 
 type registrationFixture struct {
-	t             *testing.T
-	service       *Service
-	runner        *process.Runner
-	inventory     string
-	transport     http.RoundTripper
-	shellSetups   int
-	shellSetupErr error
+	t                   *testing.T
+	service             *Service
+	runner              *process.Runner
+	inventory           string
+	transport           http.RoundTripper
+	shellSetups         int
+	shellSetupErr       error
+	integrationSetups   int
+	integrationSetupErr error
 }
 
 func newRegistrationFixture(t *testing.T, inventory string) *registrationFixture {
@@ -196,7 +198,15 @@ func (f *registrationFixture) rebuildClients() {
 		return f.runner.Execute(ctx, command)
 	}
 	sandboxClient := sbx.NewWithTransport(guestRunner, transport)
-	herdrClient := herdr.New(*f.runner)
+	herdrRunner := *f.runner
+	herdrRunner.Execute = func(ctx context.Context, command process.Command) (string, error) {
+		if command.Name == "ssh" && strings.Contains(strings.Join(command.Args, " "), "integration install claude") {
+			f.integrationSetups++
+			return "", f.integrationSetupErr
+		}
+		return f.runner.Execute(ctx, command)
+	}
+	herdrClient := herdr.New(herdrRunner)
 	inspector := precheck.New(sandboxClient, herdrClient, *f.runner)
 	f.service = New(sandboxClient, herdrClient, inspector, *f.runner)
 }
