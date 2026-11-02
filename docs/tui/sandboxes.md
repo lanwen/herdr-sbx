@@ -220,13 +220,13 @@ Unavailable actions include a reason.
 ## Guest agent integration preparation
 
 Agent integrations follow the existing sandbox preparation and recovery flow.
-The [operational reference](../reference.md#guest-agent-integrations) defines the guest commands and supported configuration paths.
+The [operational reference](../reference.md#guest-agent-integrations) defines the guest schema discovery, exact kit or executable matching, and installation commands.
 
 | Starting state | Action | Immediate feedback | External effect | Settlement and failure |
 | --- | --- | --- | --- | --- |
-| Management ON; Enabled running sandbox; new or existing verified association; uncached preparation | Automatic preparation | Existing preparation feedback | After shell setup and before guest plugin synchronization, install Claude and Codex integrations for existing guest configuration directories | Report ready only after successful preparation; preserve the association if an integration command fails |
-| Supported agent configuration directory absent | Prepare integrations | Existing preparation feedback | Skip that target without creating its directory | Continue preparation for other present targets |
-| Integration command fails | Prepare integrations | `preparation failed`, diagnostic `R0007` | Stop integration setup and retain the machine association | Retain the failed observation under the existing readiness cache; audit, fresh lifecycle observation, or Re-sync can retry |
+| Management ON; Enabled running sandbox; new or existing verified association; uncached preparation | Automatic preparation | Existing preparation feedback | After shell setup and before guest plugin synchronization, read supported targets from the guest Herdr schema and install every target with an exact matching `/usr/share/sandbox/kit/<target>` directory or same-name external executable on guest PATH | Report ready only after successful preparation; preserve the association if discovery or installation fails |
+| No supported target has a matching kit directory or external executable | Prepare integrations | Existing preparation feedback | Skip installation without creating kit or agent configuration directories | Continue preparation successfully |
+| Schema retrieval fails, target schema is malformed or empty, target name is unsafe, or installation fails | Prepare integrations | `preparation failed`, diagnostic `R0007` | Stop integration setup and retain the machine association | Retain the failed observation under the existing readiness cache; audit, fresh lifecycle observation, or Re-sync can retry |
 | Cached preparation with unchanged choices | Reconcile | Retain observed readiness or failure | No new integration command before normal cache invalidation or audit | Existing preparation recovery rules apply |
 | Management OFF, sandbox Disabled, or sandbox stopped | Automatic reconciliation | Existing inactive state | No integration installation or update | Previously installed hooks remain in place |
 

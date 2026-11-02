@@ -200,7 +200,11 @@ func (f *registrationFixture) rebuildClients() {
 	sandboxClient := sbx.NewWithTransport(guestRunner, transport)
 	herdrRunner := *f.runner
 	herdrRunner.Execute = func(ctx context.Context, command process.Command) (string, error) {
-		if command.Name == "ssh" && strings.Contains(strings.Join(command.Args, " "), "integration install claude") {
+		joined := strings.Join(command.Args, " ")
+		if command.Name == "ssh" && strings.Contains(joined, "api schema --json") {
+			return `{"schemas":{"request":{"$defs":{"IntegrationTarget":{"enum":["claude","codex"]}}}}}`, nil
+		}
+		if command.Name == "ssh" && strings.Contains(joined, `integration install "$target"`) {
 			f.integrationSetups++
 			return "", f.integrationSetupErr
 		}
