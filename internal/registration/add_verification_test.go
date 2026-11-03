@@ -125,7 +125,7 @@ func verifiedCatalog() string {
 }
 
 func TestPendingCandidatesCannotBecomeOwnedWithoutTrustedMatch(t *testing.T) {
-	for _, mode := range []string{"untrusted", "wrong id", "wrong target", "wrong session"} {
+	for _, mode := range []string{"wrong id", "wrong target", "wrong session"} {
 		t.Run(mode, func(t *testing.T) {
 			fixture, calls := newAddVerificationFixture(t, mode)
 			for range 2 {

@@ -176,7 +176,10 @@ func (r *reconciliation) load() error {
 	if err != nil {
 		return err
 	}
-	rows, err := (entryObservation{Scope: r.prerequisites.Scope, State: r.state, Complete: true, Revisions: []map[string]uint64{beforeCatalog.EnabledRevisions}, CreatedID: createdSandboxID(r.ctx)}).entries(r.sandboxes, r.machines)
+	if err := r.verifyAdoptions(); err != nil {
+		return err
+	}
+	rows, err := (entryObservation{Scope: r.prerequisites.Scope, State: r.state, Complete: true, Revisions: []map[string]uint64{beforeCatalog.EnabledRevisions}, CreatedID: createdSandboxID(r.ctx), ImportNative: true}).entries(r.sandboxes, r.machines)
 	if err != nil {
 		return err
 	}
@@ -223,6 +226,11 @@ func (r *reconciliation) syncAssociation(row SandboxRow) {
 			break
 		}
 	}
+	if item.ProfileID != row.ProfileID {
+		item.PendingLabel = ""
+		item.ProjectWorkspaceDone = false
+	}
+	item.LastObservedNativeEnabled = row.NativeEnabled
 	item.ProfileID, item.Target = row.ProfileID, row.Sandbox.Name+".sbx"
 	item.Pending, item.Label, item.PendingProfileID = false, row.Label, ""
 	if err := replaceTracked(&r.state, scope, item); err != nil {

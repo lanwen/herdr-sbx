@@ -154,7 +154,11 @@ If the handoff fails, the plugin reports the error without forcing a restart.
 Broken or ambiguous installations require user action.
 After every machine-add attempt, verify the local machine catalog up to three times, separated by 150 milliseconds, with a five-second overall verification deadline.
 Checks are read-only and stop promptly on cancellation; they never open a guest connection or repeat the add.
-Only a trusted acknowledged machine ID with the expected target and default session can become a confirmed pending association.
+Immediately after an add, only a trusted acknowledged machine ID with the expected target and default session confirms that operation.
+On a later reconciliation with Management ON, the plugin also adopts a unique unclaimed connection with the exact sandbox target and default session, even if the previous attempt had no acknowledgement.
+It rechecks the exact sandbox UUID/name after reading connections, imports the actual native Enabled state and observed label, and clears the pending request without another add or native enable.
+A conflicting nonempty acknowledgement, competing owner, duplicate candidate, wrong session, or unreadable observation prevents adoption.
+Management OFF permits this association change only through explicit Enable.
 Save an unverified acknowledgement as optional `pending_profile_id`, separate from confirmed `profile_id`.
 Readable final absence and unavailable final verification have distinct sandbox explanations.
 An unresolved attempt never automatically repeats an add; an explicit eligible retry requires a fresh successful catalog read with unambiguous absence.
@@ -215,11 +219,13 @@ On macOS and Linux, guest preparation and workspace probes unset host `SSH_AUTH_
 This preserves Sandboxes' saved forwarding target.
 The parent environment and explicit `sbx setup ssh` agent selection stay unchanged.
 Windows keeps the inherited environment because an unset `SSH_AUTH_SOCK` selects the [native OpenSSH agent fallback](https://docs.docker.com/ai/sandboxes/configuration/settings/#sshagentsocketpath).
-The running-sandbox eligibility check remains required because `sbx exec` can start a stopped sandbox, except during initial registration authorized by a fresh `created` lifecycle event.
+The running-sandbox eligibility check remains required because `sbx exec` can start a stopped sandbox, except during initial registration authorized by a saved `created` request or explicit Enable.
 Created-event registration requests are persisted separately in the status sidecar before preparation and before the registration lock. The existing 30-second catch-up reloads them after restart, including when provisioning has not yet exposed the UUID or a usable runtime. Management OFF pauses the request; explicit Disable, deletion, or verified replacement cancels it. The final pre-add handoff is ordered with explicit cancellation under the sidecar lock. A creation-authorized attempt requires the exact saved scope, UUID, and name at every add claim, including its existing bounded safe retry. A cancelled pre-add request keeps its Disabled choice if later host observation fails. A durable pending-add record makes the request inert under the existing strict verification protocol. Keep the request until verified association or explicit cancellation. An uncertain add never authorizes automatic replay. Events that the plugin never received are outside this recovery guarantee.
 
 With Management ON and no explicit Disabled choice, that event uses normal guest preparation and `herdr machine add` even when the new sandbox is stopped.
 This may start the sandbox; ordinary stopped discovery and existing stopped entries do not authorize guest work.
+Explicit Enable also saves the exact UUID/name request and prepares and adds a missing connection while running or stopped, with Management ON or OFF.
+It leaves Management unchanged; later automatic retries wait while OFF.
 If none of those login files exists, it creates `~/.profile`.
 The block sets `SSH_AUTH_SOCK=/run/ssh-agent.sock` only when Docker's forwarded agent socket exists.
 This bypasses [Herdr's rejection of root-owned agent sockets](https://github.com/herdrdev/herdr/issues/5077) for interactive Bash panes and Git or agents started from those shells.

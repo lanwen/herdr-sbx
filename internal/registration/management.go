@@ -169,10 +169,7 @@ func pendingAssociationIssue(saved *store.Tracked, machine herdr.Machine) string
 	if saved == nil || !saved.Pending {
 		return ""
 	}
-	if saved.PendingProfileID == "" {
-		return "The plugin could not safely link the saved Herdr connection to this sandbox. Registration is paused to avoid changing another connection."
-	}
-	if saved.PendingProfileID != machine.ID {
+	if saved.PendingProfileID != "" && saved.PendingProfileID != machine.ID {
 		return "The saved Herdr connection does not match the ID Herdr reported. Registration is paused to avoid changing it."
 	}
 	return ""
@@ -181,7 +178,7 @@ func pendingAssociationIssue(saved *store.Tracked, machine herdr.Machine) string
 func machineClaimedElsewhere(scope, id, profileID string, state store.State) bool {
 	for otherScope, entries := range state.Scopes {
 		for _, entry := range entries {
-			if entry.ProfileID == profileID && (otherScope != scope || entry.SandboxID != id) {
+			if (entry.ProfileID == profileID || entry.PendingProfileID == profileID) && (otherScope != scope || entry.SandboxID != id) {
 				return true
 			}
 		}
@@ -231,10 +228,11 @@ func (observation entryObservation) sandboxEntry(status *store.StatusStore, sb s
 	}
 	row := SandboxRow{Scope: scope, Sandbox: sb, Enabled: choice}
 	machine, issue := associatedMachine(scope, sb, machines, state)
-	if machine != nil {
+	if observation.confirmedAssociation(row, machine) {
 		delete(status.CreationRequests, key)
 	}
 	row.AssociationIssue = issue
+	row.Enabled = observation.importNativeChoice(status, row, machine)
 	row.Enabled = observation.settleEnabled(status, row, machine)
 	row.ObservationPending = status.EnabledObservationPending[key]
 	if issue == "" && machine == nil && strings.EqualFold(sb.Status, "stopped") {
@@ -268,6 +266,22 @@ func supersededSandboxRow(status *store.StatusStore, scope string, sb sbx.Sandbo
 	cached.Enabled, cached.Stale = choice, true
 	return SandboxRow{Scope: scope, Sandbox: sb, Enabled: choice, EntryPresent: cached.EntryPresent, NativeEnabled: cached.NativeEnabled, Label: cached.Label, ProfileID: cached.ProfileID, AssociationIssue: cached.AssociationIssue, ObservationPending: true, Status: cached}
 }
+func (observation entryObservation) confirmedAssociation(row SandboxRow, machine *herdr.Machine) bool {
+	return machine != nil && (!needsAssociation(observation.State, row.Scope, row.Sandbox.ID, machine.ID) || observation.ImportNative)
+}
+
+func (observation entryObservation) importNativeChoice(status *store.StatusStore, row SandboxRow, machine *herdr.Machine) store.EnabledChoice {
+	if !observation.ImportNative || machine == nil || machine.Enabled == nil || !needsAssociation(observation.State, row.Scope, row.Sandbox.ID, machine.ID) {
+		return row.Enabled
+	}
+	choice := store.Disabled
+	if *machine.Enabled {
+		choice = store.Enabled
+	}
+	status.EnabledChoices[store.StatusKey(row.Scope, row.Sandbox.ID)] = choice
+	return choice
+}
+
 func (observation entryObservation) settleEnabled(status *store.StatusStore, row SandboxRow, machine *herdr.Machine) store.EnabledChoice {
 	key, choice := store.StatusKey(row.Scope, row.Sandbox.ID), row.Enabled
 	revisions := observation.Revisions
@@ -363,6 +377,9 @@ func (s *Service) CaptureBaseline(ctx context.Context, socket string) error {
 		return err
 	}
 	for _, sb := range sandboxes {
+		if err := s.verifyAdoption(ctx, socket, sb, state, machines); err != nil {
+			return err
+		}
 		if err := captureSandboxBaseline(scope, sb, machines, initial, &state); err != nil {
 			return err
 		}
@@ -463,7 +480,7 @@ func (c *enabledChange) observeBeforeChange() error {
 		}
 	}
 	// Keep a last-confirmed entry observation if the mutation outcome is lost.
-	if _, err := (entryObservation{Scope: c.scope, State: c.state, Complete: false, Revisions: nil}).entries([]sbx.Sandbox{c.sb}, c.machines); err != nil {
+	if _, err := (entryObservation{CreatedID: c.id, Scope: c.scope, State: c.state, Complete: false, Revisions: nil}).entries([]sbx.Sandbox{c.sb}, c.machines); err != nil {
 		return err
 	}
 
@@ -473,16 +490,18 @@ func (c *enabledChange) addEntry() error {
 	if c.choice == store.Disabled {
 		return nil
 	}
-	if !strings.EqualFold(c.sb.Status, "running") {
-		if strings.EqualFold(c.sb.Status, "stopped") {
-			return nil
-		}
+	if !strings.EqualFold(c.sb.Status, "running") && !strings.EqualFold(c.sb.Status, "stopped") {
 		status, detail := deferredRuntime(c.sb.Status)
 		_ = store.RecordSandboxStatus(c.scope, c.sb, status, detail, false)
 		return errors.New("Sandbox runtime is not confirmed running. Refresh before enabling it.")
 	}
-	// Ordinary add and guest setup are permitted only after rechecking RUNNING.
-	socket := c.service.Inspect().Socket
+	// Explicit registration authorizes SSH to start this exact stopped identity.
+	c.ctx = context.WithValue(c.ctx, createdSandboxKey{}, c.id)
+	p := c.service.Inspect()
+	if p.Scope != c.scope {
+		return errors.New("sandbox daemon changed before enabling its connection")
+	}
+	socket := p.Socket
 	var currentError error
 	current := func() bool {
 		currentError = c.service.sandboxCurrent(c.ctx, socket, c.sb)
@@ -506,6 +525,7 @@ func (c *enabledChange) addEntry() error {
 		return supersededEnabledChange()
 	}
 	c.registrationRequested = true
+	clearAbsentProfile(&c.state, c.scope, c.id)
 	c.pending = true
 	outcome, _ := c.service.registerWithInstallation(c.ctx, registrationWork{Scope: c.scope, State: &c.state, Sandbox: c.sb, Current: current, CurrentError: func() error { return currentError }}, c.machines, installationOptions{}, nil)
 	if err := store.RecordSandboxStatus(c.scope, c.sb, outcome.Status, outcome.Detail, false); err != nil {
@@ -608,6 +628,9 @@ func (c *enabledChange) saveEntry() error {
 			break
 		}
 	}
+	if item.ProfileID != c.machine.ID {
+		item.ProjectWorkspaceDone = false
+	}
 	item.ProfileID, item.Target = c.machine.ID, c.machine.Target
 	item.Pending, item.PendingProfileID = false, ""
 	item.Label = c.machine.Label
@@ -689,6 +712,9 @@ func (s *Service) entryForAction(ctx context.Context, scope, id string) (store.S
 	machines, output, err := s.herdr.ListMachines(ctx)
 	if err != nil {
 		return state, selected, nil, nil, fmt.Errorf("inspect herdr catalog: %s", commandError(err, output))
+	}
+	if _, err := s.SandboxObservation(ctx, p.Socket, selected); err != nil {
+		return state, selected, machines, nil, err
 	}
 	machine, issue := associatedMachine(scope, selected, machines, state)
 	if issue != "" {
@@ -825,6 +851,9 @@ func captureSandboxBaseline(scope string, sb sbx.Sandbox, machines []herdr.Machi
 	}
 	machine, issue := associatedMachine(scope, sb, machines, *state)
 	if issue != "" {
+		return nil
+	}
+	if machine != nil && needsAssociation(*state, scope, sb.ID, machine.ID) && initial.WorkerControl != nil && initial.WorkerControl.Stopped {
 		return nil
 	}
 	if machine == nil {
@@ -979,10 +1008,13 @@ func rememberBaselineMachine(state *store.State, scope, id string, machine *herd
 			choice = store.Disabled
 		}
 	}
+	if item.ProfileID != machine.ID {
+		item.ProjectWorkspaceDone = false
+	}
 	item.ProfileID, item.Target = machine.ID, machine.Target
 	item.Label = machine.Label
 	item.PendingLabel = ""
-	item.Pending = false
+	item.Pending, item.PendingProfileID = false, ""
 	item.LastObservedNativeEnabled = machine.Enabled
 	if err := replaceTracked(state, scope, item); err != nil {
 		state.Scopes[scope] = append(state.Scopes[scope], item)
@@ -1046,11 +1078,12 @@ func (s *Service) renameMachineEntry(ctx context.Context, work registrationWork,
 
 // entryObservation keeps one catalog snapshot and the revisions captured before it was read.
 type entryObservation struct {
-	CreatedID string
-	Scope     string
-	State     store.State
-	Complete  bool
-	Revisions []map[string]uint64
+	ImportNative bool
+	CreatedID    string
+	Scope        string
+	State        store.State
+	Complete     bool
+	Revisions    []map[string]uint64
 }
 
 type savedAssociationQuery struct{ Scope, ID, Target string }
