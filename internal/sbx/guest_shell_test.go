@@ -74,6 +74,7 @@ func TestGuestShellPreparationBypassesStartupHooks(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join(home, ".bashrc"))
 	require.NoError(t, err)
 	require.Contains(t, string(content), "# herdr-sbx SSH agent begin")
+	require.Contains(t, string(content), "export SSH_AUTH_SOCK=/run/ssh-agent.sock")
 }
 
 func TestGuestShellPreparationUsesScopedDirectExec(t *testing.T) {

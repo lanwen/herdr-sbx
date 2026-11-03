@@ -25,6 +25,8 @@ type Tracked struct {
 	ProjectWorkspaceDone      bool                  `json:"project_workspace_done,omitempty"`
 	ProjectWorkspacePending   string                `json:"project_workspace_pending,omitempty"`
 	GuestSync                 *GuestSyncObservation `json:"guest_sync,omitempty"`
+	// PendingProfileID is an acknowledged add ID awaiting verification; it grants no ownership.
+	PendingProfileID string `json:"pending_profile_id,omitempty"`
 }
 
 // GuestSyncObservation remembers the result for an exact desired source and

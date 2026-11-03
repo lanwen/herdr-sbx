@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -137,12 +138,23 @@ func (c *Client) DiagnoseAuthentication(ctx context.Context) AuthenticationDiagn
 
 // WorkspaceDirectory asks sbx for a sandbox's physical workspace path.
 func (c *Client) WorkspaceDirectory(ctx context.Context, name string) (string, error) {
-	return c.cli(ctx, 15*time.Second, true, "exec", name, "--", "pwd", "-P")
+	return c.guestExec(ctx, name, "--", "pwd", "-P")
 }
 
 // SetupSSHInteractive configures sandbox SSH through the user's terminal.
 func (c *Client) SetupSSHInteractive(ctx context.Context) error {
 	return c.runner.RunInteractive(ctx, "sbx", c.appScopedArgs("setup", "ssh")...)
+}
+
+func (c *Client) guestExec(ctx context.Context, args ...string) (string, error) {
+	command := process.Command{
+		Name: "sbx", Args: c.appScopedArgs(append([]string{"exec"}, args...)...), Timeout: 15 * time.Second,
+	}
+	if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+		// Preserve the saved forwarding target; Windows unsetting selects a native agent fallback.
+		command.Unset = []string{"SSH_AUTH_SOCK"}
+	}
+	return c.runner.CombinedOutput(ctx, command)
 }
 
 func (c *Client) cli(ctx context.Context, timeout time.Duration, scoped bool, args ...string) (string, error) {

@@ -316,10 +316,10 @@ func (m *model) mergeErrors(msg workerMsg) {
 	if m.focus == "errors" && len(m.visibleErrors()) == 0 {
 		m.focus = "diagnostics"
 	}
-	if m.eventIndex >= len(m.events) {
-		m.eventIndex = max(-1, len(m.events)-1)
+	if m.eventIndex >= len(m.pageEvents()) {
+		m.eventIndex = max(-1, len(m.pageEvents())-1)
 	}
-	if m.focus == "events" && len(m.events) == 0 {
+	if m.focus == "events" && len(m.pageEvents()) == 0 {
 		m.focusMainEnd()
 	}
 }
@@ -343,7 +343,7 @@ func (m *model) clearError(code, scope string) {
 	m.errors = result
 }
 func (m *model) Update(msg tea.Msg) (result tea.Model, command tea.Cmd) {
-	hadErrors := len(m.errors) > 0
+	hadErrors := len(m.pageErrors()) > 0
 	defer func() { command = m.finishUpdate(hadErrors, command) }()
 
 	switch msg := msg.(type) {
@@ -792,7 +792,7 @@ func (m *model) finishUpdate(hadErrors bool, command tea.Cmd) tea.Cmd {
 			m.button, m.reveal = button, true
 		}
 	}
-	if hadErrors && len(m.errors) == 0 && (m.focus == "errors" || m.focus == "diagnostics") {
+	if hadErrors && len(m.pageErrors()) == 0 && (m.focus == "errors" || m.focus == "diagnostics") {
 		m.focus, m.reveal = "table", true
 		m.scroll = 0
 	}

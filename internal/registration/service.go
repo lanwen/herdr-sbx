@@ -91,10 +91,11 @@ type SandboxSelection struct{ Scope, Socket, ID, Name string }
 
 // registrationWork binds identity, saved state, and its cancellation guard for one transaction.
 type registrationWork struct {
-	Scope   string
-	State   *store.State
-	Sandbox sbx.Sandbox
-	Current func() bool
+	Scope        string
+	State        *store.State
+	Sandbox      sbx.Sandbox
+	Current      func() bool
+	CurrentError func() error
 }
 
 // sandboxWork retains identity and its freshness guard during guest operations.

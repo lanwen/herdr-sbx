@@ -21,7 +21,7 @@ func diagnosticGroupKey(code, scope string) string { return errorScopeKey(code, 
 func (m *model) diagnosticGroups() []diagnosticGroup {
 	var groups []diagnosticGroup
 	indices := map[string]int{}
-	for _, e := range m.errors {
+	for _, e := range m.pageErrors() {
 		key := diagnosticGroupKey(e.code, e.scope)
 		index, ok := indices[key]
 		if !ok {
@@ -114,12 +114,12 @@ func (m *model) queueDiagnosticWrite(e uiError, apply func() error) {
 }
 
 func (m *model) focusFollowingSections() {
-	if len(m.events) > 0 {
+	if len(m.pageEvents()) > 0 {
 		m.focus, m.eventIndex = "events", -1
 		m.reveal = true
 		return
 	}
-	if len(m.errors) > 0 {
+	if len(m.pageErrors()) > 0 {
 		m.focus, m.reveal = "diagnostics", true
 	}
 }
@@ -132,7 +132,7 @@ func (m *model) eventTitle() string {
 	if m.focus == "events" && m.eventIndex < 0 {
 		arrow = "> " + arrow
 	}
-	return fmt.Sprintf("%s Events · %d recent", arrow, len(m.events))
+	return fmt.Sprintf("%s Events · %d recent", arrow, len(m.pageEvents()))
 }
 
 func diagnosticTime(at time.Time) string {
@@ -144,4 +144,48 @@ func diagnosticTime(at time.Time) string {
 
 func diagnosticIdentity(e uiError) string {
 	return errorScopeKey(e.code, e.scope, e.pluginID) + "\x00" + e.detail + "\x00" + e.output + "\x00" + e.recovery + "\x00" + e.command + "\x00" + e.firstSeen.Format(time.RFC3339Nano)
+}
+
+// Status shares stored observations with Sandboxes but displays only global work.
+func (m *model) pageErrors() []uiError {
+	if m.page != "Status" {
+		return m.errors
+	}
+	var entries []uiError
+	for _, e := range m.errors {
+		if !m.sandboxScope(e.scope) {
+			entries = append(entries, e)
+		}
+	}
+	return entries
+}
+
+func (m *model) pageEvents() []store.EventRecord {
+	if m.page != "Status" {
+		return m.events
+	}
+	var entries []store.EventRecord
+	for _, e := range m.events {
+		if e.Name == "" && !m.sandboxScope(e.Scope) {
+			entries = append(entries, e)
+		}
+	}
+	return entries
+}
+
+func (m *model) sandboxScope(scope string) bool {
+	for _, row := range m.rows {
+		if scope == row.Sandbox.ID || scope == store.StatusKey(row.Scope, row.Sandbox.ID) {
+			return true
+		}
+	}
+	_, identity, scoped := strings.Cut(scope, "/")
+	if !scoped {
+		return false
+	}
+	switch identity {
+	case "catch-up", "stream", "discovery":
+		return false
+	}
+	return true
 }

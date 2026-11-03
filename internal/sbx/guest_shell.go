@@ -5,15 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/lanwen/herdr-sbx/internal/process"
 )
 
 // PrepareGuestShell keeps Docker's forwarded agent available to sandbox shells.
-// Callers must first verify eligibility and a running sandbox; exec can start it.
+// Callers must verify a running sandbox or initial registration of a newly
+// created sandbox; exec can start it.
 func (c *Client) PrepareGuestShell(ctx context.Context, name string) error {
-	output, err := c.cli(ctx, 15*time.Second, true, "exec", name, "--", "env", "-u", "BASH_ENV", "/bin/bash", "--noprofile", "--norc", "-c", guestShellSetup)
+	output, err := c.guestExec(ctx, name, "--", "env", "-u", "BASH_ENV", "/bin/bash", "--noprofile", "--norc", "-c", guestShellSetup)
 	if err != nil {
 		if errors.Is(err, process.ErrTimeout) {
 			err = fmt.Errorf("sandbox preparation %w when trying to update Bash startup files for Docker's forwarded SSH agent", err)

@@ -4,6 +4,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -20,7 +21,7 @@ func TestExpandedCardReplacesRowAndKeepsIdentityActionsAndVersion(t *testing.T) 
 	r := &m.rows[0]
 	r.ProfileID = "machine-id"
 	r.Status.Connection = "ready"
-	r.Status.GuestServer = &store.GuestServerObservation{Version: "0.9.3"}
+	r.Status.GuestServer = &store.GuestServerObservation{Version: "0.9.3", Current: true, CheckedAt: time.Now()}
 	m.plugins = []guestplugins.Choice{{ID: "example.plugin"}}
 	lines := m.sandboxLines()
 	var text strings.Builder
@@ -102,7 +103,7 @@ func TestWrappedDetailTitleKeepsPanelBackgroundBeforeVersionBadge(t *testing.T) 
 	m.rows[0].Sandbox.Name = "claude-testcontainers-integration-platform"
 	m.rows[0].Label = "CM"
 	m.rows[0].Status.Connection = "ready"
-	m.rows[0].Status.GuestServer = &store.GuestServerObservation{Version: "0.9.3"}
+	m.rows[0].Status.GuestServer = &store.GuestServerObservation{Version: "0.9.3", Current: true, CheckedAt: time.Now()}
 	for _, focus := range []string{"table", "actions"} {
 		m.focus = focus
 		frame := m.View().Content

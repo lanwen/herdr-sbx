@@ -152,7 +152,15 @@ If output exceeds this limit, the plugin stops the command and reports an error 
 Recovery can replace a confirmed guest executable with that version and request a live handoff, which replaces the server while preserving panes.
 If the handoff fails, the plugin reports the error without forcing a restart.
 Broken or ambiguous installations require user action.
-An uncertain registration retries only after a successful catalog read finds no matching machine.
+After every machine-add attempt, verify the local machine catalog up to three times, separated by 150 milliseconds, with a five-second overall verification deadline.
+Checks are read-only and stop promptly on cancellation; they never open a guest connection or repeat the add.
+Only a trusted acknowledged machine ID with the expected target and default session can become a confirmed pending association.
+Save an unverified acknowledgement as optional `pending_profile_id`, separate from confirmed `profile_id`.
+Readable final absence and unavailable final verification have distinct sandbox explanations.
+An unresolved attempt never automatically repeats an add; an explicit eligible retry requires a fresh successful catalog read with unambiguous absence.
+The existing recognized server-not-ready recovery is a narrow exception: successful safe guest alignment permits one add retry only after a new readable catalog check confirms absence after repair.
+A candidate, unavailable catalog, changed identity, or newer disabled choice prevents that retry.
+A known transient remote timeout, unavailable sandbox SSH proxy, or platform-detection failure shares the same one-retry bound, after successful readiness preparation and new same-identity, desired-choice, and absence checks.
 Guest observations, connection failures, and recovery outcomes follow the [sandbox specification](tui/sandboxes.md#guest-observations-and-recovery).
 Successful plugin synchronization and bounded audits follow the [plugin specification](tui/plugins.md).
 
@@ -166,11 +174,20 @@ Reject a non-string inventory workspace as an invalid daemon response.
 Do not invent a project path for a mountless sandbox.
 On hosts requiring path conversion, use the guest probe unless the conversion is verified.
 Keep a saved pending guest path on retry.
-The plugin records completion, so a workspace that you close stays closed.
+The plugin records completion for the saved connection, so a workspace that you close stays closed while that connection remains.
+Removing the saved connection, or confirming that it is absent, invalidates project completion for its replacement.
+Re-adding verifies and reuses an existing project pane or starts a fresh server in the project directory; saved plugin observations, choices, and guest files remain.
 Without project metadata, workspace setup stays unchanged.
 
 State uses `HERDR_PLUGIN_STATE_DIR`, or `${XDG_STATE_HOME:-$HOME/.local/state}/herdr/plugins/lanwen.herdr-sbx` by default.
 The directory holds stable association and enabled-choice records, daemon status, `state.json.worker.log`, and `guest-plugins.json`.
+Registration records bounded structured evidence at remote probe, add, failed identity check, and catalog verification boundaries.
+Records identify the stage, stable sandbox ID, attempt, elapsed time, effective deadline and cancellation, acknowledged machine ID, command error, and sanitized combined output.
+The concise UI explanation is separate from this evidence.
+Detailed registration events remain in the bounded history inside `state.json.status`, and structured logger output uses `state.json.worker.log` and its `.1` and `.2` archives below.
+Output is limited to 16 KiB per evidence record; terminal control sequences are removed, and Authorization header values and token, password, secret, or api_key assignments are redacted.
+The plugin does not claim to reconstruct command output that an earlier executable did not record.
+
 The daemon writes timestamped text events with severity and short details, including startup, reconnects, shutdown, prerequisite changes, and sandbox outcomes.
 Identical prerequisite reports and sandbox outcomes are suppressed until their state or detail changes; foreground prerequisite and reconciliation tables stay unchanged.
 Full command output and multiline reports are omitted from the daemon log; saved diagnostics remain separate.
@@ -190,7 +207,13 @@ Run `mise run link` to build and relink the checkout after manifest changes.
 Guest preparation installs a `herdr-sbx SSH agent` block in `~/.bashrc` and the first existing Bash login file: `~/.bash_profile`, `~/.bash_login`, or `~/.profile`.
 For this preparation step, the plugin uses scoped `sbx exec` with `env -u BASH_ENV /bin/bash --noprofile --norc -c`.
 This updates startup files for the sandbox's default user without reading shell startup hooks first.
-The running-sandbox eligibility check remains required because `sbx exec` can start a stopped sandbox.
+On macOS and Linux, guest preparation and workspace probes unset host `SSH_AUTH_SOCK` in the outer `sbx exec` process.
+This preserves Sandboxes' saved forwarding target.
+The parent environment and explicit `sbx setup ssh` agent selection stay unchanged.
+Windows keeps the inherited environment because an unset `SSH_AUTH_SOCK` selects the [native OpenSSH agent fallback](https://docs.docker.com/ai/sandboxes/configuration/settings/#sshagentsocketpath).
+The running-sandbox eligibility check remains required because `sbx exec` can start a stopped sandbox, except during initial registration authorized by a fresh `created` lifecycle event.
+With Management ON and no explicit Disabled choice, that event uses normal guest preparation and `herdr machine add` even when the new sandbox is stopped.
+This may start the sandbox; ordinary stopped discovery and existing stopped entries do not authorize guest work.
 If none of those login files exists, it creates `~/.profile`.
 The block sets `SSH_AUTH_SOCK=/run/ssh-agent.sock` only when Docker's forwarded agent socket exists.
 This bypasses [Herdr's rejection of root-owned agent sockets](https://github.com/herdrdev/herdr/issues/5077) for interactive Bash panes and Git or agents started from those shells.
@@ -204,7 +227,7 @@ Direct process launches and restored agents that do not read Bash startup files 
 | Prepared guest with unchanged choices | Reconcile | Retain readiness | Use the existing bounded guest audit; repeat preparation updates the same blocks | No duplicate blocks or changes to unrelated settings |
 | Native Docker agent socket absent | Start a Bash shell | Normal shell startup | Leave the inherited `SSH_AUTH_SOCK` unchanged | Other agent setups continue to work |
 | Guest startup file is a symlink, a special file, contains an incomplete owned block, or cannot be written | Prepare guest | Sandbox setup diagnostic `R0007` | Leave the failing file unchanged | Preparation does not claim readiness; resolve the file problem and choose Re-sync |
-| Management OFF, sandbox Disabled, or sandbox stopped | Automatic reconciliation | Existing inactive state | Do not install or update startup blocks | Previously installed blocks remain in place |
+| Management OFF, sandbox Disabled, or sandbox stopped without fresh creation authorization | Automatic reconciliation | Existing inactive state | Do not install or update startup blocks | Previously installed blocks remain in place |
 
 The plugin owns only the marked blocks and preserves other startup settings and file permissions.
 It does not copy host shell configuration, change signing keys, or modify Docker's socket.
@@ -286,6 +309,12 @@ Pending cleanup blocks registration.
 Cleanup records without a saved policy sandbox stay pending for manual inspection.
 Changed rules and uncertain creation results require manual inspection.
 Concurrent rule edits can race with removal because the policy API has no conditional delete.
+
+Explicit Re-sync and selected reconciliation wait for existing registration work with context cancellation.
+The panel keeps the request pending and does not ask the user to repeat it because a registration lock is busy.
+Background duplicate catch-up is coalesced for a later tick.
+Created and started lifecycle events retain distinct required work through contention or transient pre-add observation and remote-probe failures, including stopped creation intent; duplicate events do not repeat it.
+A failed remote probe before an add retains the creation request for the next worker tick; it does not grant replay permission after an uncertain add.
 
 ## Development
 

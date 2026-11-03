@@ -24,7 +24,7 @@ func TestGuestVersionArrowsCompareHostWithoutChangingBorderStyle(t *testing.T) {
 		m := modelFixture(t)
 		hostVersionFixture(m, tc.host)
 		r := m.rows[0]
-		r.Status.GuestServer = &store.GuestServerObservation{Version: tc.guest}
+		r.Status.GuestServer = &store.GuestServerObservation{Version: tc.guest, Current: true, CheckedAt: time.Now()}
 		want := "herdr " + tc.guest + tc.suffix
 
 		got := m.guestServerLabel(r)

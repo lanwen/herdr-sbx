@@ -52,7 +52,10 @@ Use colored foreground text without a filled background for results, and capital
 Combine sbx version and command support in one row, and daemon health and inventory access in a Sandbox service row.
 Keep herdr, Docker sign-in, OpenSSH, and Sandbox SSH separate because their recovery actions differ.
 Grouped rows preserve independent failure causes and recovery instructions without repeating checks skipped because an earlier prerequisite failed.
-Do not show Sandbox setup in global Status; setup belongs to each sandbox's status.
+Status contains only global Management, prerequisite, diagnostic, and event information.
+Do not show sandbox setup, entry association summaries, sandbox recovery advice, or sandbox-scoped diagnostics and events here.
+Keep those observations and recovery actions in Sandboxes, including for deleted or currently unavailable sandbox identities.
+Keyboard targets, help, counts, and Refresh availability on Status follow the same global-only scope.
 Load the saved choice when the TUI opens; status polls must never change it.
 The choice changes immediately when toggled, while observed operation state follows worker reports.
 Turning OFF immediately prevents new automatic operations and requests cancellation of work already in progress.

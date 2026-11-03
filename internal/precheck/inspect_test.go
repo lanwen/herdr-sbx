@@ -136,6 +136,14 @@ func TestInspectShowsUnresolvedDeletedRegistration(t *testing.T) {
 	assertCheck(t, f.inspector.Inspect(), "Registration association", Unknown)
 }
 
+func TestInspectReportsUnreadableRegistrationState(t *testing.T) {
+	f := newCheckFixture(t)
+	path, err := store.StatePath()
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, []byte("invalid JSON"), 0600))
+	assertCheck(t, f.inspector.Inspect(), "Registration state", Unknown)
+}
+
 func TestInspectDockerSignIn(t *testing.T) {
 	for _, test := range []struct {
 		name, diagnostic string

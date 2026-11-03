@@ -43,6 +43,8 @@ func testPanel(t *testing.T, interactive func(context.Context, string, ...string
 			args = args[2:]
 		}
 		switch cmd.Name + " " + strings.Join(args, " ") {
+		case "herdr machine list --json":
+			return `[]`, nil
 		case "herdr plugin list --json":
 			return `[{"plugin_id":"first.plugin","enabled":true},{"plugin_id":"second.plugin","enabled":true}]`, nil
 		case "herdr --version":

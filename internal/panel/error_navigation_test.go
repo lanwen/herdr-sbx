@@ -121,6 +121,10 @@ func TestOtherTabsTraverseTheirFinalControlAndErrors(t *testing.T) {
 		m := modelFixture(t)
 		m.page = page
 		m.errors = navigationErrors()
+		if page == "Status" {
+			m.errors = []uiError{{code: store.CodeDaemonStart, scope: "worker", detail: "Management start failed"}}
+		}
+
 		m.plugins = []guestplugins.Choice{{ID: "one"}, {ID: "two"}}
 		m.key(keyMsg(tea.KeyEnd, ""))
 		lastButton := m.button

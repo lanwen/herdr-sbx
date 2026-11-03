@@ -24,6 +24,7 @@ func (m *model) sandboxDetails(r registration.SandboxRow) []line {
 		lines = append(lines, textLine(continuation))
 	}
 	lines = append(lines, textLine(""))
+	lines = append(lines, pendingEntryLines(r, max(1, width-indent-4))...)
 	lines = append(lines, m.detailActionLines(r)...)
 	identity := safeText(id)
 	if r.ProfileID != "" {
@@ -42,12 +43,32 @@ func (m *model) sandboxDetails(r registration.SandboxRow) []line {
 	return result
 }
 
+func pendingEntryLines(row registration.SandboxRow, width int) []line {
+	if row.EntryPresent || row.Status.Connection != "pending" {
+		return nil
+	}
+	var lines []line
+	for _, part := range wrapHint(safeText(row.Status.Detail), width) {
+		lines = append(lines, textLine(ink(colorWarning, part)))
+	}
+	return append(lines, textLine(""))
+}
+
 func guestServerDescription(r registration.SandboxRow) string {
 	observed := r.Status.GuestServer
 	if observed == nil || observed.Version == "" {
 		return ""
 	}
-	return "herdr " + safeText(observed.Version)
+	label := "herdr " + safeText(observed.Version)
+	if !guestVersionCurrent(r) {
+		label += " (last known)"
+	}
+	return label
+}
+
+func guestVersionCurrent(row registration.SandboxRow) bool {
+	observed := row.Status.GuestServer
+	return observed != nil && observed.Current && !row.Status.Stale && strings.EqualFold(row.Sandbox.Status, "running") && !strings.EqualFold(row.Status.Connection, "connection failed") && time.Since(observed.CheckedAt) <= 15*time.Minute
 }
 
 func detailsObservationAge(observedAt, now time.Time) string {
@@ -184,7 +205,7 @@ func guestVersionHint(r registration.SandboxRow) string {
 		return "The herdr server version in this sandbox is unknown."
 	}
 	qualifier := "This sandbox runs herdr "
-	if !observed.Current || r.Status.Stale || !strings.EqualFold(r.Sandbox.Status, "running") || time.Since(observed.CheckedAt) > 15*time.Minute {
+	if !guestVersionCurrent(r) {
 		qualifier = "The last known herdr server version in this sandbox is "
 	}
 	return qualifier + safeText(observed.Version) + "."
