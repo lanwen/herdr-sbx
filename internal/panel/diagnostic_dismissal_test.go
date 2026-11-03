@@ -153,7 +153,7 @@ func TestEventsPrecedeDiagnosticsAndCollapsedHeaderTraverses(t *testing.T) {
 	m.errors = navigationErrors()
 	view := ansi.Strip(m.View().Content)
 	require.False(t, strings.Index(view, "Events") > strings.Index(view, "Errors"))
-	require.NotContains(t, view, "Temporary access cleanup checked")
+	require.Contains(t, view, "Temporary access cleanup checked", "fixed observations retain the newest event preview")
 	m.key(keyMsg(tea.KeyDown, ""))
 	require.EqualValues(t, "events", m.focus)
 	require.False(t, m.eventIndex != -1)

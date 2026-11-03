@@ -483,3 +483,16 @@ func ClearError(code, scope string) error {
 		}
 	})
 }
+
+// ResolveErrors moves only matching active failures into resolved event history.
+func ResolveErrors(match func(ErrorRecord) bool) error {
+	return UpdateStatusStore(func(status *StatusStore) {
+		for key, entry := range status.Errors {
+			if !match(entry) {
+				continue
+			}
+			appendEvent(status, EventRecord{Ref: entry.Ref, Code: entry.Code, Scope: entry.Scope, PluginID: entry.PluginID, Detail: entry.Detail, Output: entry.Output, Recovery: entry.Recovery, Command: entry.Command, Resolved: true, At: time.Now()})
+			delete(status.Errors, key)
+		}
+	})
+}

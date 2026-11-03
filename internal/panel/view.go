@@ -91,7 +91,7 @@ func (m *model) View() tea.View {
 		return m.helpView()
 	}
 	m.hits = nil
-	m.hintInBody = false
+	m.hintScrollable = false
 	header, body := m.pageBody()
 	inlineConfirmation := m.dialog == "fix-herdr"
 	lines := []line{header}
@@ -101,27 +101,31 @@ func (m *model) View() tea.View {
 	}
 	body = body[1:]
 
-	notices := m.hintSection(inlineConfirmation)
-	body = m.observationSections(body)
-	// Long hints and confirmations scroll with the body instead of consuming
-	// the selected control viewport. The quit prompt stays visible until disarmed.
-	if m.quitUntil.IsZero() && len(notices) > m.height-7 {
-		m.hintInBody = true
-		body = append(body, notices...)
-		notices = nil
-	}
 	footer := m.statusFooter()
 	footerLines := []line{textLine(ink(colorMuted, m.renderHelp(m.width, false)))}
 	if m.managementCancelling() && m.width < 42 {
 		footerLines = append(footerLines, textLine(ink(colorMuted, "Cancelling")))
 	}
 	footerLines = append(footerLines, footer)
-	fixed := len(notices) + len(footerLines)
-	capacity := max(1, m.height-fixed-1)
-	m.revealSelection(body, capacity)
-
+	available := max(1, m.height-len(footerLines)-1)
+	observationCapacity := m.observationBudget(available)
+	rawHint := m.hintContent(inlineConfirmation)
+	hintBudget := min(3, max(0, available-observationCapacity-1))
+	if !m.quitUntil.IsZero() || m.dialog != "" {
+		hintBudget = min(len(rawHint)+2, max(0, available-observationCapacity-1))
+	}
+	notices := m.fixedHint(rawHint, hintBudget)
+	observations := m.fixedObservations(observationCapacity)
+	m.observationsY = m.height - len(footerLines) - len(observations)
+	m.hintY = m.observationsY - len(notices)
+	fixed := notices
+	fixed = append(fixed, observations...)
+	capacity := max(1, available-len(fixed))
+	if !m.observationsFocused() {
+		m.revealSelection(body, capacity)
+	}
 	m.scroll = min(max(0, len(body)-capacity), m.scroll)
-	lines = m.frameLines(lines, body, notices, footerLines, capacity)
+	lines = m.frameLines(lines, body, fixed, footerLines, capacity)
 
 	var b strings.Builder
 	for i, l := range lines {
@@ -553,9 +557,14 @@ func (m *model) pageBody() (line, []line) {
 	return header, body
 }
 
-func (m *model) hintSection(inlineConfirmation bool) []line {
-	var notices []line
+func (m *model) hintContent(inlineConfirmation bool) []line {
 	hint, hintColor := m.notice, colorInfo
+	if m.noticeCode != "" {
+		hintColor = diagnosticColor(m.noticeCode)
+	}
+	if pending := m.pendingActionLabel(); pending != "" {
+		hint, hintColor = pending, colorInfo
+	}
 	if m.noticeTarget == "worker" && m.managementCancelling() {
 		hintColor = colorMuted
 	}
@@ -567,12 +576,7 @@ func (m *model) hintSection(inlineConfirmation bool) []line {
 	if hint == "" {
 		hint, hintColor = m.contextHint()
 	}
-	hintLines := m.hintLines(hint, hintColor, inlineConfirmation)
-	if len(hintLines) > 0 {
-
-		notices = append(notices, outline(hintLines, "Hint", m.width, 0)...)
-	}
-	return notices
+	return m.hintLines(hint, hintColor, inlineConfirmation)
 }
 
 func (m *model) observationSections(body []line) []line {
@@ -735,11 +739,11 @@ func (m *model) actionHint(row registration.SandboxRow) (string, string) {
 	}
 	switch actions[m.button].id {
 	case "enable":
-		if !row.EntryPresent && strings.EqualFold(row.Sandbox.Status, "stopped") {
-			return "Start the sandbox yourself before enabling its herdr connection.", colorMuted
-		}
 		return "Enable this sandbox's herdr connection. Herdr may start it when connecting.", colorAccent
 	case "disable":
+		if row.CreationRequested {
+			return "Cancel automatic initial registration for this sandbox. Existing files stay in place.", colorInfo
+		}
 		return "Disable this sandbox's herdr connection and stop its plugin work. Keep its entry, label, and existing files.", colorInfo
 	case "remove":
 		return "Remove this disabled entry from herdr. Keep the sandbox and its files. Enable adds the entry again.", colorInfo
@@ -958,7 +962,7 @@ func (m *model) hintLines(hint, hintColor string, inlineConfirmation bool) []lin
 		return nil
 	}
 	hint = strings.ReplaceAll(productText(hint), "herdr-sbx", "the plugin")
-	if m.noticeTarget != "" && m.pending[m.noticeTarget] && !(m.noticeTarget == "worker" && m.managementCancelling()) {
+	if m.pendingActionLabel() != "" && !m.managementCancelling() {
 		hint = m.actionSpinner() + " " + hint
 	}
 	var lines []line

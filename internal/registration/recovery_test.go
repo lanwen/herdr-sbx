@@ -11,6 +11,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lanwen/herdr-sbx/internal/process"
+	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
 	"github.com/stretchr/testify/require"
 )
@@ -33,6 +34,22 @@ func TestRegistrationMismatchRecoversThenRegistersOnce(t *testing.T) {
 	require.Len(t, items, 1)
 	require.False(t, items[0].Pending)
 	require.EqualValues(t, "machine-1", items[0].ProfileID)
+}
+
+func TestCreatedRegistrationMismatchRetainsBoundedRetry(t *testing.T) {
+	fixture := newRegistrationFixture(t, `[{"uuid":"sandbox-1","name":"demo","status":"running"}]`)
+	commands := &registrationRecoveryCommands{}
+	fixture.runner.Execute = commands.execute
+	fixture.rebuildClients()
+	accepted, err := store.RequestCreation(store.ScopeID("/tmp/recovery.sock"), "sandbox-1", "demo")
+	require.NoError(t, err)
+	require.True(t, accepted)
+	require.NoError(t, fixture.service.ReconcileCreatedSandbox(context.Background(), io.Discard, "sandbox-1", "demo", func() bool { return true }))
+	require.Equal(t, 2, commands.adds, "the same authorized operation must retain its one safe retry")
+	require.Equal(t, 1, commands.handoffs)
+	saved, err := store.ReadStatusStore()
+	require.NoError(t, err)
+	require.Empty(t, saved.CreationRequests)
 }
 
 func TestRegistrationNotificationsRetryDeliveryAndResetAfterRecovery(t *testing.T) {
@@ -167,4 +184,28 @@ func (f *registrationRecoveryCommands) other(command process.Command, call strin
 		return "{}", nil
 	}
 	return "", fmt.Errorf("unexpected call %s", call)
+}
+
+func TestCreatedRetryCannotUseClearedRequest(t *testing.T) {
+	fixture := newRegistrationFixture(t, `[]`)
+	adds := 0
+	fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
+		if command.Name == "herdr" && strings.HasPrefix(strings.Join(command.Args, " "), "machine add ") {
+			adds++
+		}
+		return `[]`, nil
+	}
+	fixture.rebuildClients()
+	pending := store.Tracked{SandboxID: "sandbox-1", Target: "demo.sbx", Label: "sbx · demo", Pending: true}
+	state := store.State{Version: 1, Scopes: map[string][]store.Tracked{"scope": {pending}}}
+	require.NoError(t, store.SaveState(state))
+	accepted, err := store.RequestCreation("scope", "sandbox-1", "demo")
+	require.NoError(t, err)
+	require.True(t, accepted)
+	attempt := registrationAttempt{service: fixture.service, ctx: context.WithValue(context.Background(), createdSandboxKey{}, "sandbox-1"), scope: "scope", sandbox: sbx.Sandbox{ID: "sandbox-1", Name: "demo"}, state: &state, pending: pending, target: "demo.sbx"}
+	require.Nil(t, attempt.handoffCreation())
+	require.NoError(t, store.ClearCreationRequest("scope", "sandbox-1"))
+	outcome, _ := attempt.addCurrent()
+	require.Zero(t, adds, "the retry must not outlive retained permission")
+	require.Equal(t, "disabled", outcome.Status)
 }

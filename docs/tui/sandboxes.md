@@ -6,7 +6,7 @@ See the [shared interface rules](../tui-spec.md) for navigation, help, styling, 
 
 Each sandbox has a durable Enabled or Disabled choice, separate from Management and entry presence.
 Newly discovered sandboxes default to Enabled, except stopped sandboxes without herdr entries.
-Those sandboxes remain Disabled until an eligible explicit Enable, except when a fresh `created` lifecycle event authorizes initial registration while Management is ON.
+Those sandboxes remain Disabled until an eligible explicit Enable, except when a saved `created` registration request authorizes initial registration while Management is ON.
 Preserve explicit Disabled choices across refreshes, daemon restarts, and Management OFF/ON unless a verified external change to an existing entry supersedes them on resume.
 Default discovery must never reset a Disabled choice after the user removes its entry.
 
@@ -25,10 +25,32 @@ Unknown or transitional runtime is not Stopped: an unavailable running-state che
 | Starting state | Action | Immediate feedback | External effect | Settlement and failure |
 | --- | --- | --- | --- | --- |
 | Management ON; fresh created identity; Running or Stopped; no entry; no explicit Disabled choice | `created` lifecycle event | Setting up; label stays blank until verified | Prepare the guest and call `machine add`, allowing the connection to start a stopped sandbox | Verify the returned entry and retain existing add uncertainty, cancellation, and persistence handling. A passive stopped default does not suppress creation. |
-| Management OFF, explicit Disabled choice, unknown or replaced identity | `created` lifecycle event | Existing inactive or uncertain state | No automatic guest work or add | Preserve the saved choice; ordinary discovery does not replay the creation exception. |
+| Management OFF, explicit Disabled choice, unknown or replaced identity | `created` lifecycle event | Existing inactive or uncertain state | No automatic guest work or add | Pause saved creation requests while OFF or provisioning; cancel for explicit Disabled or verified replacement. |
 | Stopped; existing entry | Repeated `created` lifecycle event | Existing stopped state and label | No add, guest work, or native enable | Preserve the entry and its native state. |
+
+| Management ON or OFF; Running or Stopped; no saved connection | Explicit Enable | Enabling immediately | Save an exact UUID/name registration request, prepare the guest and add its Herdr connection; ordinary SSH may start a stopped sandbox | Verify the saved connection; retain the request through pre-add failure. Automatic retries wait while Management is OFF. |
+| Management ON; unique canonical target and default-session connection; no competing owner; pending acknowledgement absent or matching | Automatic reconciliation | Adopt the observed connection and label | Recheck the exact UUID/name after reading connections, then save the association and actual native Enabled state; no add or native enable | Clear resolved pending registration and its diagnostic; a native Disabled connection remains Disabled without guest work. |
+| Management OFF; same unique compatible connection | Observation or explicit Enable | Observe without automatic adoption; explicit Enable shows progress | Only explicit Enable may save the association and enable a disabled native connection | Management remains OFF. |
+| Multiple candidates, wrong session, conflicting acknowledgement, other owner, unreadable connections, or replaced UUID | Reconciliation or Enable | Specific association or observation failure | No association change, add, or native mutation | Preserve evidence until the plugin can verify a safe association. |
+
+Created registration requests are saved in `state.json.status` before inventory checks, guest preparation, or acquisition of the registration lock. They identify the daemon scope and exact sandbox UUID; they are separate from an attempted add (`Tracked.Pending`) and confirmed ownership. A requested sandbox shows waiting for provisioning and offers Disable to cancel the request, including while stopped without a saved connection. The existing 30-second catch-up retries them after slow provisioning or a worker restart. This does not guarantee replay of lifecycle events never received by the plugin.
+
+| Starting state | Action | Immediate feedback | External effect | Settlement and failure |
+| --- | --- | --- | --- | --- |
+| Created UUID; no saved request | Receive event, including while Management is OFF | Save registration request | Sidecar write only before any guest work | A failed save prevents guest/add work; retain the event in memory for retry. A disk failure followed by process loss cannot guarantee recovery. |
+| Saved request; inventory unavailable, UUID not visible yet, or provisioning/unknown runtime | Existing catch-up or worker restart | Retain request | Bounded inventory reads; no guest/add | Retry on the existing catch-up interval without an expiry. |
+| Saved request; same UUID/name; Running or Stopped; Management ON; no explicit Disabled | Replay request | Existing preparation status and precise failure cause | Existing creation-authorized preparation/add pipeline | Preparation failure retains the request. Save durable add intent before handing responsibility to pending-add verification. |
+| Saved request; Management OFF | Event or catch-up | Registration paused | No guest/add | Preserve request until Management resumes. |
+| Saved request; explicit Disable, exact deletion/retirement, or verified same name with a different UUID | Choice or lifecycle observation | Preserve Disabled or deletion state | Cancel old request | Never transfer permission to a replacement by name. Passive stopped Disabled at revision zero does not cancel. Cancelling local pre-add permission remains Disabled even if a subsequent host read fails; cancellation and add handoff are ordered atomically. |
+| Saved request; durable pending-add intent | Reconciliation | Existing verification outcome | Keep the request inert while Pending owns the unresolved attempt | Do not repeat add for an acknowledged ID, lost response, unavailable catalog, candidate, or unknown failure. |
+| Saved request; native add exits nonzero, explicitly says the machine was not saved, reports a recognized transient setup failure, has no trusted acknowledgement, and the final fresh catalog confirms no candidate | Existing bounded add operation settles | Report the actual setup failure and automatic retry | Clear Pending durably after fresh same-identity and permission checks; retain the request | Retry on the existing 30-second cycle, including after restart. No immediate third add. |
+| Saved request; verified association | Reconciliation | Verified connection state | Clear the fulfilled request | Later missing entries do not recreate creation permission. |
+| Eligible running or stopped sandbox without a saved connection | Explicit Enable | Existing setup progress | Record positive registration intent only after fresh same-UUID observation | Failed creation, later passive absence, and restart baseline capture do not turn that accepted intent into explicit Disable while no native association has been verified. Explicit Disable atomically cancels it. Explicit Enable also permits a stopped sandbox. |
+
+| Starting state | Action | Immediate feedback | External effect | Settlement and failure |
+| --- | --- | --- | --- | --- |
 | Running; no entry | Enable | Blue checkmark and Enabling…; blank label | Verify running identity, prepare guest, and add entry | Keep verified entry and native choice even if later setup fails; report setup failure separately. |
-| Stopped; no entry | Enable | Muted dot and Stopped; no transition or warning | No add, SSH, or start | Disabled with blank label; a later start still requires explicit Enable. |
+| Stopped; no entry | Enable | Enabling… | Save registration request, prepare through SSH and add the connection; SSH may start the sandbox | Verify the actual connection; retain provisioning failures and pending work without changing Management. |
 | Existing entry; Running | Enable | Blue checkmark and Enabling…; label retained | Native enable if needed, then verify catalog | Follow native state; this action itself does not perform guest setup. Automatic setup requires Management ON. |
 | Existing entry; Stopped | Enable | Blue checkmark and Enabling… | Native enable; no plugin guest setup or direct start | Follow native state; Herdr may connect and start the sandbox. Stopped observations do not undo Enabled. |
 | Existing entry; Running or Stopped | Disable | Muted dot and Disabling…; label retained | Native disable and safe cancellation of guest work | Follow native state; preserve entry and files. A Herdr connection already in progress is not cancelled. |
@@ -71,8 +93,8 @@ Keep the attempted creation and its acknowledged ID separately from a confirmed 
 | Starting state | Action | Immediate feedback | External effect | Settlement and failure |
 | --- | --- | --- | --- | --- |
 | Add returned a trusted ID; exact ID, target, default session, and sandbox identity verified | Check catalog | Registered | Local catalog reads only | Promote the acknowledged ID to confirmed association; retain actual label and native state. |
-| Add failed or returned no trusted ID; catalog has a target or label candidate | Check catalog | Registration unconfirmed with the candidate cause | No add, guest work, or native mutation | Retain the attempt; do not adopt the candidate through observation or Enable. |
-| Final readable catalog has no matching candidate after the bounded checks | Check catalog | State that no matching entry appeared after the actual check count; include an add failure when present | Reads only | Retain the attempt; offer an explicit eligible retry without automatically adding again. |
+| Add failed or returned no trusted ID; catalog has a target or label candidate | Check catalog | Registration unconfirmed with the candidate cause | No add, guest work, or native mutation | Retain the attempt during immediate add verification; later reconciliation or explicit Enable may adopt only the unique exact-target/default-session candidate under the adoption rules above. |
+| Final readable catalog has no matching candidate after the bounded checks | Check catalog | State that no matching entry appeared after the actual check count; include an add failure when present | Reads only | Retain the attempt without automatically adding again, except for the strict recognized transient not-saved result with retained registration intent defined above. |
 | Final catalog read fails or is malformed | Check catalog | Could not verify after the actual check count, with the cause | Reads only | Keep prior observations as last known, retain the attempt and acknowledged ID, and do not infer absence. |
 | Wrong ID, target, session, duplicate candidate, label collision, or changed sandbox identity | Check catalog | Specific unconfirmed association warning | No adoption or replay | Preserve the attempt and identity safeguards. |
 | Pending acknowledged ID later appears and its full association verifies | Periodic or event observation | Registered | Local catalog confirmation | Settle the exact acknowledged ID without another add. |
@@ -141,14 +163,14 @@ Do not attach that explanation to other sandboxes.
 A row control and a keyboard action toggle Enabled and Disabled.
 The checkmark or dot has its own mouse target, independent of row or card selection.
 For an eligible confirmed missing entry, activating the dot performs Enable or retries entry creation, even if discovery already saved an Enabled intention.
-If a stopped sandbox has no entry, activation leaves it Disabled quietly.
+If a stopped sandbox has no entry, explicit activation starts its registration.
 Do not invert that hidden intention into Disabled when the user activates a missing-entry dot.
 Suppress duplicate activation while entry creation is in progress.
 Enable saves the enabled choice and adds an eligible herdr entry if absent, or enables the existing entry even when the sandbox is stopped.
 For an existing stopped entry, call herdr's native enable operation without guest setup or a direct sandbox start.
 Herdr may connect and start the sandbox as a result of that explicit action.
-For a stopped sandbox without an entry, do not save pending Enabled intent or emit a warning.
-Show the ordinary neutral Stopped status and keep the label blank and muted dot.
+For a stopped sandbox without an entry, save its registration request and show Enabling while preparation and add run.
+Report the actual failure and retain the request if provisioning prevents preparation.
 When an already enabled sandbox with an existing entry later starts, Management ON performs setup and enables the herdr connection if needed.
 A stopped sandbox left Disabled because it had no entry remains Disabled when it starts until the user explicitly enables it.
 With Management OFF, later automatic setup remains suspended until Management is enabled or an explicit eligible action is requested.
@@ -160,7 +182,7 @@ Offer Remove from herdr only after the sandbox is disabled and the entry is conf
 Removal deletes the herdr entry, not the sandbox, and retains the durable Disabled choice.
 Do nothing further for that live disabled sandbox until it is explicitly enabled again.
 Enable after removal recreates the entry when eligible.
-A stopped sandbox without an entry stays Disabled until it is running and the user enables it.
+A stopped sandbox without an entry stays Disabled until the user enables it or an eligible saved creation request resumes.
 Removal failures remain visible and retryable; retain the label until absence is confirmed.
 Confirmed sandbox deletion permits stale-entry cleanup while Management is ON, including for disabled entries.
 Management OFF suspends that cleanup too.
@@ -311,7 +333,7 @@ Use the following effects in the copy:
 
 | Action | Hint |
 | --- | --- |
-| Enable, absent stopped entry | This sandbox is stopped. |
+| Enable, absent stopped entry | Start this sandbox and add its Herdr connection. Management stays unchanged. |
 | Enable, existing entry | Enable this sandbox's herdr connection. Herdr may start it when connecting. |
 | Disable | Disable this sandbox's herdr connection and stop its plugin work. Keep its entry, label, and existing files. |
 | Remove from herdr | Remove this disabled entry from herdr. Keep the sandbox and its files. Enable adds the entry again. |
@@ -388,8 +410,8 @@ Verify this sequence through deletion events and periodic recovery.
 - **S07** — Up/Down immediately previews the newly selected sandbox and collapses the previous card; Enter or Right focuses its primary action, and Escape returns to list navigation without closing the preview.
 - **S15** — Enable, Disable, Rename, and Remove from herdr hints explain their effects, wrap at whole words, and remain usable with Management OFF.
 - **S30** — A missing entry and a disabled entry both use the muted dot; only the herdr label indicates entry presence, and the enabled symbol uses the existing blue accent.
-- **S31** — Ordinary discovery and Enable for a stopped sandbox without an entry stay Disabled with neutral Stopped status, no warning, no pending Enable, no machine add, and no SSH or sandbox start.
-- **S32** — Enable after explicit removal restores an entry for a running sandbox; a stopped sandbox remains Disabled without a warning.
+- **S31** — Ordinary stopped discovery remains passive; explicit Enable prepares and adds the missing connection, including while Management is OFF.
+- **S32** — Enable after explicit removal restores an entry for a running or stopped sandbox and uses its project directory.
 - **S34** — A sandbox deleted while Management is OFF retains its entry until Management resumes and deletion is confirmed.
 - **S35** — Unknown inventory, ambiguous identity, label collisions, or name reuse never authorize entry removal; an external label change does not break identity association.
 - **S36** — A plugin-sync failure or cancellation after entry creation retains the actual entry and label, and distinguishes completed setup from pending or failed work.

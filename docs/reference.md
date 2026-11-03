@@ -67,8 +67,8 @@ The `open-status` plugin action opens the manager in a popup that requests 110 c
 The `open-status-tab` and `open-status-split` actions open the same manager in a tab or split.
 The manager detects its popup context from `HERDR_ENV=1`, `HERDR_PLUGIN_ID=lanwen.herdr-sbx`, `HERDR_PLUGIN_ENTRYPOINT_ID=status`, and an empty `HERDR_PANE_ID`.
 Herdr gives tiled plugin panes a pane ID; popup pane commands have entrypoint context without a pane ID, as described in the [plugin environment documentation](https://herdr.dev/docs/plugins/#commands-and-environment).
-Only the popup uses the [two-step quit prompt](tui-spec.md#popup-closing); closing it exits the manager process without closing a tiled pane or stopping the daemon.
-When closing waits for active work and cleanup, press Ctrl+C again to force the manager to close.
+Only Escape in the popup uses the [two-step quit prompt](tui-spec.md#popup-closing); closing it exits the manager process without closing a tiled pane or stopping the daemon.
+Press `q` outside a text editor or Ctrl+C from any control to close immediately, without confirmation or waiting for active work and cleanup.
 Force closing does not stop the daemon or sandbox and does not guarantee that external work or cleanup finishes or cancels.
 `herdr-sbx status` reads saved daemon and sandbox observations without contacting Docker, starting work, or changing choices.
 Its compact human summary includes Management, daemon health, sandbox choices, runtime, labels, status, and outstanding errors.
@@ -154,13 +154,21 @@ If the handoff fails, the plugin reports the error without forcing a restart.
 Broken or ambiguous installations require user action.
 After every machine-add attempt, verify the local machine catalog up to three times, separated by 150 milliseconds, with a five-second overall verification deadline.
 Checks are read-only and stop promptly on cancellation; they never open a guest connection or repeat the add.
-Only a trusted acknowledged machine ID with the expected target and default session can become a confirmed pending association.
+Immediately after an add, only a trusted acknowledged machine ID with the expected target and default session confirms that operation.
+On a later reconciliation with Management ON, the plugin also adopts a unique unclaimed connection with the exact sandbox target and default session, even if the previous attempt had no acknowledgement.
+It rechecks the exact sandbox UUID/name after reading connections, imports the actual native Enabled state and observed label, and clears the pending request without another add or native enable.
+After a confirmed connection is saved, resolve its earlier explicit-add failure that specifically reported the entry absent after setup.
+Keep that failure in resolved Events and retain unrelated Rename, Remove, or Disable errors.
+A conflicting nonempty acknowledgement, competing owner, duplicate candidate, wrong session, or unreadable observation prevents adoption.
+Management OFF permits this association change only through explicit Enable.
 Save an unverified acknowledgement as optional `pending_profile_id`, separate from confirmed `profile_id`.
 Readable final absence and unavailable final verification have distinct sandbox explanations.
 An unresolved attempt never automatically repeats an add; an explicit eligible retry requires a fresh successful catalog read with unambiguous absence.
 The existing recognized server-not-ready recovery is a narrow exception: successful safe guest alignment permits one add retry only after a new readable catalog check confirms absence after repair.
 A candidate, unavailable catalog, changed identity, or newer disabled choice prevents that retry.
 A known transient remote timeout, unavailable sandbox SSH proxy, or platform-detection failure shares the same one-retry bound, after successful readiness preparation and new same-identity, desired-choice, and absence checks.
+If native add exits nonzero, supplies no trusted acknowledgement, explicitly reports `machine was not saved`, and reports a recognized transient setup failure, the final successful catalog absence can settle Pending as a known no-effect attempt. After fresh same-UUID and permission checks, clear Pending durably and retain positive registration intent for the existing 30-second cycle, including after restart. An acknowledged ID, candidate, timeout or lost response without that explicit result, unreadable check, or unknown wording retains Pending and cannot trigger replay. A failed Enable observation does not cancel an accepted registration request; explicit Disable does. This narrow text fallback matches the observed Herdr 0.9.5 failure output; the public [add-machine contract](https://herdr.dev/tui/docs/connecting-machines/#add-a-machine) does not provide a structured no-save result.
+
 Guest observations, connection failures, and recovery outcomes follow the [sandbox specification](tui/sandboxes.md#guest-observations-and-recovery).
 Successful plugin synchronization and bounded audits follow the [plugin specification](tui/plugins.md).
 
@@ -184,8 +192,10 @@ The directory holds stable association and enabled-choice records, daemon status
 Registration records bounded structured evidence at remote probe, add, failed identity check, and catalog verification boundaries.
 Records identify the stage, stable sandbox ID, attempt, elapsed time, effective deadline and cancellation, acknowledged machine ID, command error, and sanitized combined output.
 The concise UI explanation is separate from this evidence.
-Detailed registration events remain in the bounded history inside `state.json.status`, and structured logger output uses `state.json.worker.log` and its `.1` and `.2` archives below.
-Output is limited to 16 KiB per evidence record; terminal control sequences are removed, and Authorization header values and token, password, secret, or api_key assignments are redacted.
+Detailed registration events retain the structured stage evidence in the bounded history inside `state.json.status`.
+Inline panel actions do not write registration diagnostics to process stdout or stderr, including evidence-save failures.
+The dedicated worker binds registration diagnostics to its existing owned logger in `state.json.worker.log` and its `.1` and `.2` archives below.
+Each captured command output or error is limited to 16 KiB; terminal control sequences are removed, and Authorization header values and token, password, secret, or api_key assignments are redacted.
 The plugin does not claim to reconstruct command output that an earlier executable did not record.
 
 The daemon writes timestamped text events with severity and short details, including startup, reconnects, shutdown, prerequisite changes, and sandbox outcomes.
@@ -211,9 +221,13 @@ On macOS and Linux, guest preparation and workspace probes unset host `SSH_AUTH_
 This preserves Sandboxes' saved forwarding target.
 The parent environment and explicit `sbx setup ssh` agent selection stay unchanged.
 Windows keeps the inherited environment because an unset `SSH_AUTH_SOCK` selects the [native OpenSSH agent fallback](https://docs.docker.com/ai/sandboxes/configuration/settings/#sshagentsocketpath).
-The running-sandbox eligibility check remains required because `sbx exec` can start a stopped sandbox, except during initial registration authorized by a fresh `created` lifecycle event.
+The running-sandbox eligibility check remains required because `sbx exec` can start a stopped sandbox, except during initial registration authorized by a saved `created` request or explicit Enable.
+Created-event registration requests are persisted separately in the status sidecar before preparation and before the registration lock. The existing 30-second catch-up reloads them after restart, including when provisioning has not yet exposed the UUID or a usable runtime. Management OFF pauses the request; explicit Disable, deletion, or verified replacement cancels it. The final pre-add handoff is ordered with explicit cancellation under the sidecar lock. A creation-authorized attempt requires the exact saved scope, UUID, and name at every add claim, including its existing bounded safe retry. A cancelled pre-add request keeps its Disabled choice if later host observation fails. A durable pending-add record makes the request inert under the existing strict verification protocol. Keep the request until verified association or explicit cancellation. An uncertain add never authorizes automatic replay. Events that the plugin never received are outside this recovery guarantee.
+
 With Management ON and no explicit Disabled choice, that event uses normal guest preparation and `herdr machine add` even when the new sandbox is stopped.
 This may start the sandbox; ordinary stopped discovery and existing stopped entries do not authorize guest work.
+Explicit Enable also saves the exact UUID/name request and prepares and adds a missing connection while running or stopped, with Management ON or OFF.
+It leaves Management unchanged; later automatic retries wait while OFF.
 If none of those login files exists, it creates `~/.profile`.
 The block sets `SSH_AUTH_SOCK=/run/ssh-agent.sock` only when Docker's forwarded agent socket exists.
 This bypasses [Herdr's rejection of root-owned agent sockets](https://github.com/herdrdev/herdr/issues/5077) for interactive Bash panes and Git or agents started from those shells.

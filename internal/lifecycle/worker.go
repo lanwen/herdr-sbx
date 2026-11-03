@@ -113,6 +113,7 @@ func (s *Service) Worker(out io.Writer) error {
 	}
 	// Worker owns this dedicated process; foreground commands keep their panel
 	// printers and do not share these service instances.
+	s.registrations.SetLogger(logger)
 	checks := &workerChecks{logger: logger}
 	s.SetCheckPrinter(checks.print)
 	s.registrations.SetCheckPrinter(checks.print)

@@ -176,12 +176,18 @@ func (r *reconciliation) load() error {
 	if err != nil {
 		return err
 	}
-	rows, err := (entryObservation{Scope: r.prerequisites.Scope, State: r.state, Complete: true, Revisions: []map[string]uint64{beforeCatalog.EnabledRevisions}, CreatedID: createdSandboxID(r.ctx)}).entries(r.sandboxes, r.machines)
+	if err := r.verifyAdoptions(); err != nil {
+		return err
+	}
+	rows, err := (entryObservation{Scope: r.prerequisites.Scope, State: r.state, Complete: true, Revisions: []map[string]uint64{beforeCatalog.EnabledRevisions}, CreatedID: createdSandboxID(r.ctx), ImportNative: true}).entries(r.sandboxes, r.machines)
 	if err != nil {
 		return err
 	}
 	r.syncAssociations(rows)
-	return store.SaveState(r.state)
+	if err := store.SaveState(r.state); err != nil {
+		return err
+	}
+	return r.resolveAbsentAddFailures()
 }
 
 func (r *reconciliation) observeInventory() error {
@@ -223,6 +229,11 @@ func (r *reconciliation) syncAssociation(row SandboxRow) {
 			break
 		}
 	}
+	if item.ProfileID != row.ProfileID {
+		item.PendingLabel = ""
+		item.ProjectWorkspaceDone = false
+	}
+	item.LastObservedNativeEnabled = row.NativeEnabled
 	item.ProfileID, item.Target = row.ProfileID, row.Sandbox.Name+".sbx"
 	item.Pending, item.Label, item.PendingProfileID = false, row.Label, ""
 	if err := replaceTracked(&r.state, scope, item); err != nil {
@@ -264,6 +275,10 @@ func (r *reconciliation) process(sb sbx.Sandbox) (*result, error) {
 		return nil, nil
 	}
 	row := r.rows[sb.ID]
+	explicit, _ := r.ctx.Value(explicitActionKey{}).(bool)
+	if row.CreationRequested && createdSandboxID(r.ctx) != sb.ID && !explicit {
+		return &result{Name: sb.Name, Status: "waiting for provisioning", Detail: row.Status.Detail}, nil
+	}
 	if row.ObservationPending {
 		return nil, nil
 	}
@@ -311,6 +326,14 @@ func (r *reconciliation) saveNativeChoice(item store.Tracked, enabled *bool) err
 }
 
 func (r *reconciliation) nonrunning(sb sbx.Sandbox) (*result, error) {
+	saved, err := store.ReadStatusStore()
+	if err != nil {
+		return nil, err
+	}
+	if _, requested := saved.CreationRequests[store.StatusKey(r.prerequisites.Scope, sb.ID)]; requested {
+		return &result{Name: sb.Name, Status: "waiting for provisioning", Detail: "Initial registration is pending. The plugin will retry automatically when this sandbox is ready."}, nil
+	}
+
 	if !strings.EqualFold(sb.Status, "stopped") {
 		status, detail := deferredRuntime(sb.Status)
 		return &result{Name: sb.Name, Status: status, Detail: detail}, nil
@@ -638,7 +661,25 @@ func (a *registrationAttempt) add() (result, *store.Tracked) {
 	return a.addCurrent()
 }
 
+// Keep pre-add permission until the last identity guard has allowed the command.
+func (a *registrationAttempt) handoffCreation() *result {
+	requireRequest := createdSandboxID(a.ctx) == a.sandbox.ID
+	allowed, err := store.HandoffCreationRequest(a.scope, a.sandbox.ID, a.sandbox.Name, requireRequest)
+	if err == nil && allowed {
+		return nil
+	}
+	clearErr := clearUnperformedAdd(a.state, a.scope, a.sandbox.ID)
+	saveErr := store.SaveState(*a.state)
+	if failure := errors.Join(err, clearErr, saveErr); failure != nil {
+		return &result{Name: a.sandbox.Name, Status: "failed", Detail: "save registration handoff: " + failure.Error()}
+	}
+	return &result{Name: a.sandbox.Name, Status: "disabled", Detail: "Initial registration was cancelled."}
+}
+
 func (a *registrationAttempt) addCurrent() (result, *store.Tracked) {
+	if outcome := a.handoffCreation(); outcome != nil {
+		return *outcome, nil
+	}
 	started := time.Now()
 	profileID, addOutput, addErr := a.service.herdr.AddMachine(a.ctx, a.pending.Label, a.target)
 	a.service.logRegistration(a.ctx, registrationLog{Stage: "machine_add", Scope: a.scope, Sandbox: a.sandbox, Attempt: 1 + boolInt(a.repairRetried), Started: started, Timeout: 30 * time.Second, Ack: profileID, Err: addErr, Output: addOutput})
@@ -655,6 +696,9 @@ func (a *registrationAttempt) addCurrent() (result, *store.Tracked) {
 	if err := saveTracked(a.state, a.scope, a.pending); err != nil {
 		return result{Name: a.sandbox.Name, Status: "association warning", Detail: "machine was registered but association could not be saved"}, &a.pending
 	}
+	if err := store.ClearCreationRequest(a.scope, a.sandbox.ID); err != nil {
+		return result{Name: a.sandbox.Name, Status: "association warning", Detail: "The saved connection was verified, but its completed registration request could not be cleared: " + err.Error()}, &a.pending
+	}
 	if a.current != nil && !a.current() {
 		return a.currentResult("sandbox changed after machine registration; cleanup is pending"), &a.pending
 	}
@@ -668,13 +712,16 @@ func (a *registrationAttempt) unverifiedAdd(outcome result, output string, err e
 		}
 		return outcome, &a.pending
 	}
-	if a.catalogAbsent && !a.repairRetried {
+	if a.catalogAbsent && !a.repairRetried && a.pending.PendingProfileID == "" {
 		if strings.Contains(output, "remote server is not ready for saved machines") {
 			return a.retryAfterRepair()
 		}
 		if transientAddFailure(output, err) {
 			return a.retryTransient()
 		}
+	}
+	if settled := a.settleKnownUnsaved(output, err); settled != nil {
+		return *settled, nil
 	}
 	failure, _ := a.addFailure(output, err)
 	outcome.Detail = failure.Detail + ". " + outcome.Detail
@@ -815,7 +862,7 @@ func resultDiagnosticCode(item result) string {
 		return item.DiagnosticCode
 	}
 	switch item.Status {
-	case "stopped", "waiting for start", "disabled in herdr", "enable not confirmed", "disabled", "pending", "runtime unknown", "runtime failed":
+	case "stopped", "waiting for provisioning", "waiting for start", "disabled in herdr", "enable not confirmed", "disabled", "pending", "runtime unknown", "runtime failed":
 		return ""
 	case "association warning":
 		return store.CodeOwnershipConflict

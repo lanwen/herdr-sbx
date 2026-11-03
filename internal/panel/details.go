@@ -90,7 +90,7 @@ func (m *model) sandboxActions(r registration.SandboxRow) []detailAction {
 		return nil
 	}
 	actions := []detailAction{{"enable", "Enable"}}
-	if r.EntryPresent && r.Enabled == store.Enabled {
+	if (r.EntryPresent || r.CreationRequested) && r.Enabled == store.Enabled {
 		actions = []detailAction{{"disable", "Disable"}}
 	}
 	if canRemoveEntry(r) {

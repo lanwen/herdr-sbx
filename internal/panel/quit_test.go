@@ -26,35 +26,33 @@ func TestPopupManagerContext(t *testing.T) {
 	}
 }
 
-func TestPopupQuitAcceptsAnySecondQuitKey(t *testing.T) {
-	keys := []tea.KeyPressMsg{keyMsg(tea.KeyEscape, ""), keyMsg('q', "q"), {Code: 'c', Mod: tea.ModCtrl}}
-	for _, first := range keys {
-		for _, second := range keys {
-			t.Run(first.String()+"/"+second.String(), func(t *testing.T) {
-				m := modelFixture(t)
-				m.popup = true
-				before := time.Now()
-				require.NotNil(t, m.key(first))
-				require.WithinDuration(t, before.Add(5*time.Second), m.quitUntil, time.Second)
-				require.False(t, m.closing)
-				command := m.key(second)
-				require.NotNil(t, command)
-				require.IsType(t, tea.QuitMsg{}, command())
-				require.True(t, m.quitUntil.IsZero())
-			})
-		}
+func TestPopupEscapeArmsConfirmation(t *testing.T) {
+	for _, second := range []tea.KeyPressMsg{keyMsg(tea.KeyEscape, ""), keyMsg('q', "q"), {Code: 'c', Mod: tea.ModCtrl}} {
+		t.Run(second.String(), func(t *testing.T) {
+			m := modelFixture(t)
+			m.popup = true
+			before := time.Now()
+			require.NotNil(t, m.key(keyMsg(tea.KeyEscape, "")))
+			require.WithinDuration(t, before.Add(5*time.Second), m.quitUntil, time.Second)
+			require.False(t, m.closing)
+			command := m.key(second)
+			require.NotNil(t, command)
+			require.IsType(t, tea.QuitMsg{}, command())
+			require.True(t, m.quitUntil.IsZero())
+		})
 	}
 }
 
 func TestPopupQuitResetAndTimeout(t *testing.T) {
 	m := modelFixture(t)
 	m.popup = true
-	m.key(keyMsg('q', "q"))
+	m.key(keyMsg(tea.KeyEscape, ""))
 	old := m.quitUntil
 	m.key(keyMsg('p', "p"))
 	require.True(t, m.quitUntil.IsZero())
 	require.Equal(t, "Plugins", m.page, "the reset key must still act normally")
-	m.key(keyMsg('q', "q"))
+	require.Nil(t, m.key(keyMsg(tea.KeyEscape, "")), "Escape first returns to Sandboxes")
+	require.NotNil(t, m.key(keyMsg(tea.KeyEscape, "")))
 	current := m.quitUntil
 	m.Update(quitTimeoutMsg(old))
 	require.Equal(t, current, m.quitUntil, "old timer cancelled a new attempt")
@@ -62,7 +60,7 @@ func TestPopupQuitResetAndTimeout(t *testing.T) {
 	require.True(t, m.quitUntil.IsZero())
 	// A delayed timer must not extend the confirmation window.
 	m.quitUntil = time.Now().Add(-time.Nanosecond)
-	require.NotNil(t, m.key(keyMsg('q', "q")))
+	require.NotNil(t, m.key(keyMsg(tea.KeyEscape, "")))
 	require.True(t, m.quitUntil.After(time.Now()))
 	require.False(t, m.closing)
 }
@@ -108,7 +106,7 @@ func TestOrdinaryManagerQuitAndPopupPendingWork(t *testing.T) {
 	require.IsType(t, tea.QuitMsg{}, command())
 	m.popup = true
 	m.pending["a"] = true
-	m.key(keyMsg('q', "q"))
+	m.key(keyMsg(tea.KeyEscape, ""))
 	require.False(t, m.closing)
 	require.Nil(t, m.key(keyMsg(tea.KeyEscape, "")))
 	require.True(t, m.closing)
@@ -125,16 +123,10 @@ func TestCtrlCForcesCloseWhileOperationIsBlocked(t *testing.T) {
 			m := modelFixture(t)
 			m.popup = popup
 			startBlockedQuitOperation(t, m)
-			m.key(keyMsg('q', "q"))
-			if popup {
-				m.key(keyMsg('q', "q"))
-			}
-			require.True(t, m.closing)
-			require.Contains(t, m.notice, "Press Ctrl+C again to force close")
 			command := m.key(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
-			require.NotNil(t, command, "Ctrl+C must close without waiting for the blocked operation")
+			require.NotNil(t, command)
 			require.IsType(t, tea.QuitMsg{}, command())
-			require.True(t, m.pending["a"], "force close must not claim that work settled")
+			require.True(t, m.pending["a"], "immediate close must not claim that work settled")
 		})
 	}
 }
@@ -184,7 +176,7 @@ func TestPopupQuitHintFrames(t *testing.T) {
 		m.popup = true
 		m.width, m.height = size[0], size[1]
 		m.notice = "Preparation in progress."
-		m.key(keyMsg('q', "q"))
+		m.key(keyMsg(tea.KeyEscape, ""))
 		frame := ansi.Strip(m.View().Content)
 		require.NotContains(t, frame, "Preparation in progress.")
 		requireQuitHintBox(t, frame)
@@ -193,7 +185,7 @@ func TestPopupQuitHintFrames(t *testing.T) {
 		frame = ansi.Strip(m.View().Content)
 		require.NotContains(t, frame, "again to quit")
 		require.Contains(t, frame, "Preparation in progress.")
-		m.key(keyMsg('q', "q"))
+		m.key(keyMsg(tea.KeyEscape, ""))
 		m.key(keyMsg('x', "x"))
 		frame = ansi.Strip(m.View().Content)
 		require.NotContains(t, frame, "again to quit")
@@ -218,7 +210,7 @@ func TestPopupQuitCountdown(t *testing.T) {
 			text := strings.Join(rendered, "\n")
 			suffix := fmt.Sprintf("...%ds", seconds)
 			require.Contains(t, text, ink(colorMuted, suffix), "countdown must use muted color")
-			require.Contains(t, text, colorInfo+"Press esc, q or ctrl+c")
+			require.Contains(t, text, colorInfo+"Press esc again")
 			require.Contains(t, strings.Join(strings.Fields(ansi.Strip(text)), " "), quitHint+" "+suffix)
 			require.NotContains(t, text, "within")
 		}
@@ -232,10 +224,10 @@ func TestPopupQuitHintStaysVisibleWithLongContent(t *testing.T) {
 			m.popup = true
 			m.width, m.height = size[0], size[1]
 			m.notice = notice
-			m.key(keyMsg('q', "q"))
+			m.key(keyMsg(tea.KeyEscape, ""))
 			frame := ansi.Strip(m.View().Content)
 			requireQuitHintBox(t, frame)
-			require.False(t, m.hintInBody)
+			require.False(t, m.hintScrollable)
 			require.Equal(t, notice, m.notice)
 			t.Logf("%dx%d, long notice %t:\n%s", size[0], size[1], notice != "", frame)
 		}
@@ -252,4 +244,62 @@ func requireQuitHintBox(t *testing.T, frame string) {
 	require.Contains(t, strings.Join(strings.Fields(strings.ReplaceAll(box, "│", " ")), " "), quitHint)
 	require.Contains(t, box, "...5s")
 	require.NotContains(t, rest, "Press esc", "quit prompt must stay inside Hint")
+}
+
+func TestQuitBindingsCloseImmediately(t *testing.T) {
+	for _, key := range []tea.KeyPressMsg{keyMsg('q', "q"), {Code: 'c', Mod: tea.ModCtrl}} {
+		for _, popup := range []bool{false, true} {
+			for _, pending := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/popup=%t/pending=%t", key.String(), popup, pending), func(t *testing.T) {
+					m := modelFixture(t)
+					m.popup = popup
+					if pending {
+						m.pending["a"] = true
+					}
+					command := m.key(key)
+					require.NotNil(t, command, "quit bindings must not wait for pending work")
+					require.IsType(t, tea.QuitMsg{}, command(), "quit bindings must not arm confirmation")
+					require.True(t, m.quitUntil.IsZero())
+				})
+			}
+		}
+	}
+}
+
+func TestCtrlCQuitsImmediatelyFromLocalControls(t *testing.T) {
+	for _, context := range []string{"input", "dialog", "help"} {
+		t.Run(context, func(t *testing.T) {
+			m := modelFixture(t)
+			m.popup = true
+			switch context {
+			case "input":
+				m.input = &inputState{kind: "filter", text: "unsaved"}
+			case "dialog":
+				m.dialog = "startup"
+			case "help":
+				m.helpOpen = true
+			}
+			command := m.key(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+			require.NotNil(t, command)
+			require.IsType(t, tea.QuitMsg{}, command())
+		})
+	}
+}
+
+func TestQuitLetterRemainsEditableText(t *testing.T) {
+	m := modelFixture(t)
+	m.popup = true
+	m.input = &inputState{kind: "filter"}
+	require.Nil(t, m.key(keyMsg('q', "q")))
+	require.Equal(t, "q", m.input.text)
+	require.True(t, m.quitUntil.IsZero())
+}
+
+func TestQuitLetterClosesConfirmation(t *testing.T) {
+	m := modelFixture(t)
+	m.popup, m.dialog = true, "startup"
+	command := m.key(keyMsg('q', "q"))
+	require.NotNil(t, command)
+	require.IsType(t, tea.QuitMsg{}, command())
+	require.True(t, m.quitUntil.IsZero())
 }

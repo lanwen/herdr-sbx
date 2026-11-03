@@ -38,25 +38,25 @@ func TestMissingDotEnablesAndSuppressesDuplicateAdds(t *testing.T) {
 		require.Equal(t, 1, calls, calls)
 	}
 }
-func TestStoppedMissingEntryEnableIsQuiet(t *testing.T) {
+func TestStoppedMissingEntryEnableStartsVisibleAction(t *testing.T) {
 	m := modelFixture(t)
 	m.rows[0].EntryPresent, m.rows[0].Label = false, ""
 	m.rows[0].Sandbox.Status = "stopped"
-	m.setEnabledFn = func(context.Context, string, string, store.EnabledChoice) error {
-		t.Fatal("unsupported action dispatched")
+	calls := 0
+	m.setEnabledFn = func(_ context.Context, scope, id string, choice store.EnabledChoice) error {
+		calls++
+		require.Equal(t, store.Enabled, choice)
 		return nil
 	}
-
-	cmd := m.toggleEnabled()
-	require.Nil(t, cmd, "stopped missing entry must remain untouched")
-
-	require.EqualValues(t, "", m.notice)
-	require.Len(t, m.errors, 0)
-	require.False(t, m.rows[0].EntryPresent)
-	m.focus, m.expanded = "actions", "a"
-
-	hint, _ := m.contextHint()
-	require.NotContains(t, hint, "reports the limitation", hint)
+	command := m.toggleEnabled()
+	require.NotNil(t, command)
+	require.Contains(t, ansi.Strip(m.View().Content), "Enabling alpha")
+	require.True(t, m.pending["a"])
+	m.refreshing = true
+	m.Update(command())
+	require.Equal(t, 1, calls)
+	require.False(t, m.pending["a"])
+	require.Empty(t, m.errors)
 }
 
 func TestEnabledChoiceChangesBeforeOperationAndSurvivesPoll(t *testing.T) {

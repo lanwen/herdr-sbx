@@ -5,9 +5,13 @@ See the [shared interface rules](../tui-spec.md) for navigation, help, styling, 
 When a background refresh fails, status and warnings show `Could not refresh sandbox state: <actual reason>`.
 Include the underlying failure instead of a generic catch-up message.
 
-Show one dedicated outlined section when active errors or warnings exist; omit it when there are none.
+Keep a compact diagnostics summary when active errors or warnings exist; omit it when there are none.
+When diagnostic controls have focus, use the existing outlined section and its full scrollable records.
 Title it Warnings, Errors, or Errors and warnings according to its entries, with separate counts when both appear.
-Show Events above the active diagnostics section.
+Keep Events and active diagnostics in a fixed observations area below action feedback.
+A long sandbox list scrolls independently and cannot push these observations off screen.
+When observation controls are unfocused, show an active applicable diagnostic and the newest event as compact summaries; preserve codes, counts, scope, and severity.
+Focusing Events or diagnostics restores their existing full records, history, expansion, recovery, and scroll controls inside that area.
 On Status, include only global diagnostics and events; retain sandbox-scoped entries in Sandboxes.
 Status counts, focus, and recovery navigation use the same scope as its visible sections.
 Show the current saved-connection state, any known cause, and the plugin's automatic checks in the affected sandbox details.

@@ -60,7 +60,7 @@ func TestFixHerdrEligibilityAndConfirmation(t *testing.T) {
 	hint := strings.Index(view, "╭─ Hint")
 	require.False(t, hint < 0)
 	require.Contains(t, view[hint:], "downgrades")
-	require.Contains(t, view[hint:], "this sandbox to herdr 0.9.3")
+	require.Contains(t, view[hint:], "Downgrade herdr to 0.9.3")
 	require.Contains(t, view[hint:], "last known")
 	require.Contains(t, view, "alpha (running)")
 	hostVersionFixture(m, "0.9.4")

@@ -131,7 +131,7 @@ func TestCatalogCapacityFailureRetainsAttemptForExplicitRetry(t *testing.T) {
 	require.Equal(t, 2, adds, "machine add calls=%d, want a retry", adds)
 }
 
-func TestUncertainAddDoesNotAdoptUnacknowledgedCatalogEntry(t *testing.T) {
+func TestUncertainAddAdoptsUniqueUnacknowledgedCatalogEntry(t *testing.T) {
 	fixture := newRegistrationFixture(t, `[{"uuid":"sandbox-1","name":"demo","status":"running"}]`)
 	adds, lists, readinessChecks := 0, 0, 0
 	fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
@@ -175,16 +175,16 @@ func TestUncertainAddDoesNotAdoptUnacknowledgedCatalogEntry(t *testing.T) {
 	require.Contains(t, first.String(), "could not save the connection", "first reconcile=%s", first.String())
 	var second strings.Builder
 	require.NoError(t, fixture.service.ReconcileContext(context.Background(), &second))
-	require.Contains(t, second.String(), "could not safely link")
+	require.Contains(t, second.String(), "already registered")
 	require.EqualValues(t, 1, adds)
-	require.EqualValues(t, 0, readinessChecks)
+	require.Zero(t, readinessChecks)
 	require.EqualValues(t, 5, lists)
 	state, err := store.LoadState()
 	require.NoError(t, err)
 	item := state.Scopes[store.ScopeID("/tmp/registration-retry.sock")][0]
-	require.True(t, item.Pending)
-	require.Empty(t, item.ProfileID)
-	require.EqualValues(t, "sbx · demo", item.Label)
+	require.False(t, item.Pending)
+	require.Equal(t, "manual-1", item.ProfileID)
+	require.EqualValues(t, "demo", item.Label)
 }
 
 func TestProfilePersistenceFailureDoesNotClaimReadiness(t *testing.T) {

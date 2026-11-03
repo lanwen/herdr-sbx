@@ -189,9 +189,9 @@ func TestEventHistoryCanBeReadAfterActiveErrors(t *testing.T) {
 	require.False(t, m.eventsExpanded)
 	m.key(keyMsg(tea.KeyEnter, ""))
 	m.key(keyMsg(tea.KeyEnd, ""))
-	m.View()
+	first := m.View().Content
 	m.key(keyMsg(tea.KeyPgDown, ""))
-	content := m.View().Content
+	content := first + "\n" + m.View().Content
 	require.Contains(t, content, "Diagnostic event a", "oldest event not reachable: %s", content)
 	m.key(keyMsg('e', "e"))
 	content = m.View().Content

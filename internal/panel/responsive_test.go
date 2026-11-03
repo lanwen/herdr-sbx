@@ -46,7 +46,7 @@ func TestOverflowHintRemainsReadableByKeyboardScrolling(t *testing.T) {
 				frame := ansi.Strip(m.View().Content)
 				seen.WriteString(frame)
 				require.Len(t, strings.Split(frame, "\n"), m.height, "hint overflowed terminal")
-				require.True(t, m.hintInBody, "long hint was not in viewport")
+				require.True(t, m.hintScrollable, "long feedback was not scrollable")
 				m.key(keyMsg(tea.KeyPgDown, ""))
 			}
 			require.Contains(t, seen.String(), "END_RECOVERY.", "long hint ending was lost")
@@ -54,7 +54,7 @@ func TestOverflowHintRemainsReadableByKeyboardScrolling(t *testing.T) {
 			require.Contains(t, seen.String(), "alpha", "hint hid table")
 			m.rows[0].Status.Detail = "Short hint"
 			m.View()
-			require.False(t, m.hintInBody, "stale hint scroll state")
+			require.False(t, m.hintScrollable, "stale hint scroll state")
 		})
 	}
 }
@@ -206,7 +206,7 @@ func assertFocusedPluginHintReachable(t *testing.T, m *model, width int, page, p
 			found = true
 			break
 		}
-		if !m.hintInBody {
+		if !m.hintScrollable {
 			break
 		}
 		m.key(keyMsg(tea.KeyPgDown, ""))

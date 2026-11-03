@@ -216,6 +216,9 @@ func (s *lifecycleScheduler) enqueue(event sbx.LifecycleEvent) bool {
 	if action == "" || (action != "sync" && action != "complete" && event.SandboxID == "") {
 		return true
 	}
+	if !s.persistCreationEvent(event) {
+		return true // Ignored choices and retained save failures do not break the stream.
+	}
 	s.mu.Lock()
 	s.recordSequence(event.Seq)
 	if action == "deleted" {
@@ -385,6 +388,9 @@ func (s *lifecycleScheduler) wait() {
 }
 
 func (s *lifecycleScheduler) handle(event sbx.LifecycleEvent) {
+	if !s.persistCreationEvent(event) {
+		return
+	}
 	if !automaticAllowed(s.ctx) {
 		return
 	}
@@ -410,6 +416,9 @@ func (s *lifecycleScheduler) handle(event sbx.LifecycleEvent) {
 }
 
 func (s *lifecycleScheduler) handleStarted(event sbx.LifecycleEvent) {
+	if !s.persistCreationEvent(event) || s.creationHandedOff(event) {
+		return
+	}
 	if s.deferDuplicateStart(event) {
 		return
 	}
@@ -465,6 +474,7 @@ func (s *lifecycleScheduler) deferStartLocked(event sbx.LifecycleEvent) {
 }
 
 func (s *lifecycleScheduler) processDeferredStarts() {
+	s.restoreCreationRequests()
 	s.mu.Lock()
 	deferred := s.deferredStarts
 	s.deferredStarts = nil
@@ -495,11 +505,14 @@ func (s *lifecycleScheduler) current(event sbx.LifecycleEvent) (current, retry b
 		return false, false
 	}
 	observed, err := s.owner.registrations.SandboxObservation(s.ctx, s.socket, sbx.Sandbox{ID: event.SandboxID, Name: event.SandboxName})
+	if errors.Is(err, sbx.ErrSandboxIdentityChanged) {
+		s.clearCreation(event.SandboxID)
+	}
 	if err != nil {
-		return false, inventoryUnavailable(err)
+		return false, inventoryUnavailable(err) || (strings.EqualFold(event.Action, "created") && !errors.Is(err, sbx.ErrSandboxIdentityChanged))
 	}
 	if strings.EqualFold(event.Action, "created") {
-		return strings.EqualFold(observed.Status, "running") || strings.EqualFold(observed.Status, "stopped"), strings.EqualFold(observed.Status, "starting")
+		return strings.EqualFold(observed.Status, "running") || strings.EqualFold(observed.Status, "stopped"), true
 	}
 	return strings.EqualFold(observed.Status, "running"), false
 }

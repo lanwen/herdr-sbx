@@ -79,7 +79,9 @@ func TestDiagnosticSeverityAndRefresh(t *testing.T) {
 	m.focusErrors()
 	view := m.View().Content
 	require.Contains(t, view, "Errors and warnings")
-	require.Contains(t, view, "R0005")
+	m.key(keyMsg(tea.KeyDown, ""))
+	view = m.View().Content
+	require.Contains(t, view, "R0005", "the fixed observation viewport follows the selected warning")
 	for _, line := range strings.Split(view, "\n") {
 		require.False(t, ansi.StringWidth(line) > m.width, "narrow diagnostics exceeded width: %q", line)
 	}

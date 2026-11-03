@@ -15,7 +15,7 @@ import (
 func (m *model) key(key tea.KeyPressMsg) tea.Cmd {
 	m.diagnosticClickGroup = ""
 	k := key.String()
-	if m.closing && k == "ctrl+c" {
+	if k == "ctrl+c" || (k == "q" && m.input == nil) {
 		m.quitUntil = time.Time{}
 		return tea.Quit
 	}
@@ -268,7 +268,7 @@ func (m *model) retry() tea.Cmd {
 	})
 }
 func (m *model) dialogKey(k string) tea.Cmd {
-	if k == "esc" || k == "ctrl+c" {
+	if k == "esc" {
 		if m.dialog == "fix-herdr" {
 			m.closeHerdrFixConfirmation()
 		} else {
@@ -314,7 +314,7 @@ func (m *model) inputKey(key tea.KeyPressMsg) tea.Cmd {
 	}
 	runes := []rune(in.text)
 	switch k {
-	case "esc", "ctrl+c":
+	case "esc":
 		m.input = nil
 		return nil
 	case "ctrl+u":
@@ -464,7 +464,7 @@ func (m *model) blockedInputHint(h hit) string {
 func (m *model) normalKey(k string) tea.Cmd {
 	switch k {
 	case "q", "ctrl+c":
-		return m.quit()
+		return tea.Quit
 	case "e":
 		m.focusErrors()
 		return nil
@@ -592,7 +592,7 @@ func (m *model) moveEvents(key string, delta int) {
 	}
 	if paging(key) {
 		m.reveal = false
-		m.scroll = max(0, m.scroll+delta)
+		m.observationScroll = max(0, m.observationScroll+m.observationDelta(delta))
 		return
 	}
 	if delta < 0 {
@@ -608,7 +608,7 @@ func (m *model) moveEvents(key string, delta int) {
 		return
 	}
 	m.reveal = false
-	m.scroll = max(0, m.scroll+delta)
+	m.observationScroll = max(0, m.observationScroll+m.observationDelta(delta))
 	return
 }
 
@@ -631,7 +631,7 @@ func (m *model) moveDiagnostics(key string, delta int) {
 	}
 	if paging(key) {
 		m.reveal = false
-		m.scroll = max(0, m.scroll+delta)
+		m.observationScroll = max(0, m.observationScroll+m.observationDelta(delta))
 	}
 	return
 }
@@ -655,7 +655,7 @@ func (m *model) moveErrors(key string, delta int) {
 		return
 	}
 	m.reveal = false
-	m.scroll = max(0, m.scroll+delta)
+	m.observationScroll = max(0, m.observationScroll+m.observationDelta(delta))
 	return
 }
 
@@ -868,12 +868,12 @@ func (m *model) activateHit(h hit) tea.Cmd {
 }
 
 func (m *model) scrollHint(k string) bool {
-	if m.hintInBody && (k == "pgup" || k == "pgdown") {
-		delta := max(1, m.height-4)
+	if m.hintScrollable && !m.observationsFocused() && (k == "pgup" || k == "pgdown") {
+		delta := max(1, m.hintCapacity)
 		if k == "pgup" {
 			delta = -delta
 		}
-		m.scroll = max(0, m.scroll+delta)
+		m.hintScroll = max(0, m.hintScroll+delta)
 		m.reveal = false
 		return true
 	}

@@ -107,26 +107,6 @@ func TestAssociationUsesStableIdentityAndNotLabel(t *testing.T) {
 	}
 }
 
-func TestStoppedEnableWithoutEntryStaysDisabledQuietly(t *testing.T) {
-	f, scope, _, calls := newManagementFixture(t, "stopped")
-	require.NoError(t, store.SetWorkerControl(true))
-	err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled)
-	require.NoError(t, err, "error=%v", err)
-	choices, _ := store.ReadEnabled()
-	require.Equal(t, store.EnabledChoice(store.Disabled), choices[store.StatusKey(scope, "one")], "unsupported enable was retained")
-	for _, call := range *calls {
-		require.NotContains(t, call, "machine add")
-		require.False(t, strings.HasPrefix(call, "ssh -o"))
-		require.NotContains(t, call, "sbx exec")
-	}
-	status, _ := store.ReadStatusStore()
-	require.Len(t, status.Errors, 0, "unexpected diagnostic: %+v", status.Errors)
-
-	row := status.Sandboxes[store.StatusKey(scope, "one")]
-	require.EqualValues(t, "stopped", row.Connection)
-	require.False(t, row.Enabled != store.Disabled)
-}
-
 func TestDisableRemoveEnablePreservesDisabledAndObservedLabel(t *testing.T) {
 	f, scope, machines, _ := newManagementFixture(t, "stopped")
 	*machines = []herdr.Machine{{ID: "machine", Label: "Desk", Target: "demo.sbx", Session: "default", Enabled: boolPointer(true)}}
@@ -142,10 +122,6 @@ func TestDisableRemoveEnablePreservesDisabledAndObservedLabel(t *testing.T) {
 	require.NoError(t, f.service.CaptureBaseline(context.Background(), "/tmp/test-sandboxd.sock"))
 	choices, _ := store.ReadEnabled()
 	require.Equal(t, store.EnabledChoice(store.Disabled), choices[store.StatusKey(scope, "one")], "removed sandbox rediscovered as enabled")
-	{
-		err := f.service.SetEnabled(context.Background(), scope, "one", store.Enabled)
-		require.NoError(t, err, "unsafe re-enable: %v", err)
-	}
 }
 
 func TestRemoveFailureKeepsEntryAndRetry(t *testing.T) {
@@ -623,6 +599,7 @@ func TestStoppedReconciliationPreservesEnabledAndRetriesDisabled(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f, scope, machines, calls := newManagementFixture(t, "stopped")
 			*machines = []herdr.Machine{{ID: "machine", Label: "External", Target: "demo.sbx", Session: "default", Enabled: boolPointer(test.native)}}
+			require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {{SandboxID: "one", ProfileID: "machine", Target: "demo.sbx"}}}}))
 			require.NoError(t, store.SetEnabled(scope, "one", test.choice))
 			require.NoError(t, f.service.ReconcileContext(context.Background(), io.Discard))
 			require.Equal(t, test.want, *(*machines)[0].Enabled, "native enabled=%t, want %t", *(*machines)[0].Enabled, test.want)

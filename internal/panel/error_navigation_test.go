@@ -150,11 +150,11 @@ func TestErrorShortcutAndPagingRetainTheirBehavior(t *testing.T) {
 	require.EqualValues(t, 0, m.errorIndex)
 	m.key(keyMsg(tea.KeyPgUp, ""))
 	require.Equal(t, "errors", m.focus, "Page Up left Errors")
-	m.errorIndex, m.scroll = len(m.errors)-1, 3
+	m.errorIndex, m.observationScroll = len(m.errors)-1, 3
 	m.key(keyMsg(tea.KeyDown, ""))
 	require.EqualValues(t, "errors", m.focus)
 	require.False(t, m.errorIndex != len(m.errors)-1)
-	require.EqualValues(t, 4, m.scroll)
+	require.EqualValues(t, 4, m.observationScroll)
 }
 
 func TestResolvedLastErrorReturnsFocusToTable(t *testing.T) {
