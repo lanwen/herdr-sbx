@@ -204,9 +204,9 @@ func (m *model) sandboxHelpBindings(keys *localHelpBindings) {
 	if !ok {
 		return
 	}
-	toggleAvailable := row.AssociationIssue == "" && !m.pending[row.Sandbox.ID] && (row.EntryPresent || !strings.EqualFold(row.Sandbox.Status, "stopped"))
+	toggleAvailable := row.AssociationIssue == "" && !m.pending[row.Sandbox.ID] && (row.EntryPresent || row.CreationRequested || !strings.EqualFold(row.Sandbox.Status, "stopped"))
 	primary := "enable"
-	if row.EntryPresent && row.Enabled == store.Enabled {
+	if (row.EntryPresent || row.CreationRequested) && row.Enabled == store.Enabled {
 		primary = "disable"
 	}
 	if (m.focus == "table" || m.focus == "actions") && toggleAvailable {

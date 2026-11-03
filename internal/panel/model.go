@@ -531,7 +531,7 @@ func (m *model) toggleEnabled() tea.Cmd {
 		return nil
 	}
 	// The missing-entry dot always means Enable, including a failed first add.
-	if r.EntryPresent && r.Enabled == store.Enabled {
+	if (r.EntryPresent || r.CreationRequested) && r.Enabled == store.Enabled {
 		return m.setEnabled(store.Disabled)
 	}
 	return m.setEnabled(store.Enabled)

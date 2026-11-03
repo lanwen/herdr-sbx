@@ -35,6 +35,22 @@ func TestRegistrationMismatchRecoversThenRegistersOnce(t *testing.T) {
 	require.EqualValues(t, "machine-1", items[0].ProfileID)
 }
 
+func TestCreatedRegistrationMismatchRetainsBoundedRetry(t *testing.T) {
+	fixture := newRegistrationFixture(t, `[{"uuid":"sandbox-1","name":"demo","status":"running"}]`)
+	commands := &registrationRecoveryCommands{}
+	fixture.runner.Execute = commands.execute
+	fixture.rebuildClients()
+	accepted, err := store.RequestCreation(store.ScopeID("/tmp/recovery.sock"), "sandbox-1", "demo")
+	require.NoError(t, err)
+	require.True(t, accepted)
+	require.NoError(t, fixture.service.ReconcileCreatedSandbox(context.Background(), io.Discard, "sandbox-1", "demo", func() bool { return true }))
+	require.Equal(t, 2, commands.adds, "the same authorized operation must retain its one safe retry")
+	require.Equal(t, 1, commands.handoffs)
+	saved, err := store.ReadStatusStore()
+	require.NoError(t, err)
+	require.Empty(t, saved.CreationRequests)
+}
+
 func TestRegistrationNotificationsRetryDeliveryAndResetAfterRecovery(t *testing.T) {
 	fixture := newRegistrationFixture(t, "[]")
 	calls := 0

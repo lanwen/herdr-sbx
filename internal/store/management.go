@@ -41,6 +41,13 @@ func BeginEnabledChange(scope, id string, choice EnabledChoice) (revision uint64
 		previous = s.confirmedEnabledChoice(key)
 		pending = s.EnabledObservationPending[key]
 		s.EnabledChoices[key] = choice
+		if choice == Disabled {
+			if _, requested := s.CreationRequests[key]; requested {
+				// Cancelling local pre-add permission does not depend on a host read.
+				previous, pending = Disabled, false
+			}
+			delete(s.CreationRequests, key)
+		}
 		delete(s.EnabledObservationPending, key)
 		s.EnabledRevisions[key]++
 		revision = s.EnabledRevisions[key]

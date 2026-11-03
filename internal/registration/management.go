@@ -21,6 +21,7 @@ type SandboxRow struct {
 	EntryPresent       bool
 	NativeEnabled      *bool
 	AssociationIssue   string
+	CreationRequested  bool
 	ObservationPending bool
 	Label, ProfileID   string
 	Status             store.SandboxStatus
@@ -235,7 +236,8 @@ func (observation entryObservation) sandboxEntry(status *store.StatusStore, sb s
 	row.ObservationPending = status.EnabledObservationPending[key]
 	if issue == "" && machine == nil && strings.EqualFold(sb.Status, "stopped") {
 		row.Enabled = store.Disabled
-		if observation.CreatedID == sb.ID && (choice == store.Enabled || status.EnabledRevisions[key] == 0) {
+		_, creationRequested := status.CreationRequests[key]
+		if (observation.CreatedID == sb.ID || creationRequested) && (choice == store.Enabled || status.EnabledRevisions[key] == 0) {
 			row.Enabled = store.Enabled
 		}
 		status.EnabledChoices[key] = row.Enabled
@@ -243,12 +245,20 @@ func (observation entryObservation) sandboxEntry(status *store.StatusStore, sb s
 	collision := entryLabelCollision(row, machine, machines)
 	clearAssociationDiagnostics(status, key, issue, collision)
 	if machine != nil {
+		delete(status.CreationRequests, key)
 		row.EntryPresent = true
 		row.Label = machine.Label
 		row.ProfileID = machine.ID
 		row.NativeEnabled = machine.Enabled
 	}
+	_, row.CreationRequested = status.CreationRequests[key]
+	row.CreationRequested = row.CreationRequested && !row.EntryPresent && row.Enabled == store.Enabled
 	row.Status = cacheObservedEntry(status, key, row, collision)
+	if _, requested := status.CreationRequests[key]; requested && !row.EntryPresent && row.Enabled == store.Enabled && issue == "" && !collision && !row.ObservationPending {
+		row.Status.Connection = "waiting for provisioning"
+		row.Status.Detail = "Initial registration is pending. The plugin will retry automatically when this sandbox is ready."
+		status.Sandboxes[key] = row.Status
+	}
 	return row
 }
 func supersededSandboxRow(status *store.StatusStore, scope string, sb sbx.Sandbox, choice store.EnabledChoice) SandboxRow {

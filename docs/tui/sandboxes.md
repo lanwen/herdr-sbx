@@ -6,7 +6,7 @@ See the [shared interface rules](../tui-spec.md) for navigation, help, styling, 
 
 Each sandbox has a durable Enabled or Disabled choice, separate from Management and entry presence.
 Newly discovered sandboxes default to Enabled, except stopped sandboxes without herdr entries.
-Those sandboxes remain Disabled until an eligible explicit Enable, except when a fresh `created` lifecycle event authorizes initial registration while Management is ON.
+Those sandboxes remain Disabled until an eligible explicit Enable, except when a saved `created` registration request authorizes initial registration while Management is ON.
 Preserve explicit Disabled choices across refreshes, daemon restarts, and Management OFF/ON unless a verified external change to an existing entry supersedes them on resume.
 Default discovery must never reset a Disabled choice after the user removes its entry.
 
@@ -25,8 +25,22 @@ Unknown or transitional runtime is not Stopped: an unavailable running-state che
 | Starting state | Action | Immediate feedback | External effect | Settlement and failure |
 | --- | --- | --- | --- | --- |
 | Management ON; fresh created identity; Running or Stopped; no entry; no explicit Disabled choice | `created` lifecycle event | Setting up; label stays blank until verified | Prepare the guest and call `machine add`, allowing the connection to start a stopped sandbox | Verify the returned entry and retain existing add uncertainty, cancellation, and persistence handling. A passive stopped default does not suppress creation. |
-| Management OFF, explicit Disabled choice, unknown or replaced identity | `created` lifecycle event | Existing inactive or uncertain state | No automatic guest work or add | Preserve the saved choice; ordinary discovery does not replay the creation exception. |
+| Management OFF, explicit Disabled choice, unknown or replaced identity | `created` lifecycle event | Existing inactive or uncertain state | No automatic guest work or add | Pause saved creation requests while OFF or provisioning; cancel for explicit Disabled or verified replacement. |
 | Stopped; existing entry | Repeated `created` lifecycle event | Existing stopped state and label | No add, guest work, or native enable | Preserve the entry and its native state. |
+
+Created registration requests are saved in `state.json.status` before inventory checks, guest preparation, or acquisition of the registration lock. They identify the daemon scope and exact sandbox UUID; they are separate from an attempted add (`Tracked.Pending`) and confirmed ownership. A requested sandbox shows waiting for provisioning and offers Disable to cancel the request, including while stopped without a saved connection. The existing 30-second catch-up retries them after slow provisioning or a worker restart. This does not guarantee replay of lifecycle events never received by the plugin.
+
+| Starting state | Action | Immediate feedback | External effect | Settlement and failure |
+| --- | --- | --- | --- | --- |
+| Created UUID; no saved request | Receive event, including while Management is OFF | Save registration request | Sidecar write only before any guest work | A failed save prevents guest/add work; retain the event in memory for retry. A disk failure followed by process loss cannot guarantee recovery. |
+| Saved request; inventory unavailable, UUID not visible yet, or provisioning/unknown runtime | Existing catch-up or worker restart | Retain request | Bounded inventory reads; no guest/add | Retry on the existing catch-up interval without an expiry. |
+| Saved request; same UUID/name; Running or Stopped; Management ON; no explicit Disabled | Replay request | Existing preparation status and precise failure cause | Existing creation-authorized preparation/add pipeline | Preparation failure retains the request. Save durable add intent before handing responsibility to pending-add verification. |
+| Saved request; Management OFF | Event or catch-up | Registration paused | No guest/add | Preserve request until Management resumes. |
+| Saved request; explicit Disable, exact deletion/retirement, or verified same name with a different UUID | Choice or lifecycle observation | Preserve Disabled or deletion state | Cancel old request | Never transfer permission to a replacement by name. Passive stopped Disabled at revision zero does not cancel. Cancelling local pre-add permission remains Disabled even if a subsequent host read fails; cancellation and add handoff are ordered atomically. |
+| Saved request; verified association or durable pending-add intent | Reconciliation | Existing connection or verification outcome | Clear pre-add request | Pending-add verification cannot reactivate creation permission or blindly replay an uncertain add. |
+
+| Starting state | Action | Immediate feedback | External effect | Settlement and failure |
+| --- | --- | --- | --- | --- |
 | Running; no entry | Enable | Blue checkmark and Enabling…; blank label | Verify running identity, prepare guest, and add entry | Keep verified entry and native choice even if later setup fails; report setup failure separately. |
 | Stopped; no entry | Enable | Muted dot and Stopped; no transition or warning | No add, SSH, or start | Disabled with blank label; a later start still requires explicit Enable. |
 | Existing entry; Running | Enable | Blue checkmark and Enabling…; label retained | Native enable if needed, then verify catalog | Follow native state; this action itself does not perform guest setup. Automatic setup requires Management ON. |

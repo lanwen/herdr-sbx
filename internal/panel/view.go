@@ -740,6 +740,9 @@ func (m *model) actionHint(row registration.SandboxRow) (string, string) {
 		}
 		return "Enable this sandbox's herdr connection. Herdr may start it when connecting.", colorAccent
 	case "disable":
+		if row.CreationRequested {
+			return "Cancel automatic initial registration for this sandbox. Existing files stay in place.", colorInfo
+		}
 		return "Disable this sandbox's herdr connection and stop its plugin work. Keep its entry, label, and existing files.", colorInfo
 	case "remove":
 		return "Remove this disabled entry from herdr. Keep the sandbox and its files. Enable adds the entry again.", colorInfo

@@ -99,6 +99,7 @@ type PolicyAttempt struct {
 
 // StatusStore is the existing sidecar JSON document.
 type StatusStore struct {
+	CreationRequests          map[string]CreationRequest    `json:"creation_requests,omitempty"`
 	Errors                    map[string]ErrorRecord        `json:"errors,omitempty"`
 	DismissedErrorGroups      map[string]bool               `json:"dismissed_error_groups,omitempty"`
 	Events                    []EventRecord                 `json:"events,omitempty"`
@@ -343,6 +344,9 @@ func newStatusStore() StatusStore {
 }
 
 func (s *StatusStore) ensureMaps() {
+	if s.CreationRequests == nil {
+		s.CreationRequests = map[string]CreationRequest{}
+	}
 	if s.EnabledObservationPending == nil {
 		s.EnabledObservationPending = map[string]bool{}
 	}
