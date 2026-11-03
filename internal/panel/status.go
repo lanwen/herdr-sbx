@@ -91,7 +91,9 @@ func mergeNamedStatusCheck(rows []precheck.Check, name string, check precheck.Ch
 
 func groupStatusCheck(rows []precheck.Check, check precheck.Check) (precheck.Check, bool) {
 	switch check.Name {
-	case "Sandbox setup":
+	case "Herdr", "herdr":
+		check.Name = "Local Herdr CLI"
+	case "Sandbox setup", "Registration association":
 		return check, false
 	case "Sandbox capability":
 		if mergeNamedStatusCheck(rows, "sbx", check, true) {

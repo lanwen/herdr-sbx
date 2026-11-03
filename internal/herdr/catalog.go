@@ -33,17 +33,15 @@ func (c *Client) ListMachines(ctx context.Context) ([]Machine, string, error) {
 }
 
 // AddMachine creates a machine and returns the ID explicitly acknowledged by
-// Herdr's output. Callers must still verify that ID by re-reading the catalog.
+// Herdr's output, including when a later command error occurs.
+// Callers must still verify that ID by re-reading the catalog.
 func (c *Client) AddMachine(ctx context.Context, label, target string) (string, string, error) {
 	output, err := c.command(ctx, 30*time.Second, true, "machine", "add", "--label", label, target)
-	if err != nil {
-		return "", output, err
-	}
 	match := savedMachine.FindStringSubmatch(strings.TrimSpace(output))
 	if len(match) != 2 {
-		return "", output, nil
+		return "", output, err
 	}
-	return match[1], output, nil
+	return match[1], output, err
 }
 
 // RenameMachine changes the label of a previously verified owned profile.

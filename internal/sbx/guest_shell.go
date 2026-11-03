@@ -10,7 +10,8 @@ import (
 )
 
 // PrepareGuestShell keeps Docker's forwarded agent available to sandbox shells.
-// Callers must first verify eligibility and a running sandbox; exec can start it.
+// Callers must verify a running sandbox or initial registration of a newly
+// created sandbox; exec can start it.
 func (c *Client) PrepareGuestShell(ctx context.Context, name string) error {
 	output, err := c.guestExec(ctx, name, "--", "env", "-u", "BASH_ENV", "/bin/bash", "--noprofile", "--norc", "-c", guestShellSetup)
 	if err != nil {

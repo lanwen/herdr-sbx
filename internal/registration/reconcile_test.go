@@ -105,7 +105,7 @@ func TestManualMachineIsNotAdopted(t *testing.T) {
 	require.Nil(t, saved)
 }
 
-func TestUncertainMachineAddRemainsPendingForManualInspection(t *testing.T) {
+func TestUncertainMachineAddRemainsPendingWithoutAutomaticReplay(t *testing.T) {
 	fixture := newRegistrationFixture(t, `[{"uuid":"sandbox-1","name":"demo","status":"running"}]`)
 	fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
 		joined := strings.Join(command.Args, " ")
@@ -142,7 +142,7 @@ func TestUncertainMachineAddRemainsPendingForManualInspection(t *testing.T) {
 	items := state.Scopes[store.ScopeID("/tmp/test-sandboxd.sock")]
 	require.Len(t, items, 1)
 	require.True(t, items[0].Pending)
-	require.Contains(t, output.String(), "outcome is uncertain")
+	require.Contains(t, output.String(), "could not save the connection")
 }
 
 type registrationFixture struct {
@@ -223,7 +223,7 @@ func remoteHerdrStatusShell() string {
 	return "if command -v herdr >/dev/null 2>&1; then printf '" + remoteHerdrOnPath + "\\n'; herdr --version; elif [ -x \"$HOME/.local/bin/herdr\" ]; then printf '" + remoteHerdrFallback + "\\n'; \"$HOME/.local/bin/herdr\" --version; elif [ -e \"$HOME/.local/bin/herdr\" ] || [ -L \"$HOME/.local/bin/herdr\" ]; then printf '" + remoteHerdrConflict + "\\n'; else printf '" + missingRemoteHerdr + "\\n'; fi"
 }
 
-func TestReconcileRetriesPendingRegistrationWhenCatalogIsEmpty(t *testing.T) {
+func TestReconcileRetainsPendingRegistrationWhenCatalogIsEmpty(t *testing.T) {
 	fixture := newRegistrationFixture(t, `[{"uuid":"sandbox-1","name":"demo","status":"running"}]`)
 	scope := store.ScopeID("/tmp/test-sandboxd.sock")
 	require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {{SandboxID: "sandbox-1", Label: "sbx · demo", Target: "demo.sbx", Pending: true, ProjectWorkspacePending: "/workspace/demo"}}}}))
@@ -237,11 +237,11 @@ func TestReconcileRetriesPendingRegistrationWhenCatalogIsEmpty(t *testing.T) {
 	state, err := store.LoadState()
 	require.NoError(t, err)
 	items := state.Scopes[store.ScopeID("/tmp/test-sandboxd.sock")]
-	require.EqualValues(t, 1, commands.adds)
-	require.False(t, commands.lists < 3)
+	require.EqualValues(t, 0, commands.adds)
+	require.Equal(t, 2, commands.lists)
 	require.Len(t, items, 1)
-	require.EqualValues(t, "machine-1", items[0].ProfileID)
-	require.False(t, items[0].Pending)
+	require.Empty(t, items[0].ProfileID)
+	require.True(t, items[0].Pending)
 }
 
 type pendingRegistrationCommands struct {

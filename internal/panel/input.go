@@ -74,7 +74,7 @@ func (m *model) move(key string) {
 		m.moveErrors(key, delta)
 		return
 	}
-	if m.focus == "table" && (movingDown(key)) && (len(m.errors) > 0 || len(m.events) > 0) && m.atMainEnd() {
+	if m.focus == "table" && (movingDown(key)) && (len(m.pageErrors()) > 0 || len(m.pageEvents()) > 0) && m.atMainEnd() {
 		m.focusFollowingSections()
 		return
 	}
@@ -171,7 +171,7 @@ func (m *model) activate() tea.Cmd {
 }
 func (m *model) focusErrors() {
 	m.clearNotice()
-	if len(m.errors) == 0 {
+	if len(m.pageErrors()) == 0 {
 		return
 	}
 	m.focus = "errors"
@@ -583,7 +583,7 @@ func (m *model) moveEvents(key string, delta int) {
 		return
 	}
 	if key == "end" && m.eventsExpanded {
-		m.eventIndex = len(m.events) - 1
+		m.eventIndex = len(m.pageEvents()) - 1
 		return
 	}
 	if (movingUp(key)) && m.eventIndex < 0 {
@@ -599,11 +599,11 @@ func (m *model) moveEvents(key string, delta int) {
 		m.eventIndex--
 		return
 	}
-	if m.eventsExpanded && m.eventIndex < len(m.events)-1 {
+	if m.eventsExpanded && m.eventIndex < len(m.pageEvents())-1 {
 		m.eventIndex++
 		return
 	}
-	if len(m.errors) > 0 {
+	if len(m.pageErrors()) > 0 {
 		m.focus = "diagnostics"
 		return
 	}
@@ -614,11 +614,11 @@ func (m *model) moveEvents(key string, delta int) {
 
 func (m *model) moveDiagnostics(key string, delta int) {
 	if movingUp(key) {
-		if len(m.events) > 0 {
+		if len(m.pageEvents()) > 0 {
 			m.focus = "events"
 			m.eventIndex = -1
 			if m.eventsExpanded {
-				m.eventIndex = len(m.events) - 1
+				m.eventIndex = len(m.pageEvents()) - 1
 			}
 		} else {
 			m.focusMainEnd()

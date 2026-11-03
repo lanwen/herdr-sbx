@@ -6,7 +6,7 @@ See the [shared interface rules](../tui-spec.md) for navigation, help, styling, 
 
 Each sandbox has a durable Enabled or Disabled choice, separate from Management and entry presence.
 Newly discovered sandboxes default to Enabled, except stopped sandboxes without herdr entries.
-Those sandboxes remain Disabled until an eligible explicit Enable.
+Those sandboxes remain Disabled until an eligible explicit Enable, except when a fresh `created` lifecycle event authorizes initial registration while Management is ON.
 Preserve explicit Disabled choices across refreshes, daemon restarts, and Management OFF/ON unless a verified external change to an existing entry supersedes them on resume.
 Default discovery must never reset a Disabled choice after the user removes its entry.
 
@@ -24,6 +24,9 @@ Unknown or transitional runtime is not Stopped: an unavailable running-state che
 
 | Starting state | Action | Immediate feedback | External effect | Settlement and failure |
 | --- | --- | --- | --- | --- |
+| Management ON; fresh created identity; Running or Stopped; no entry; no explicit Disabled choice | `created` lifecycle event | Setting up; label stays blank until verified | Prepare the guest and call `machine add`, allowing the connection to start a stopped sandbox | Verify the returned entry and retain existing add uncertainty, cancellation, and persistence handling. A passive stopped default does not suppress creation. |
+| Management OFF, explicit Disabled choice, unknown or replaced identity | `created` lifecycle event | Existing inactive or uncertain state | No automatic guest work or add | Preserve the saved choice; ordinary discovery does not replay the creation exception. |
+| Stopped; existing entry | Repeated `created` lifecycle event | Existing stopped state and label | No add, guest work, or native enable | Preserve the entry and its native state. |
 | Running; no entry | Enable | Blue checkmark and Enabling…; blank label | Verify running identity, prepare guest, and add entry | Keep verified entry and native choice even if later setup fails; report setup failure separately. |
 | Stopped; no entry | Enable | Muted dot and Stopped; no transition or warning | No add, SSH, or start | Disabled with blank label; a later start still requires explicit Enable. |
 | Existing entry; Running | Enable | Blue checkmark and Enabling…; label retained | Native enable if needed, then verify catalog | Follow native state; this action itself does not perform guest setup. Automatic setup requires Management ON. |
@@ -43,6 +46,39 @@ Unknown or transitional runtime is not Stopped: an unavailable running-state che
 | Catalog unavailable, native flag missing, or identity ambiguous | Retain last confirmed choice as stale, expose uncertainty, and pause automatic native changes and guest work until verified. |
 | Saving the choice fails | Restore saved choice and report persistence failure; no unsaved optimistic display. |
 | Older operation completes after a newer accepted choice | Preserve newer choice and transition; stale completion cannot overwrite it. |
+
+### Registration observation and recovery
+
+Current sandbox details report fresh facts and a known current cause, without combining old generic instructions or asking the user to inspect the machine catalog.
+When the connection is absent, say: "Herdr has no saved connection to this sandbox.
+The plugin will check again automatically."
+The plugin performs its own safe checks and recovery.
+An earlier attempt whose result was not saved is identified as unknown only in diagnostic history; do not invent its original cause.
+
+| Starting state | Action | Immediate feedback | External effect | Settlement and failure |
+| --- | --- | --- | --- | --- |
+| Inventory request fails | Verify current sandbox | Explain the actual inventory failure | Up to three cancellable read attempts | Exhaustion defers work; it does not prove deletion or identity replacement and a future observation can recover. |
+| Fresh inventory verifies missing or replaced UUID | Verify current sandbox | Explain the missing or changed identity | No guest work or add | Keep the safe association and cancellation protections. |
+| Known transient remote timeout, unavailable SSH proxy, or platform-detection failure | Recover registration | Explain the failed stage while automatic checks run | One readiness preparation, fresh same-identity and desired-choice checks, then a fresh catalog absence check | At most one additional add per operation, shared with the existing server-alignment retry; candidate, unavailable observation, OFF, Disabled, cancellation, or changed identity prevents replay. |
+| Generic add success with no entry | Observe | State that no entry is saved | Read-only verification only | Do not blindly repeat add or present manual catalog-check chores. |
+
+### Machine-add verification
+
+A machine add is followed by up to three read-only local catalog checks, with a short cancellable delay and a five-second overall verification deadline.
+Do not repeat `machine add` inside this check or because a later poll still finds no entry.
+Keep the attempted creation and its acknowledged ID separately from a confirmed association.
+
+| Starting state | Action | Immediate feedback | External effect | Settlement and failure |
+| --- | --- | --- | --- | --- |
+| Add returned a trusted ID; exact ID, target, default session, and sandbox identity verified | Check catalog | Registered | Local catalog reads only | Promote the acknowledged ID to confirmed association; retain actual label and native state. |
+| Add failed or returned no trusted ID; catalog has a target or label candidate | Check catalog | Registration unconfirmed with the candidate cause | No add, guest work, or native mutation | Retain the attempt; do not adopt the candidate through observation or Enable. |
+| Final readable catalog has no matching candidate after the bounded checks | Check catalog | State that no matching entry appeared after the actual check count; include an add failure when present | Reads only | Retain the attempt; offer an explicit eligible retry without automatically adding again. |
+| Final catalog read fails or is malformed | Check catalog | Could not verify after the actual check count, with the cause | Reads only | Keep prior observations as last known, retain the attempt and acknowledged ID, and do not infer absence. |
+| Wrong ID, target, session, duplicate candidate, label collision, or changed sandbox identity | Check catalog | Specific unconfirmed association warning | No adoption or replay | Preserve the attempt and identity safeguards. |
+| Pending acknowledged ID later appears and its full association verifies | Periodic or event observation | Registered | Local catalog confirmation | Settle the exact acknowledged ID without another add. |
+| Pending attempt; explicit Enable or retry | Fresh inventory and catalog check | Retry only after unambiguous absence | One guarded add attempt, then the same bounded verification | Candidate, unavailable catalog, or conflict blocks retry. |
+| Known server-not-ready rejection; final catalog absence; successful safe guest alignment | Existing repair path | Aligning, then bounded verification | Recheck catalog after repair; one guarded add retry only if still unambiguously absent | Any candidate, unavailable catalog, or changed choice blocks retry; generic absence never authorizes this exception. |
+| Management OFF, a newer Disabled choice, or cancellation | Work settles | Actual completed effects and remaining uncertainty | No new automatic add, guest work, or native mutation; cancelled verification stops promptly | Retain pending information and preserve the newer choice. |
 
 Remove and Rename also follow verified results after command errors.
 Confirmed removal or a confirmed changed label counts as success; unavailable verification remains uncertain.
@@ -141,6 +177,8 @@ Rename is available for any uniquely identified existing sandbox entry, regardle
 Without an entry there is no current herdr label to rename.
 
 Re-sync explicitly retries setup and selected herdr plugin synchronization for a running enabled sandbox.
+If registration work is already running, retain the distinct request in a cancellable queue instead of showing a contention warning or dropping it.
+Skip duplicate requests already pending for that sandbox.
 It remains available with Management OFF and does not enable background work.
 Fix herdr remains a contextual explicit repair action with the existing version and handoff confirmation.
 Neither action starts a stopped sandbox.
@@ -149,10 +187,13 @@ Neither action starts a stopped sandbox.
 
 The saved choice remembers the last settled native state for an existing entry and preserves Disabled when an entry is removed.
 Only an active transition may temporarily display the requested state before it is confirmed.
-Automatic plugin work must not start a stopped sandbox, open guest SSH, or enable its native herdr connection.
-The plugin creates entries only for running sandboxes.
+Automatic plugin work must not start a stopped sandbox, open guest SSH, or enable its native herdr connection, except for initial registration authorized by a fresh `created` lifecycle event.
+With Management ON, that event prepares and adds an unambiguously identified new sandbox even when stopped, unless an explicit Disabled choice exists.
+Guest preparation and Herdr connection may start it.
+A passive stopped discovery default does not block this event.
+An existing stopped entry never receives guest work or another add from a repeated creation event.
 A stopped sandbox without an entry stays Disabled with neutral Stopped status, a blank label, and no warning or deferred Enable.
-Do not call `machine add` or open SSH for that condition.
+Ordinary stopped discovery and explicit Enable do not call `machine add` or open SSH for that condition.
 For an Enabled stopped sandbox with an existing entry, automatic reconciliation leaves its native connection state unchanged.
 Explicit Enable and Disable change that native state immediately, with confirmation and failure reporting.
 Do not undo explicit enablement merely because the next inventory observation still says Stopped.
@@ -236,7 +277,7 @@ Each catch-up checks the saved machine's catalog identity and sandbox associatio
 An associated machine with completed workspace setup and no pending herdr plugin work does not need a fresh SSH status command.
 Automatic guest connections require Management ON and a running enabled sandbox.
 A fresh connection is opened only for actual pending guest work, first setup, explicit eligible Re-sync, or a bounded audit.
-Do not create entries or open automatic guest connections for stopped sandboxes; retain existing entries and wait until the sandbox runs before guest setup.
+Except for initial registration authorized by a fresh created event, do not create entries or open automatic guest connections for stopped sandboxes; retain existing entries and wait until the sandbox runs before guest setup.
 A failed new connection reports the cause and affected action without declaring registration failed or advising duplicate registration.
 Guest inspection failures show `connection failed`; shell preparation failures show `preparation failed`.
 Show these states beside the independent sandbox runtime, with the failed action and cause in Hint.
@@ -246,7 +287,8 @@ Preserve the existing machine, label, workspace completion, and prior successful
 Prior success is historical, not proof of current reachability.
 Cache a successfully probed running guest herdr server version per sandbox identity and observation time.
 Reuse probes during guest work or the bounded audit, never on TUI rendering or routine polls.
-Keep the cached version after a stop or failed probe; call it last known in Hint when it is no longer current.
+Keep the cached version after a stop or failed probe; label it last known in the version badge and Hint when it is no longer current.
+The badge describes the observed guest server, while the global prerequisite identifies the local Herdr CLI.
 The observation time remains in status data.
 A probe failure alone does not block the sandbox.
 Classify a confirmed guest herdr machine-API forwarding incompatibility as H0003, with guidance to use Fix herdr when safe or update the protected installation manually before Re-sync.
@@ -346,13 +388,14 @@ Verify this sequence through deletion events and periodic recovery.
 - **S07** — Up/Down immediately previews the newly selected sandbox and collapses the previous card; Enter or Right focuses its primary action, and Escape returns to list navigation without closing the preview.
 - **S15** — Enable, Disable, Rename, and Remove from herdr hints explain their effects, wrap at whole words, and remain usable with Management OFF.
 - **S30** — A missing entry and a disabled entry both use the muted dot; only the herdr label indicates entry presence, and the enabled symbol uses the existing blue accent.
-- **S31** — Discovery and Enable for a stopped sandbox without an entry stay Disabled with neutral Stopped status, no warning, no pending Enable, no machine add, and no SSH or sandbox start.
+- **S31** — Ordinary discovery and Enable for a stopped sandbox without an entry stay Disabled with neutral Stopped status, no warning, no pending Enable, no machine add, and no SSH or sandbox start.
 - **S32** — Enable after explicit removal restores an entry for a running sandbox; a stopped sandbox remains Disabled without a warning.
 - **S34** — A sandbox deleted while Management is OFF retains its entry until Management resumes and deletion is confirmed.
 - **S35** — Unknown inventory, ambiguous identity, label collisions, or name reuse never authorize entry removal; an external label change does not break identity association.
 - **S36** — A plugin-sync failure or cancellation after entry creation retains the actual entry and label, and distinguishes completed setup from pending or failed work.
 - **S37** — Enabling a manually added, disabled entry for a stopped sandbox enables it in herdr with Management ON or OFF; subsequent stopped observations do not disable it again.
-- **S38** — Isolated lifecycle coverage verifies that automatic work does not start, connect to, or natively enable a stopped sandbox; explicit native Enable is allowed, and baseline capture accepts verified native Disabled.
+- **S38** — Isolated lifecycle coverage verifies that ordinary automatic work does not start, connect to, or natively enable a stopped sandbox; a fresh created event may prepare and add its missing entry, explicit native Enable is allowed, and baseline capture accepts verified native Disabled.
+- **S54** — A created event adds a stopped new sandbox with Management ON, including after a passive stopped poll; explicit Disabled, Management OFF, identity replacement, and an existing stopped entry prevent new guest work or duplicate registration.
 - **S40** — Eligible Enable and Disable update the displayed choice immediately, retain Enabling… or Disabling… through stale polls, and settle to the actual native outcome; rejected changes revert, lost responses follow confirmed effects, and unavailable observations retain a stale last-confirmed display without automatic replay.
 - **S42** — A fresh unambiguous observation clears resolved association warnings even while Management is OFF, while true ambiguity retains a specific explanation.
 - **S43** — Right enters details from the list; Left selects the preceding action or returns to the list from the leftmost action or plugin controls; Tab/Shift+Tab changes tabs.

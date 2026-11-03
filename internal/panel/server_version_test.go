@@ -100,7 +100,7 @@ func testCachedServerVersion(t *testing.T, width int, noColor bool) {
 		}
 		{
 			got := guestServerDescription(stale)
-			require.Equal(t, "herdr 0.9.2", got, "%s: %q", state, got)
+			require.Equal(t, "herdr 0.9.2 (last known)", got, "%s: %q", state, got)
 		}
 	}
 	r.Status.GuestServer = nil

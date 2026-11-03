@@ -269,7 +269,7 @@ func TestPartialRenameAcknowledgementUsesActualResult(t *testing.T) {
 func TestVerifiedPartialAddRetainsCatalogIdentityOnResume(t *testing.T) {
 	f, scope, machines, calls := newManagementFixture(t, "running")
 	*machines = []herdr.Machine{{ID: "machine", Label: "Desk", Target: "demo.sbx", Session: "default", Enabled: boolPointer(true)}}
-	require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {{SandboxID: "one", Target: "demo.sbx", Label: "Intent", Pending: true}}}}))
+	require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {{SandboxID: "one", Target: "demo.sbx", Label: "Intent", Pending: true, PendingProfileID: "machine"}}}}))
 	_ = store.SetEnabled(scope, "one", store.Enabled)
 	require.NoError(t, f.service.CaptureBaseline(context.Background(), "/tmp/test-sandboxd.sock"))
 	require.NoError(t, f.service.ReconcileContext(context.Background(), io.Discard))
@@ -488,51 +488,28 @@ func TestUnknownRuntimeIsNeverReportedStopped(t *testing.T) {
 	}
 }
 
-func TestRemoveEnablePreservesCompletedGuestSetup(t *testing.T) {
-	f, scope, machines, calls := newManagementFixture(t, "running")
-	f.inventory = `[{"uuid":"one","name":"demo","status":"running","workspace":"/workspace/demo"}]`
-	*machines = []herdr.Machine{{ID: "machine", Label: "Desk", Target: "demo.sbx", Session: "default", Enabled: boolPointer(false)}}
-	fingerprint, err := guestplugins.DesiredFingerprint(context.Background(), f.service.herdr, scope, "one")
+func TestRemoveEnablePreservesGuestPluginObservation(t *testing.T) {
+	f := newProjectReaddFixture(t, "existing pane")
+	fingerprint, err := guestplugins.DesiredFingerprint(context.Background(), f.fixture.service.herdr, f.scope, f.commands.sandbox.ID)
 	require.NoError(t, err)
 	checked := time.Now()
-	sync := &store.GuestSyncObservation{Fingerprint: guestSetupFingerprint("demo.sbx", "one", fingerprint), CheckedAt: checked, Status: "ready", Detail: "already registered"}
-	item := store.Tracked{SandboxID: "one", ProfileID: "machine", Target: "demo.sbx", Label: "Desk", ProjectWorkspaceDone: true, GuestSync: sync}
-	require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {item}}}))
-	_ = store.SetEnabled(scope, "one", store.Disabled)
-	_ = store.RecordGuestServerObservation(scope, sbx.Sandbox{ID: "one", Name: "demo", Status: "running"}, true, "0.9.3")
-	require.NoError(t, f.service.RemoveEntry(context.Background(), scope, "one"))
-	removed, _ := store.LoadState()
-	kept := removed.Scopes[scope][0]
-	require.EqualValues(t, "", kept.ProfileID)
-	require.True(t, kept.ProjectWorkspaceDone)
-	require.NotNil(t, kept.GuestSync)
-	execute := f.runner.Execute
-	f.runner.Execute = func(ctx context.Context, c process.Command) (string, error) {
-		call := c.Name + " " + strings.Join(c.Args, " ")
-		switch call {
-		case "ssh -o BatchMode=yes -o ConnectTimeout=8 demo.sbx " + remoteHerdrStatusShell():
-			*calls = append(*calls, call)
-			return remoteHerdrOnPath + "\nherdr 0.9.3", nil
-		case "herdr machine add --label sbx · demo demo.sbx":
-			*calls = append(*calls, call)
-			*machines = []herdr.Machine{{ID: "new-machine", Label: "sbx · demo", Target: "demo.sbx", Session: "default", Enabled: boolPointer(true)}}
-			return "Saved SSH machine new-machine. Remote server is ready.", nil
-		}
-		return execute(ctx, c)
-	}
-	f.rebuildClients()
-	require.NoError(t, f.service.SetEnabled(context.Background(), scope, "one", store.Enabled))
-	state, _ := store.LoadState()
-	restored := state.Scopes[scope][0]
-	require.True(t, restored.ProjectWorkspaceDone)
-	require.NotNil(t, restored.GuestSync)
-	require.True(t, restored.GuestSync.CheckedAt.Equal(checked))
-	for _, call := range *calls {
-		require.NotContains(t, call, "pane list")
-		require.NotContains(t, call, "workspace create")
-		require.NotContains(t, call, "server start")
-		require.NotContains(t, call, "status server --json")
-	}
+	state, err := store.LoadState()
+	require.NoError(t, err)
+	state.Scopes[f.scope][0].GuestSync = &store.GuestSyncObservation{Fingerprint: guestSetupFingerprint("demo.sbx", f.commands.sandbox.ID, fingerprint), CheckedAt: checked, Status: "ready", Detail: "already registered"}
+	require.NoError(t, store.SaveState(state))
+	require.NoError(t, f.fixture.service.RemoveEntry(context.Background(), f.scope, f.commands.sandbox.ID))
+	removed, err := store.LoadState()
+	require.NoError(t, err)
+	require.False(t, removed.Scopes[f.scope][0].ProjectWorkspaceDone)
+	require.NotNil(t, removed.Scopes[f.scope][0].GuestSync)
+	require.NoError(t, f.fixture.service.SetEnabled(context.Background(), f.scope, f.commands.sandbox.ID, store.Enabled))
+	restored, err := store.LoadState()
+	require.NoError(t, err)
+	require.True(t, restored.Scopes[f.scope][0].ProjectWorkspaceDone)
+	require.NotNil(t, restored.Scopes[f.scope][0].GuestSync)
+	require.True(t, restored.Scopes[f.scope][0].GuestSync.CheckedAt.Equal(checked))
+	require.Positive(t, f.paneLists)
+	require.Zero(t, f.commands.creates)
 }
 
 func TestVerifiedAssociationClearsObsoleteConflict(t *testing.T) {
@@ -1013,4 +990,17 @@ func interruptedFixDownload(t *testing.T, scope, payload string, digest [32]byte
 		require.NoError(t, store.SetEnabled(scope, "sandbox-1", store.Disabled))
 	}
 	return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+}
+
+func TestExplicitEnableConfirmsPendingAcknowledgementWhileManagementOFF(t *testing.T) {
+	f, scope, machines, _ := newManagementFixture(t, "running")
+	*machines = []herdr.Machine{{ID: "machine", Label: "Desk", Target: "demo.sbx", Session: "default", Enabled: boolPointer(false)}}
+	require.NoError(t, store.SaveState(store.State{Version: 1, Scopes: map[string][]store.Tracked{scope: {{SandboxID: "one", Target: "demo.sbx", Pending: true, PendingProfileID: "machine"}}}}))
+	require.NoError(t, store.SetWorkerControl(true))
+	require.NoError(t, f.service.SetEnabled(context.Background(), scope, "one", store.Enabled))
+	state, err := store.LoadState()
+	require.NoError(t, err)
+	require.Equal(t, "machine", state.Scopes[scope][0].ProfileID)
+	require.Empty(t, state.Scopes[scope][0].PendingProfileID)
+	require.False(t, state.Scopes[scope][0].Pending)
 }

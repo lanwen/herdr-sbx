@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 
 	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
@@ -37,6 +38,23 @@ func (s *Service) ReconcileSandbox(ctx context.Context, out io.Writer, id, name 
 	return s.reconcileMatching(ctx, out, func(candidate sbx.Sandbox) bool {
 		return candidate.ID == id && candidate.Name == name
 	}, current)
+}
+
+type createdSandboxKey struct{}
+
+// ReconcileCreatedSandbox permits initial guest preparation to start a newly
+// created sandbox. Explicit Disabled choices and existing stopped entries remain inactive.
+func (s *Service) ReconcileCreatedSandbox(ctx context.Context, out io.Writer, id, name string, stillCurrent func() bool) error {
+	return s.ReconcileSandbox(context.WithValue(ctx, createdSandboxKey{}, id), out, id, name, stillCurrent)
+}
+
+func createdSandboxID(ctx context.Context) string {
+	id, _ := ctx.Value(createdSandboxKey{}).(string)
+	return id
+}
+
+func guestRuntimeAllowed(ctx context.Context, sb sbx.Sandbox) bool {
+	return strings.EqualFold(sb.Status, "running") || (sb.ID != "" && createdSandboxID(ctx) == sb.ID && strings.EqualFold(sb.Status, "stopped"))
 }
 
 // ReconcileAuthorized performs the explicitly approved temporary-access

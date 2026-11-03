@@ -189,10 +189,12 @@ type lifecycleScheduler struct {
 	mu             sync.Mutex
 	retired        map[string]bool
 	deletes        map[string]sbx.LifecycleEvent
+	deferredStarts map[string]sbx.LifecycleEvent
 	lastSeq        *uint64
 	catchup        bool
 	streamStarted  bool
 	freshCatchup   bool
+	catchupBusy    bool
 	queue          chan sbx.LifecycleEvent
 	jobs           sync.WaitGroup
 }
@@ -219,12 +221,16 @@ func (s *lifecycleScheduler) enqueue(event sbx.LifecycleEvent) bool {
 	if action == "deleted" {
 		s.retired[event.SandboxID] = true
 		s.deletes[event.SandboxID] = event
+		delete(s.deferredStarts, event.SandboxID)
 	}
 	select {
 	case s.queue <- event:
 		s.mu.Unlock()
 		return true
 	default:
+		if action == "created" || action == "started" {
+			s.deferStartLocked(event)
+		}
 		s.mu.Unlock()
 		return false
 	}
@@ -305,6 +311,9 @@ func (s *lifecycleScheduler) processCatchup(periodic bool) {
 	if !automaticAllowed(s.ctx) {
 		return
 	}
+	if periodic {
+		s.processDeferredStarts()
+	}
 	needed, fresh := s.takeCatchup(periodic)
 	if !needed {
 		return
@@ -315,6 +324,13 @@ func (s *lifecycleScheduler) processCatchup(periodic bool) {
 	}
 	err := s.owner.registrations.ReconcileContext(ctx, s.out)
 	if errors.Is(err, context.Canceled) {
+		return
+	}
+	if errors.Is(err, store.ErrStateLocked) {
+		s.mu.Lock()
+		s.catchup, s.catchupBusy = true, true
+		s.freshCatchup = s.freshCatchup || fresh
+		s.mu.Unlock()
 		return
 	}
 	if err != nil {
@@ -328,11 +344,15 @@ func (s *lifecycleScheduler) processCatchup(periodic bool) {
 func (s *lifecycleScheduler) takeCatchup(periodic bool) (needed, fresh bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.catchupBusy && !periodic {
+		return false, false
+	}
 	needed = periodic || s.catchup
 	fresh = s.freshCatchup
 	s.catchup = false
 	if needed {
 		s.freshCatchup = false
+		s.catchupBusy = false
 	}
 	return needed, fresh
 }
@@ -390,15 +410,78 @@ func (s *lifecycleScheduler) handle(event sbx.LifecycleEvent) {
 }
 
 func (s *lifecycleScheduler) handleStarted(event sbx.LifecycleEvent) {
-	if !s.current(event) {
+	if s.deferDuplicateStart(event) {
 		return
 	}
-	if err := s.owner.registrations.ReconcileSandbox(registration.WithFreshGuestObservation(s.ctx), s.out, event.SandboxID, event.SandboxName, func() bool { return s.current(event) }); err != nil && !errors.Is(err, context.Canceled) {
+	current, retry := s.current(event)
+	if !current {
+		if retry {
+			s.deferStart(event)
+		}
+		return
+	}
+	reconcile := s.owner.registrations.ReconcileSandbox
+	if strings.EqualFold(event.Action, "created") {
+		reconcile = s.owner.registrations.ReconcileCreatedSandbox
+	}
+	err := reconcile(registration.WithFreshGuestObservation(s.ctx), s.out, event.SandboxID, event.SandboxName, func() bool { return automaticAllowed(s.ctx) && !s.isRetired(event.SandboxID) })
+	if registrationNeedsRetry(err) {
+		s.deferStart(event)
+	} else if err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintln(s.out, "Lifecycle registration failed:", err)
 	}
 	if s.isRetired(event.SandboxID) {
 		s.removeDeleted(event)
 	}
+}
+
+func (s *lifecycleScheduler) deferDuplicateStart(event sbx.LifecycleEvent) bool {
+	s.mu.Lock()
+	_, pending := s.deferredStarts[event.SandboxID]
+	s.mu.Unlock()
+	if pending {
+		s.deferStart(event)
+	}
+	return pending
+}
+
+func (s *lifecycleScheduler) deferStart(event sbx.LifecycleEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deferStartLocked(event)
+}
+
+func (s *lifecycleScheduler) deferStartLocked(event sbx.LifecycleEvent) {
+	if s.retired[event.SandboxID] {
+		return
+	}
+	if s.deferredStarts == nil {
+		s.deferredStarts = make(map[string]sbx.LifecycleEvent)
+	}
+	if pending, ok := s.deferredStarts[event.SandboxID]; ok && strings.EqualFold(pending.Action, "created") {
+		return
+	}
+	s.deferredStarts[event.SandboxID] = event
+}
+
+func (s *lifecycleScheduler) processDeferredStarts() {
+	s.mu.Lock()
+	deferred := s.deferredStarts
+	s.deferredStarts = nil
+	s.mu.Unlock()
+	for _, event := range deferred {
+		s.handleStarted(event)
+	}
+}
+
+func inventoryUnavailable(err error) bool {
+	var unavailable *registration.InventoryUnavailableError
+	return errors.As(err, &unavailable)
+}
+
+func registrationNeedsRetry(err error) bool {
+	var unavailable *registration.PreAddUnavailableError
+	return errors.Is(err, store.ErrStateLocked) || inventoryUnavailable(err) || errors.As(err, &unavailable)
 }
 
 func (s *lifecycleScheduler) isRetired(id string) bool {
@@ -407,12 +490,18 @@ func (s *lifecycleScheduler) isRetired(id string) bool {
 	return s.retired[id]
 }
 
-func (s *lifecycleScheduler) stillRunning(event sbx.LifecycleEvent) bool {
-	return s.owner.registrations.SandboxRunning(s.socket, sbx.Sandbox{ID: event.SandboxID, Name: event.SandboxName})
-}
-
-func (s *lifecycleScheduler) current(event sbx.LifecycleEvent) bool {
-	return automaticAllowed(s.ctx) && !s.isRetired(event.SandboxID) && event.SandboxName != "" && s.stillRunning(event)
+func (s *lifecycleScheduler) current(event sbx.LifecycleEvent) (current, retry bool) {
+	if !automaticAllowed(s.ctx) || s.isRetired(event.SandboxID) || event.SandboxID == "" || event.SandboxName == "" {
+		return false, false
+	}
+	observed, err := s.owner.registrations.SandboxObservation(s.ctx, s.socket, sbx.Sandbox{ID: event.SandboxID, Name: event.SandboxName})
+	if err != nil {
+		return false, inventoryUnavailable(err)
+	}
+	if strings.EqualFold(event.Action, "created") {
+		return strings.EqualFold(observed.Status, "running") || strings.EqualFold(observed.Status, "stopped"), strings.EqualFold(observed.Status, "starting")
+	}
+	return strings.EqualFold(observed.Status, "running"), false
 }
 
 func (s *lifecycleScheduler) processDeletes() {
@@ -537,6 +626,9 @@ func (s *lifecycleScheduler) removeDeleted(event sbx.LifecycleEvent) bool {
 		return false
 	}
 	result, err := s.owner.registrations.RemoveDeletedSandbox(s.ctx, s.scope, s.socket, event.SandboxID)
+	if errors.Is(err, store.ErrStateLocked) {
+		return false
+	}
 	if err != nil {
 		fmt.Fprintln(s.out, "Lifecycle deletion deferred:", err)
 		return false

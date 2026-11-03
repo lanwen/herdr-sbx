@@ -79,7 +79,7 @@ func (s *Service) prepareGuestIntegrations(ctx context.Context, sandbox sbx.Sand
 		if err := CheckAutomaticWork(ctx); err != nil {
 			return err
 		}
-		if !strings.EqualFold(sandbox.Status, "running") || current == nil || !current() {
+		if !guestRuntimeAllowed(ctx, sandbox) || current == nil || !current() {
 			return errors.New("sandbox changed before integration setup")
 		}
 		return nil
@@ -123,7 +123,7 @@ func (s *Service) prepareGuestShell(ctx context.Context, sandbox sbx.Sandbox, cu
 	if err := CheckAutomaticWork(ctx); err != nil {
 		return err
 	}
-	if !strings.EqualFold(sandbox.Status, "running") || (current != nil && !current()) {
+	if !guestRuntimeAllowed(ctx, sandbox) || (current != nil && !current()) {
 		return errors.New("sandbox changed before shell setup")
 	}
 	return s.sbx.PrepareGuestShell(ctx, sandbox.Name)
@@ -576,11 +576,21 @@ func (s *Service) initialProjectDirectory(ctx context.Context, scope string, st 
 	if err := checkProjectStartup(ctx, current); err != nil {
 		return "", err
 	}
-	st.Scopes[scope] = append(st.Scopes[scope], store.Tracked{SandboxID: sb.ID, Label: sandboxMachineLabel(sb.Name), Target: sb.Name + ".sbx", ProjectWorkspacePending: cwd})
-	if err := store.SaveState(*st); err != nil {
+	if err := saveInitialProjectIntent(scope, st, sb, cwd); err != nil {
 		return "", err
 	}
 	return cwd, nil
+}
+
+func saveInitialProjectIntent(scope string, st *store.State, sb sbx.Sandbox, cwd string) error {
+	for i := range st.Scopes[scope] {
+		if st.Scopes[scope][i].SandboxID == sb.ID {
+			st.Scopes[scope][i].ProjectWorkspacePending = cwd
+			return store.SaveState(*st)
+		}
+	}
+	st.Scopes[scope] = append(st.Scopes[scope], store.Tracked{SandboxID: sb.ID, Label: sandboxMachineLabel(sb.Name), Target: sb.Name + ".sbx", ProjectWorkspacePending: cwd})
+	return store.SaveState(*st)
 }
 
 // networkAttempt binds the pre-build policy observation to that attempt's start time.

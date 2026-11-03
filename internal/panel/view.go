@@ -328,7 +328,7 @@ func diagnosticColor(code string) string {
 }
 
 func (m *model) hasBlockingErrors() bool {
-	for _, e := range m.errors {
+	for _, e := range m.pageErrors() {
 		if store.SeverityForCode(e.code) != store.SeverityWarning {
 			return true
 		}
@@ -421,8 +421,9 @@ func (m *model) repairCallout(sandbox, recovery, command string) []line {
 func (m *model) eventLines() []line {
 	var lines []line
 
-	for i := len(m.events) - 1; i >= 0; i-- {
-		lines = append(lines, m.eventRecordLines(m.events[i], len(m.events)-1-i)...)
+	events := m.pageEvents()
+	for i := len(events) - 1; i >= 0; i-- {
+		lines = append(lines, m.eventRecordLines(events[i], len(events)-1-i)...)
 	}
 	return lines
 }
@@ -437,6 +438,9 @@ func (m *model) diagnosticScope(scope, name string) string {
 		return safeText(name)
 	}
 	if _, id, scoped := strings.Cut(scope, "/"); scoped {
+		if !m.sandboxScope(scope) {
+			return "Sandbox service"
+		}
 		return "Unknown sandbox (" + truncate(safeText(id), 12) + ")"
 	}
 	return safeText(scope)
@@ -573,10 +577,10 @@ func (m *model) hintSection(inlineConfirmation bool) []line {
 
 func (m *model) observationSections(body []line) []line {
 	if m.dialog == "" {
-		if len(m.events) > 0 {
+		if len(m.pageEvents()) > 0 {
 			body = append(body, m.eventSection()...)
 		}
-		if len(m.errors) > 0 {
+		if len(m.pageErrors()) > 0 {
 			body = append(body, m.diagnosticSection()...)
 		}
 	}

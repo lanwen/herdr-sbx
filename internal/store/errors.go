@@ -416,6 +416,16 @@ func ClearGuestPluginFailure(scope string) error {
 	return SetGuestPluginFailures(scope, nil)
 }
 
+// RecordEvent retains one bounded operation result independently of active diagnostics.
+func RecordEvent(event EventRecord) error {
+	return UpdateStatusStore(func(s *StatusStore) {
+		if event.Ref == "" {
+			event.Ref = newErrorRef(s)
+		}
+		appendEvent(s, event)
+	})
+}
+
 func appendEvent(s *StatusStore, event EventRecord) {
 	if event.Name == "" {
 		event.Name = s.Sandboxes[event.Scope].Name

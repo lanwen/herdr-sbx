@@ -272,10 +272,10 @@ func (m *model) overrideChoiceHelp(keys *localHelpBindings, r registration.Sandb
 }
 
 func (m *model) diagnosticHelpBindings(keys *localHelpBindings) {
-	if m.focus == "events" && len(m.events) > 0 {
+	if m.focus == "events" && len(m.pageEvents()) > 0 {
 		keys.context = binding("enter/space", "expand/collapse")
 	}
-	if m.focus == "diagnostics" && len(m.errors) > 0 {
+	if m.focus == "diagnostics" && len(m.pageErrors()) > 0 {
 		keys.context = binding("enter/space", "new/all")
 		keys.arrows = binding("←/→", "new/all")
 	}
@@ -341,10 +341,10 @@ func (m *model) shortHelpBindings(helpKey, closeKey key.Binding, keys localHelpB
 }
 
 func (m *model) globalHelpBindings() (dismiss, diagnostics, newAll, refresh, filter key.Binding) {
-	if len(m.errors) > 0 {
+	if len(m.pageErrors()) > 0 {
 		diagnostics = binding("e", "diagnostics")
 	}
-	if len(m.errors) > 0 && (m.focus == "errors" || m.focus == "diagnostics") {
+	if len(m.pageErrors()) > 0 && (m.focus == "errors" || m.focus == "diagnostics") {
 		newAll = binding("n", "new/all")
 	}
 	if m.canDismissSelectedError() {

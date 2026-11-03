@@ -103,7 +103,7 @@ func TestRegistrationIdentityChangesKeepSafeJournalState(t *testing.T) {
 	})
 }
 
-func TestCatalogCapacityFailureClearsIntentForRetry(t *testing.T) {
+func TestCatalogCapacityFailureRetainsAttemptForExplicitRetry(t *testing.T) {
 	fixture := newRegistrationFixture(t, "[]")
 	adds := 0
 	fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
@@ -125,12 +125,13 @@ func TestCatalogCapacityFailureClearsIntentForRetry(t *testing.T) {
 		result, _ := fixture.service.registerPreparedContext(context.Background(), registrationWork{Scope: "scope", State: &state, Sandbox: sandbox, Current: func() bool { return true }}, nil)
 		require.EqualValues(t, "catalog full", result.Status)
 		require.Contains(t, result.Detail, "Remove an unused machine")
-		require.Len(t, state.Scopes["scope"], 0, "capacity failure left intent: %#v", state.Scopes["scope"])
+		require.Len(t, state.Scopes["scope"], 1)
+		require.True(t, state.Scopes["scope"][0].Pending)
 	}
 	require.Equal(t, 2, adds, "machine add calls=%d, want a retry", adds)
 }
 
-func TestUncertainAddRecoversUniqueCatalogEntryWithoutDuplicate(t *testing.T) {
+func TestUncertainAddDoesNotAdoptUnacknowledgedCatalogEntry(t *testing.T) {
 	fixture := newRegistrationFixture(t, `[{"uuid":"sandbox-1","name":"demo","status":"running"}]`)
 	adds, lists, readinessChecks := 0, 0, 0
 	fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
@@ -171,19 +172,19 @@ func TestUncertainAddRecoversUniqueCatalogEntryWithoutDuplicate(t *testing.T) {
 	fixture.rebuildClients()
 	var first strings.Builder
 	require.NoError(t, fixture.service.ReconcileContext(context.Background(), &first))
-	require.Contains(t, first.String(), "outcome is uncertain", "first reconcile=%s", first.String())
+	require.Contains(t, first.String(), "could not save the connection", "first reconcile=%s", first.String())
 	var second strings.Builder
 	require.NoError(t, fixture.service.ReconcileContext(context.Background(), &second))
-	require.Contains(t, second.String(), "READY")
+	require.Contains(t, second.String(), "could not safely link")
 	require.EqualValues(t, 1, adds)
 	require.EqualValues(t, 0, readinessChecks)
-	require.EqualValues(t, 2, lists)
+	require.EqualValues(t, 5, lists)
 	state, err := store.LoadState()
 	require.NoError(t, err)
 	item := state.Scopes[store.ScopeID("/tmp/registration-retry.sock")][0]
-	require.False(t, item.Pending)
-	require.EqualValues(t, "manual-1", item.ProfileID)
-	require.EqualValues(t, "demo", item.Label)
+	require.True(t, item.Pending)
+	require.Empty(t, item.ProfileID)
+	require.EqualValues(t, "sbx · demo", item.Label)
 }
 
 func TestProfilePersistenceFailureDoesNotClaimReadiness(t *testing.T) {
@@ -341,7 +342,7 @@ func testFailedRecreationRetainsCompletedGuestStateScenario(t *testing.T, scenar
 	require.NoError(t, err)
 	require.Len(t, saved.Scopes["scope"], 1, "guest history removed: %+v", saved)
 	item := saved.Scopes["scope"][0]
-	require.False(t, item.Pending)
+	require.Equal(t, scenario == "deterministic add failure", item.Pending)
 	require.EqualValues(t, "", item.ProfileID)
 	require.True(t, item.ProjectWorkspaceDone)
 	require.NotNil(t, item.GuestSync)

@@ -50,6 +50,12 @@ func testDiagnosticHeaderArrows(t *testing.T, page string) {
 		{code: store.CodeGuestPluginSync, scope: "a", detail: "new failure", count: 2},
 		{code: store.CodeOwnershipConflict, scope: "b", detail: "dismissed warning", count: 3, dismissed: true},
 	}
+	titlePrefix := "Errors and warnings"
+	if page == "Status" {
+		m.errors[0].code, m.errors[0].scope = store.CodeDaemonStart, "Host"
+		m.errors[1].code, m.errors[1].scope = store.CodeDaemonStop, "worker"
+		titlePrefix = "Errors"
+	}
 	for _, step := range []struct {
 		key rune
 		all bool
@@ -64,7 +70,7 @@ func testDiagnosticHeaderArrows(t *testing.T, page string) {
 		}
 		require.Len(t, m.visibleErrors(), wantVisible, "visible groups=%d want %d", len(m.visibleErrors()), wantVisible)
 		title := m.diagnosticTitle()
-		require.Contains(t, ansi.Strip(title), "Errors and warnings · New (2) | All (5)")
+		require.Contains(t, ansi.Strip(title), titlePrefix+" · New (2) | All (5)")
 		require.False(t, strings.Contains(title, "3 active hidden") == step.all)
 	}
 	for _, full := range []bool{false, true} {

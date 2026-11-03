@@ -57,10 +57,35 @@ func (s *Service) SandboxRows(ctx context.Context, socket string) ([]SandboxRow,
 	if err != nil {
 		return nil, err
 	}
-	return (entryObservation{Scope: scope, State: state, Complete: true, Revisions: []map[string]uint64{beforeCatalog.EnabledRevisions}}).entries(sandboxes, machines)
+	rows, err := (entryObservation{Scope: scope, State: state, Complete: true, Revisions: []map[string]uint64{beforeCatalog.EnabledRevisions}}).entries(sandboxes, machines)
+	for i := range rows {
+		rows[i] = pendingSandboxRow(rows[i], state, machines)
+	}
+	return rows, err
 }
 
 // associatedMachine verifies immutable catalog identity; labels never establish identity.
+// Pending registration guidance belongs to its sandbox, not global prerequisites.
+// This presentation projection does not block reconciliation from verifying a retry.
+func pendingSandboxRow(row SandboxRow, state store.State, machines []herdr.Machine) SandboxRow {
+	if row.EntryPresent || row.AssociationIssue != "" {
+		return row
+	}
+	for _, item := range state.Scopes[row.Scope] {
+		if item.SandboxID == row.Sandbox.ID && item.Pending && item.ProfileID == "" {
+			if pendingCollision(machines, item, row.Sandbox) {
+				row.AssociationIssue = "Another saved Herdr connection uses this sandbox's name or address. Registration is paused to avoid changing it."
+				row.Status.Connection, row.Status.Detail = "association warning", row.AssociationIssue
+				return row
+			}
+			row.Status.Connection = "pending"
+			row.Status.Detail = "Herdr has no saved connection to this sandbox. The plugin will check again automatically."
+			return row
+		}
+	}
+	return row
+}
+
 func associatedMachine(scope string, sb sbx.Sandbox, machines []herdr.Machine, state store.State) (*herdr.Machine, string) {
 	target := sb.Name + ".sbx"
 	if sb.ID == "" || sb.Name == "" || SandboxName(store.Tracked{Target: target}) != sb.Name {
@@ -80,6 +105,9 @@ func associatedMachine(scope string, sb sbx.Sandbox, machines []herdr.Machine, s
 	m := candidates[0]
 	if m.ID == "" || !usesDefaultSession(m.Session) {
 		return nil, "The herdr entry has an unknown identity or another session."
+	}
+	if issue := pendingAssociationIssue(saved, m); issue != "" {
+		return nil, issue
 	}
 	if savedAssociationChanged(saved, m, target) {
 		return nil, "The saved herdr entry identity changed. Refresh and inspect the association."
@@ -128,11 +156,27 @@ func machinesForTarget(machines []herdr.Machine, target string) []herdr.Machine 
 	return candidates
 }
 func absentAssociatedMachine(saved *store.Tracked, machines []herdr.Machine) (*herdr.Machine, string) {
+	if saved != nil && saved.Pending && saved.PendingProfileID != "" && machineByID(machines, saved.PendingProfileID) != nil {
+		return nil, "The acknowledged herdr entry uses another target or session; inspect its association."
+	}
 	if saved != nil && saved.ProfileID != "" && machineByID(machines, saved.ProfileID) != nil {
 		return nil, "The saved herdr entry now uses another target; inspect its association."
 	}
 	return nil, ""
 }
+func pendingAssociationIssue(saved *store.Tracked, machine herdr.Machine) string {
+	if saved == nil || !saved.Pending {
+		return ""
+	}
+	if saved.PendingProfileID == "" {
+		return "The plugin could not safely link the saved Herdr connection to this sandbox. Registration is paused to avoid changing another connection."
+	}
+	if saved.PendingProfileID != machine.ID {
+		return "The saved Herdr connection does not match the ID Herdr reported. Registration is paused to avoid changing it."
+	}
+	return ""
+}
+
 func machineClaimedElsewhere(scope, id, profileID string, state store.State) bool {
 	for otherScope, entries := range state.Scopes {
 		for _, entry := range entries {
@@ -191,6 +235,9 @@ func (observation entryObservation) sandboxEntry(status *store.StatusStore, sb s
 	row.ObservationPending = status.EnabledObservationPending[key]
 	if issue == "" && machine == nil && strings.EqualFold(sb.Status, "stopped") {
 		row.Enabled = store.Disabled
+		if observation.CreatedID == sb.ID && (choice == store.Enabled || status.EnabledRevisions[key] == 0) {
+			row.Enabled = store.Enabled
+		}
 		status.EnabledChoices[key] = row.Enabled
 	}
 	collision := entryLabelCollision(row, machine, machines)
@@ -412,11 +459,21 @@ func (c *enabledChange) addEntry() error {
 		return errors.New("Sandbox runtime is not confirmed running. Refresh before enabling it.")
 	}
 	// Ordinary add and guest setup are permitted only after rechecking RUNNING.
+	socket := c.service.Inspect().Socket
+	var currentError error
 	current := func() bool {
-		return c.service.sandboxRunning(c.service.Inspect().Socket, c.sb) && sandboxWorkAllowed(c.ctx, c.scope, c.id) && c.commandCurrent()
+		currentError = c.service.sandboxCurrent(c.ctx, socket, c.sb)
+		if currentError != nil {
+			return false
+		}
+		if !sandboxWorkAllowed(c.ctx, c.scope, c.id) || !c.commandCurrent() {
+			currentError = fmt.Errorf("A newer sandbox choice or cancellation prevents this work")
+			return false
+		}
+		return true
 	}
 	c.pending = true
-	outcome, _ := c.service.registerWithInstallation(c.ctx, registrationWork{Scope: c.scope, State: &c.state, Sandbox: c.sb, Current: current}, c.machines, installationOptions{}, nil)
+	outcome, _ := c.service.registerWithInstallation(c.ctx, registrationWork{Scope: c.scope, State: &c.state, Sandbox: c.sb, Current: current, CurrentError: func() error { return currentError }}, c.machines, installationOptions{}, nil)
 	if err := store.RecordSandboxStatus(c.scope, c.sb, outcome.Status, outcome.Detail, false); err != nil {
 		return err
 	}
@@ -515,6 +572,7 @@ func (c *enabledChange) saveEntry() error {
 		}
 	}
 	item.ProfileID, item.Target = c.machine.ID, c.machine.Target
+	item.Pending, item.PendingProfileID = false, ""
 	item.Label = c.machine.Label
 	item.PendingLabel = ""
 	item.LastObservedNativeEnabled = c.machine.Enabled
@@ -653,6 +711,7 @@ func clearAbsentProfile(state *store.State, scope, id string) {
 	for i := range state.Scopes[scope] {
 		item := &state.Scopes[scope][i]
 		if item.SandboxID == id && item.ProfileID != "" {
+			item.ProjectWorkspaceDone = false
 			item.ProfileID = ""
 			item.Pending = false
 			item.PendingLabel = ""
@@ -733,6 +792,10 @@ func captureSandboxBaseline(scope string, sb sbx.Sandbox, machines []herdr.Machi
 	}
 	if machine == nil {
 		clearAbsentProfile(state, scope, sb.ID)
+		// An untouched discovery default must not become an explicit choice.
+		if initial.EnabledRevisions[key] == 0 && !initial.EnabledObservationPending[key] {
+			return nil
+		}
 		if initial.EnabledObservationPending[key] {
 			choice = store.Disabled
 		}
@@ -944,6 +1007,7 @@ func (s *Service) renameMachineEntry(ctx context.Context, work registrationWork,
 
 // entryObservation keeps one catalog snapshot and the revisions captured before it was read.
 type entryObservation struct {
+	CreatedID string
 	Scope     string
 	State     store.State
 	Complete  bool

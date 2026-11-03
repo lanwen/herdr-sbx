@@ -8,7 +8,7 @@ func (i *Inspector) registrationOwnership(scope string) []Check {
 	}
 	state, err := store.LoadState()
 	if err != nil {
-		return []Check{{"Registration association", Unknown, "saved sandbox-to-herdr associations could not be read", "Check the plugin state before enabling more sandboxes."}}
+		return []Check{{"Registration state", Unknown, "saved sandbox-to-herdr associations could not be read", "Check the plugin state before enabling more sandboxes."}}
 	}
 	for _, item := range state.Scopes[scope] {
 		if item.Pending && item.ProfileID == "" {

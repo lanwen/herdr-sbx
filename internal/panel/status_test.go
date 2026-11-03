@@ -60,9 +60,11 @@ func TestStatusPrerequisitesRetainIndependentCauses(t *testing.T) {
 	for _, l := range m.statusLines() {
 		text.WriteString(ansi.Strip(l.text) + "\n")
 	}
-	for _, want := range []string{"Sandbox service", "Docker sign-in", "Not checked", "requires JSON commands", "Update sbx", "Cannot read /CaseSensitive", "Inspect inventory", "Ambiguous association", "Resolve association"} {
+	for _, want := range []string{"Sandbox service", "Docker sign-in", "Not checked", "requires JSON commands", "Update sbx", "Cannot read /CaseSensitive", "Inspect inventory"} {
 		require.Contains(t, text.String(), want, "missing %q:\n%s", want, text.String())
 	}
+	require.NotContains(t, text.String(), "Ambiguous association")
+	require.NotContains(t, text.String(), "Resolve association")
 }
 
 func TestStatusPrerequisiteGroupingAndUnstyledResults(t *testing.T) {

@@ -8,6 +8,11 @@ Include the underlying failure instead of a generic catch-up message.
 Show one dedicated outlined section when active errors or warnings exist; omit it when there are none.
 Title it Warnings, Errors, or Errors and warnings according to its entries, with separate counts when both appear.
 Show Events above the active diagnostics section.
+On Status, include only global diagnostics and events; retain sandbox-scoped entries in Sandboxes.
+Status counts, focus, and recovery navigation use the same scope as its visible sections.
+Show the current saved-connection state, any known cause, and the plugin's automatic checks in the affected sandbox details.
+Offer an explicit retry only when eligible; the plugin performs the required connection checks.
+An unreadable association state store remains a global Registration state prerequisite.
 Retain at most the 50 most recent events from the past hour; expire older events even when no new event is added.
 Its header shows the retained-event count; start collapsed and expand or collapse with Enter, Space, or a mouse click.
 Retain its expansion choice while the TUI is open.

@@ -15,7 +15,7 @@ import (
 // observeGuestServer runs only during active reconciliation, never passive polls.
 // Its independent audit also covers workspace failures before plugin inspection.
 func (s *Service) observeGuestServer(ctx context.Context, scope string, sb sbx.Sandbox, current func() bool) {
-	if ctx.Err() != nil || sb.ID == "" || !strings.EqualFold(sb.Status, "running") || current == nil || !current() {
+	if ctx.Err() != nil || sb.ID == "" || !guestRuntimeAllowed(ctx, sb) || current == nil || !current() {
 		return
 	}
 	status, err := store.ReadStatusStore()
@@ -73,11 +73,25 @@ type remoteHerdr struct {
 	Conflict bool
 }
 
+type remoteProbeError struct {
+	err    error
+	output string
+}
+
+func (e *remoteProbeError) Error() string {
+	return "remote Herdr check: " + registrationEvidence(commandError(e.err, e.output))
+}
+func (e *remoteProbeError) Unwrap() error { return e.err }
+
 func (s *Service) remoteHerdrStatus(ctx context.Context, target string) (remoteHerdr, error) {
 	command := "if command -v herdr >/dev/null 2>&1; then printf '" + remoteHerdrOnPath + "\\n'; herdr --version; elif [ -x \"$HOME/.local/bin/herdr\" ]; then printf '" + remoteHerdrFallback + "\\n'; \"$HOME/.local/bin/herdr\" --version; elif [ -e \"$HOME/.local/bin/herdr\" ] || [ -L \"$HOME/.local/bin/herdr\" ]; then printf '" + remoteHerdrConflict + "\\n'; else printf '" + missingRemoteHerdr + "\\n'; fi"
+	started := time.Now()
 	output, err := s.runSSH(ctx, 15*time.Second, target, command)
+	if identity, ok := ctx.Value(registrationIdentityKey{}).(registrationIdentity); ok {
+		s.logRegistration(ctx, registrationLog{Stage: "remote_probe", Scope: identity.Scope, Sandbox: identity.Sandbox, Attempt: 1, Started: started, Timeout: 15 * time.Second, Err: err, Output: output})
+	}
 	if err != nil {
-		return remoteHerdr{}, fmt.Errorf("remote Herdr check: %s", commandError(err, output))
+		return remoteHerdr{}, &remoteProbeError{err: err, output: output}
 	}
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	if len(lines) == 0 || lines[0] == missingRemoteHerdr {
