@@ -146,7 +146,7 @@ The feature specifications define column priorities; shared responsive rules bel
 
 ## Filtering and responsive layout
 
-Keep the current tab and compact footer pinned, with the body scrolling between them.
+Keep the current tab and compact footer pinned. Between them, render the independently scrolling tab content, fixed action feedback, and fixed observations, in that order.
 At phone widths, use E, Sandbox, and herdr as headings.
 Compact tab gaps before shortening visible names, and keep complete tab names available through navigation and Help.
 If Management, Cancelling, and sbx cannot fit together, put gray Cancelling on the line immediately above the footer.
@@ -161,7 +161,7 @@ Filtering changes visibility only.
 
 Render the main views at 30 columns by 10 rows or larger, with tabs, filter, footer, and herdr plugin rows adapted to the available width.
 If a Hint or confirmation exceeds the short screen, keep its full text and controls reachable by scrolling.
-Page Up and Page Down scroll whenever a long Hint or confirmation joins the viewport, without changing the selected sandbox or action.
+Page Up and Page Down scroll long feedback or confirmation text within its fixed area, without changing the selected sandbox or action.
 If the diagnostics title does not fit, put the New and All selector on a separate actionable line.
 Show the complete herdr plugin identifier in Hint when a compact Details or Plugins row has focus, so names with the same prefix remain distinct.
 At smaller sizes, show a short resize instruction and keep Close available.
@@ -170,12 +170,25 @@ Keep the requested Management choice and sbx grouped at the bottom right, in tha
 Reduce contextual help to its essential shortcuts and keep full Help available.
 Never abbreviate Cancelling or replace it with only a spinner.
 
-Long Hints and confirmations join the scrollable body instead of consuming every row above the footer.
+Keep feedback and confirmations outside the scrolling sandbox content.
+Cap ordinary feedback at three physical rows including its outline; show an ellipsis when content is clipped and keep the full text reachable with Page Up and Page Down.
 Page Up and Page Down keep the full text and controls reachable without changing action selection.
 Reveal a focused control after keyboard navigation without resetting an intentional page scroll on ordinary refresh.
 Wrap complete action buttons and stack compact herdr plugin values.
 Keep full identifiers in Hint so similar prefixes remain distinguishable.
 Below 30×10, show a short resize instruction and keep Close available.
+
+The layout measures the header and footer before assigning content rows.
+At 40×12, reserve up to three rows for feedback, two for observations, and at least four for the sandbox viewport.
+At 110×18, reserve up to three rows for feedback, three for observations, and at least nine for the sandbox viewport.
+At 30×10, reserve up to three rows for feedback, one inline observation row, and at least three for the sandbox viewport.
+A narrow Cancelling footer uses one extra row from the sandbox viewport.
+A compact Fix herdr confirmation pins its action, full sandbox name, target version, handoff summary, and consent buttons together.
+Only the longer explanation scrolls; it cannot displace the consent summary or focused buttons.
+Confirmations may borrow sandbox rows while retaining at least one sandbox row and one observation row when observations exist.
+Unfocused observations show an applicable active diagnostic and the newest event when both exist; compact summaries keep their codes and counts.
+Focused observations use the existing error/event selection, expansion, recovery, and scrolling controls to reveal full records and retained history within their own viewport.
+Preserve the current sandbox row or action within the sandbox viewport after navigation.
 
 ## Hints and concurrent operations
 
@@ -189,6 +202,10 @@ Wrap hint text at spaces so words stay whole; let long hints use multiple lines 
 Replace a hint when a newer action starts, and clear it when navigation leaves the action's context.
 
 Show pending actions and their final outcome.
+Feedback priority is the current target’s in-flight action and spinner, then its latest failure, blocked reason, or success, then selection context.
+Keep action feedback until it is replaced; background observations must not erase it.
+Accepted Enable shows Enabling and the sandbox name synchronously before the asynchronous command runs.
+A rejected action shows why it cannot run and does not show a spinner.
 Prevent conflicting actions on the same sandbox while a mutation is in progress.
 Coordinate saved choices with the background daemon so Disable, removal, Management OFF, and resuming Management cannot race with automatic registration or overwrite the new baseline.
 If another reconciliation holds the registration lock, explain that sync is updating registrations and that the requested action did not finish.
@@ -212,9 +229,9 @@ CLI acceptance is in the [reference](reference.md#commands-and-panel).
 ## Visual acceptance
 
 - **V01** — At 110×32, columns align, the selected sandbox has a preview with a brighter outline when controls have focus, and Management sits immediately before sbx at the bottom right.
-- **V02** — At 30×10, every tab, Enabled control, action, confirmation, Hint, and diagnostic remains reachable without horizontal clipping.
+- **V02** — At 30×10, every tab, Enabled control, action, confirmation, feedback, and diagnostic remains reachable without horizontal clipping; sandbox scrolling never hides fixed action feedback or current observations.
 - **V03** — A missing-entry dot invokes Enable twice only when the first attempt finishes, and it never silently toggles hidden Enabled intent off.
-- **V04** — Enable on a stopped sandbox without an entry stays Disabled with neutral Stopped status, without a warning or a pending enable.
+- **V04** — Explicit Enable on a stopped sandbox without an entry immediately shows an Enabling spinner and invokes the existing prepare/add workflow; blocked or failed actions show their actual reason.
 - **V05** — Disabled keeps its label, confirmed native disable reveals Remove from herdr, and failed removal retains its label and retry.
 - **V06** — A removed Disabled entry remains a dot with a blank label after observations and Management OFF/ON.
 - **V07** — OFF selects immediately, gray Cancelling remains until settled, and failed cancellation preserves the requested choice and diagnostic.

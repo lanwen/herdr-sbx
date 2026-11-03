@@ -592,7 +592,7 @@ func (m *model) moveEvents(key string, delta int) {
 	}
 	if paging(key) {
 		m.reveal = false
-		m.scroll = max(0, m.scroll+delta)
+		m.observationScroll = max(0, m.observationScroll+m.observationDelta(delta))
 		return
 	}
 	if delta < 0 {
@@ -608,7 +608,7 @@ func (m *model) moveEvents(key string, delta int) {
 		return
 	}
 	m.reveal = false
-	m.scroll = max(0, m.scroll+delta)
+	m.observationScroll = max(0, m.observationScroll+m.observationDelta(delta))
 	return
 }
 
@@ -631,7 +631,7 @@ func (m *model) moveDiagnostics(key string, delta int) {
 	}
 	if paging(key) {
 		m.reveal = false
-		m.scroll = max(0, m.scroll+delta)
+		m.observationScroll = max(0, m.observationScroll+m.observationDelta(delta))
 	}
 	return
 }
@@ -655,7 +655,7 @@ func (m *model) moveErrors(key string, delta int) {
 		return
 	}
 	m.reveal = false
-	m.scroll = max(0, m.scroll+delta)
+	m.observationScroll = max(0, m.observationScroll+m.observationDelta(delta))
 	return
 }
 
@@ -868,12 +868,12 @@ func (m *model) activateHit(h hit) tea.Cmd {
 }
 
 func (m *model) scrollHint(k string) bool {
-	if m.hintInBody && (k == "pgup" || k == "pgdown") {
-		delta := max(1, m.height-4)
+	if m.hintScrollable && !m.observationsFocused() && (k == "pgup" || k == "pgdown") {
+		delta := max(1, m.hintCapacity)
 		if k == "pgup" {
 			delta = -delta
 		}
-		m.scroll = max(0, m.scroll+delta)
+		m.hintScroll = max(0, m.hintScroll+delta)
 		m.reveal = false
 		return true
 	}

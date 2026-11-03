@@ -94,57 +94,60 @@ type line struct {
 // model keeps terminal state separate from operations. Identity, rather than a
 // row index, anchors selection and input while observations arrive.
 type model struct {
-	service                                                                         *Service
-	startWorkerFn                                                                   func() error
-	stopWorkerFn                                                                    func(context.Context) error
-	setEnabledFn                                                                    func(context.Context, string, string, store.EnabledChoice) error
-	removeEntryFn                                                                   func(context.Context, string, string) error
-	helpOpen                                                                        bool
-	helpScroll                                                                      int
-	page, previous, focus                                                           string
-	width, height, scroll, pluginIndex, detailIndex, errorIndex, button, generation int
-	rows                                                                            []registration.SandboxRow
-	plugins                                                                         []guestplugins.Choice
-	settings                                                                        store.GuestPluginDefaults
-	checks                                                                          precheck.Result
-	worker                                                                          store.WorkerStatus
-	selected, expanded, pluginSelected                                              string
-	diagnosticClickGroup                                                            string
-	queries                                                                         map[string]string
-	input                                                                           *inputState
-	dialog, dialogTarget, dialogReason                                              string
-	errors                                                                          []uiError
-	events                                                                          []store.EventRecord
-	eventsExpanded, showAllErrors                                                   bool
-	eventIndex                                                                      int
-	pending                                                                         map[string]bool
-	pendingChoices                                                                  map[string]pluginChoiceChange
-	pendingEnabled                                                                  map[string]store.EnabledChoice
-	loading, refreshing, workerLoaded                                               bool
-	checksPending                                                                   bool
-	workerEnabled                                                                   bool
-	workerIntentSet                                                                 bool
-	workerCommandEnabled                                                            bool
-	workerStartGeneration                                                           uint64
-	workerControlError                                                              bool
-	stopRequestedAt                                                                 time.Time
-	stopDelayReported                                                               bool
-	closing                                                                         bool
-	popup                                                                           bool
-	quitUntil                                                                       time.Time
-	effects                                                                         []errorWrite
-	writingErrors                                                                   bool
-	errorRevision                                                                   int
-	errorChanges                                                                    map[string]errorChange
-	lastErrorsObserved                                                              time.Time
-	hintInBody                                                                      bool
-	reveal                                                                          bool
-	ticks                                                                           int
-	notice                                                                          string
-	noticeTarget                                                                    string
-	hits                                                                            []hit
-	renderedFrame                                                                   string
-	textSelection                                                                   *textSelection
+	service                                                                                *Service
+	startWorkerFn                                                                          func() error
+	stopWorkerFn                                                                           func(context.Context) error
+	setEnabledFn                                                                           func(context.Context, string, string, store.EnabledChoice) error
+	removeEntryFn                                                                          func(context.Context, string, string) error
+	helpOpen                                                                               bool
+	helpScroll                                                                             int
+	page, previous, focus                                                                  string
+	width, height, scroll, pluginIndex, detailIndex, errorIndex, button, generation        int
+	rows                                                                                   []registration.SandboxRow
+	plugins                                                                                []guestplugins.Choice
+	settings                                                                               store.GuestPluginDefaults
+	checks                                                                                 precheck.Result
+	worker                                                                                 store.WorkerStatus
+	selected, expanded, pluginSelected                                                     string
+	diagnosticClickGroup                                                                   string
+	queries                                                                                map[string]string
+	input                                                                                  *inputState
+	dialog, dialogTarget, dialogReason                                                     string
+	errors                                                                                 []uiError
+	events                                                                                 []store.EventRecord
+	eventsExpanded, showAllErrors                                                          bool
+	eventIndex                                                                             int
+	pending                                                                                map[string]bool
+	pendingChoices                                                                         map[string]pluginChoiceChange
+	pendingEnabled                                                                         map[string]store.EnabledChoice
+	loading, refreshing, workerLoaded                                                      bool
+	checksPending                                                                          bool
+	workerEnabled                                                                          bool
+	workerIntentSet                                                                        bool
+	workerCommandEnabled                                                                   bool
+	workerStartGeneration                                                                  uint64
+	workerControlError                                                                     bool
+	stopRequestedAt                                                                        time.Time
+	stopDelayReported                                                                      bool
+	closing                                                                                bool
+	popup                                                                                  bool
+	quitUntil                                                                              time.Time
+	effects                                                                                []errorWrite
+	writingErrors                                                                          bool
+	errorRevision                                                                          int
+	errorChanges                                                                           map[string]errorChange
+	lastErrorsObserved                                                                     time.Time
+	hintScrollable                                                                         bool
+	hintScroll, hintCapacity, observationScroll, observationCapacity, observationsY, hintY int
+	pendingActions                                                                         map[string]string
+	reveal                                                                                 bool
+	ticks                                                                                  int
+	notice                                                                                 string
+	noticeTarget                                                                           string
+	noticeCode                                                                             string
+	hits                                                                                   []hit
+	renderedFrame                                                                          string
+	textSelection                                                                          *textSelection
 }
 
 func newModel(s *Service) *model {
@@ -208,12 +211,16 @@ func (m *model) run(target, code, notice string, f func() error) tea.Cmd {
 	}
 	m.pending[target] = true
 	m.actionNotice(target, code)
+	if m.pendingActions == nil {
+		m.pendingActions = map[string]string{}
+	}
+	m.pendingActions[target] = m.notice
 	return func() tea.Msg { return operationMsg{target: target, code: code, notice: notice, err: f()} }
 }
 
 // Navigation drops feedback from the previous context; diagnostics remain durable.
 func (m *model) clearNotice() {
-	m.notice, m.noticeTarget = "", ""
+	m.notice, m.noticeTarget, m.noticeCode = "", "", ""
 }
 func (m *model) operationInContext(target string) bool {
 	if target == "worker" || target == "Host" {
@@ -226,6 +233,7 @@ func (m *model) operationInContext(target string) bool {
 }
 
 func (m *model) actionNotice(target, code string) {
+	m.noticeCode = ""
 	action := map[string]string{
 		store.CodeRename:        "Saving herdr label",
 		store.CodePluginChoice:  "Saving herdr plugin sync choice",
@@ -508,10 +516,7 @@ func (m *model) setEnabled(choice store.EnabledChoice) tea.Cmd {
 		return nil
 	}
 	if r.AssociationIssue != "" {
-		m.notice = r.AssociationIssue
-		return nil
-	}
-	if choice == store.Enabled && !r.EntryPresent && strings.EqualFold(r.Sandbox.Status, "stopped") {
+		m.notice, m.noticeTarget, m.noticeCode = r.AssociationIssue, r.Sandbox.ID, store.CodeOwnershipConflict
 		return nil
 	}
 	if m.pendingEnabled == nil {
@@ -778,11 +783,19 @@ func (m *model) updateMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	delta := 3
 	if msg.Button == tea.MouseWheelUp {
-		m.scroll = max(0, m.scroll-3)
-	} else {
-		m.scroll += 3
+		delta = -delta
 	}
+	switch {
+	case m.observationsFocused() && msg.Y >= m.observationsY && msg.Y < m.observationsY+m.observationCapacity:
+		m.observationScroll = max(0, m.observationScroll+m.observationDelta(delta))
+	case m.hintScrollable && msg.Y >= m.hintY && msg.Y < m.observationsY:
+		m.hintScroll = max(0, m.hintScroll+delta)
+	default:
+		m.scroll = max(0, m.scroll+delta)
+	}
+	m.reveal = false
 	return m, nil
 }
 
@@ -924,6 +937,14 @@ func (m *model) saveEnabledChoice(r registration.SandboxRow, choice store.Enable
 		defer cancel()
 		return m.setEnabledFn(ctx, r.Scope, r.Sandbox.ID, choice)
 	})
+	if m.operationInContext(r.Sandbox.ID) {
+		verb := "Enabling "
+		if choice == store.Disabled {
+			verb = "Disabling "
+		}
+		m.notice, m.noticeTarget = verb+safeText(r.Sandbox.Name)+"…", r.Sandbox.ID
+		m.pendingActions[r.Sandbox.ID] = m.notice
+	}
 	return func() tea.Msg {
 		result := command().(operationMsg)
 		settled := r.Enabled
@@ -1017,6 +1038,7 @@ func (m *model) settleOperation(msg operationMsg) {
 		m.refreshing = false
 	}
 	delete(m.pending, msg.target)
+	delete(m.pendingActions, msg.target)
 	if m.noticeTarget == msg.target && !m.operationInContext(msg.target) {
 		m.notice, m.noticeTarget = "", ""
 	}
@@ -1067,7 +1089,7 @@ func (m *model) operationFailed(msg operationMsg) {
 	}
 	m.addError(code, scope, detail)
 	if m.operationInContext(msg.target) && (m.noticeTarget == "" || m.noticeTarget == msg.target) {
-		m.notice, m.noticeTarget = "", ""
+		m.notice, m.noticeTarget, m.noticeCode = code+": "+safeText(detail.Error()), msg.target, code
 		if msg.code == store.CodeHerdrFix {
 			m.notice = "Fix herdr did not finish."
 		}
@@ -1081,7 +1103,7 @@ func (m *model) operationSucceeded(msg operationMsg) {
 	}
 	m.clearError(msg.code, msg.target)
 	if m.operationInContext(msg.target) && (m.noticeTarget == "" || m.noticeTarget == msg.target) {
-		m.notice, m.noticeTarget = msg.notice, ""
+		m.notice, m.noticeTarget, m.noticeCode = msg.notice, "", ""
 		if msg.target == "worker" {
 			m.notice = ""
 		}

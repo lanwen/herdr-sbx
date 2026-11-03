@@ -227,7 +227,7 @@ func TestPopupQuitHintStaysVisibleWithLongContent(t *testing.T) {
 			m.key(keyMsg(tea.KeyEscape, ""))
 			frame := ansi.Strip(m.View().Content)
 			requireQuitHintBox(t, frame)
-			require.False(t, m.hintInBody)
+			require.False(t, m.hintScrollable)
 			require.Equal(t, notice, m.notice)
 			t.Logf("%dx%d, long notice %t:\n%s", size[0], size[1], notice != "", frame)
 		}
