@@ -172,10 +172,12 @@ func TestOldRenameCompletionDoesNotEraseNewInput(t *testing.T) {
 	m.Update(operationMsg{target: "a", code: store.CodeRename, rename: true, input: old})
 	require.False(t, m.input != current, "old operation erased new input")
 }
-func TestCloseWaitsForPendingCleanup(t *testing.T) {
+func TestConfirmedEscapeWaitsForPendingCleanup(t *testing.T) {
 	m := modelFixture(t)
+	m.popup = true
 	m.pending["a"] = true
-	cmd := m.key(keyMsg('q', "q"))
+	require.NotNil(t, m.key(keyMsg(tea.KeyEscape, "")))
+	cmd := m.key(keyMsg(tea.KeyEscape, ""))
 	require.Nil(t, cmd)
 	require.True(t, m.closing)
 	_, cmd = m.Update(operationMsg{target: "a", code: store.CodeTemporaryAccess})

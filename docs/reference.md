@@ -67,8 +67,8 @@ The `open-status` plugin action opens the manager in a popup that requests 110 c
 The `open-status-tab` and `open-status-split` actions open the same manager in a tab or split.
 The manager detects its popup context from `HERDR_ENV=1`, `HERDR_PLUGIN_ID=lanwen.herdr-sbx`, `HERDR_PLUGIN_ENTRYPOINT_ID=status`, and an empty `HERDR_PANE_ID`.
 Herdr gives tiled plugin panes a pane ID; popup pane commands have entrypoint context without a pane ID, as described in the [plugin environment documentation](https://herdr.dev/docs/plugins/#commands-and-environment).
-Only the popup uses the [two-step quit prompt](tui-spec.md#popup-closing); closing it exits the manager process without closing a tiled pane or stopping the daemon.
-When closing waits for active work and cleanup, press Ctrl+C again to force the manager to close.
+Only Escape in the popup uses the [two-step quit prompt](tui-spec.md#popup-closing); closing it exits the manager process without closing a tiled pane or stopping the daemon.
+Press `q` outside a text editor or Ctrl+C from any control to close immediately, without confirmation or waiting for active work and cleanup.
 Force closing does not stop the daemon or sandbox and does not guarantee that external work or cleanup finishes or cancels.
 `herdr-sbx status` reads saved daemon and sandbox observations without contacting Docker, starting work, or changing choices.
 Its compact human summary includes Management, daemon health, sandbox choices, runtime, labels, status, and outstanding errors.

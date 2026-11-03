@@ -90,20 +90,20 @@ The Management indicator and the sbx indicator open the Status tab.
 | Page Up/Page Down | Scroll long content or Hint without changing the selected sandbox or action. |
 | Escape | Leave input, cancel confirmation, or return from card controls to list navigation; at the popup's Sandboxes list with no filter, request closing. |
 | `?` | Expand or close contextual help in place. |
-| `q` or Ctrl+C | Close the TUI; popup closing requires a second quit key within five seconds. Inputs and confirmations keep their local handling until closing waits for active work; Ctrl+C then forces the manager to close. |
+| `q` or Ctrl+C | Close the TUI immediately without confirmation or waiting for active work. Ctrl+C works from all controls; `q` remains literal text in an editor. |
 
 ### Popup closing
 
 Popup detection follows the [Herdr environment contract](reference.md#commands-and-panel).
 Tab, split, and ordinary terminal invocations keep their existing closing behavior.
-The popup uses this confirmation sequence:
+Only Escape uses the popup confirmation sequence:
 
 | Starting state | Action | Immediate feedback | External effect | Settlement and failure |
 | --- | --- | --- | --- | --- |
-| Popup with no quit prompt; no input or confirmation owns the key | Press `q`, Ctrl+C, or Escape at the Sandboxes list with no active filter | Show `Press esc, q or ctrl+c again to quit` followed by muted `...5s` in the framed Hint area, replacing its displayed contents temporarily | None | Arm closing for five seconds; preserve notice and context data and keep the quit Hint outside the scrolling body at compact sizes. |
+| Popup with no quit prompt; no input or confirmation owns the key | Press Escape at the Sandboxes list with no active filter | Show `Press esc again to quit` followed by muted `...5s` in the framed Hint area, replacing its displayed contents temporarily | None | Arm closing for five seconds; preserve notice and context data and keep the quit Hint outside the scrolling body at compact sizes. |
 | Quit prompt active | Each second passes before the deadline | Count down the muted suffix through `...4s`, `...3s`, `...2s`, and `...1s` | None | Keep the main phrase in the information color and wrap the suffix with it at compact widths; never display zero or negative seconds. |
-| Quit prompt active, before its deadline | Press any of Escape, `q`, or Ctrl+C where it requests closing | Remove the prompt; close, or show the finishing-work notice with `Press Ctrl+C again to force close. External work may continue.` | Exit only the manager process after pending work settles | The daemon continues running. |
-| Any manager is waiting for active work before closing | Press Ctrl+C | Close immediately, including from inputs, confirmations, and help | Exit the manager without waiting for pending work | The daemon and sandbox keep running. External effects and cleanup are not guaranteed to finish or cancel. |
+| Quit prompt active, before its deadline | Press Escape where it requests closing | Remove the prompt; close, or show the finishing-work notice with `Press Ctrl+C to close immediately. External work may continue.` | Exit only the manager process after pending work settles | The daemon continues running. |
+| Any manager, with or without an Escape quit prompt or active work | Press Ctrl+C, or `q` outside a text editor | Close immediately, including from confirmations and help | Exit the manager without waiting for pending work | The daemon and sandbox keep running. External effects and cleanup are not guaranteed to finish or cancel. |
 | Quit prompt active | Press any other key | Restore normal Hint content and perform the key's normal action | Only the key's normal effect | A later quit key starts a new five-second window. |
 | Quit prompt active | Five seconds pass | Restore normal Hint content | None | A later quit key starts over, even if the timeout message was delayed. Old timeout messages cannot cancel a newer prompt. |
 | Input, confirmation, help, card controls, another section or tab, active filter, or text drag owns Escape | Press Escape | Perform the existing cancel, back, clear-filter, or drag-cancel action | None | Do not arm closing. |

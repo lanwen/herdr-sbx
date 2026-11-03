@@ -49,11 +49,11 @@ func (m *model) helpKeys() panelKeys {
 			description, escape = "accept", "back"
 		}
 		short := []key.Binding{binding("esc", escape), binding("enter", description), binding("ctrl+u", "clear")}
-		return panelKeys{short, [][]key.Binding{short, {binding("←/→", "cursor"), binding("home/end", "start/end"), binding("backspace/delete", "delete"), binding("ctrl+c", "cancel")}}}
+		return panelKeys{short, [][]key.Binding{short, {binding("←/→", "cursor"), binding("home/end", "start/end"), binding("backspace/delete", "delete"), binding("ctrl+c", "close")}}}
 	}
 	if m.dialog != "" {
 		short := []key.Binding{binding("esc", "cancel"), binding("enter", "activate"), binding("tab", "focus")}
-		return panelKeys{short, [][]key.Binding{short, {binding("←/→", "focus"), binding("shift+tab", "previous choice"), binding("ctrl+c", "cancel")}}}
+		return panelKeys{short, [][]key.Binding{short, {binding("←/→", "focus"), binding("shift+tab", "previous choice"), binding("ctrl+c", "close")}}}
 	}
 	helpKey, closeKey := binding("?", "help"), binding("q", "close")
 	if m.popupQuitKey("esc") {
@@ -77,7 +77,7 @@ func (m *model) helpKeys() panelKeys {
 		navigation[2] = binding("pgup/pgdown", "page help")
 	}
 	local := []key.Binding{context, toggle, rename, inherit, filter}
-	global := []key.Binding{binding("s", "status"), binding("p", "herdr plugin defaults"), binding("b", "status / Management"), diagnostics, dismiss, newAll, refresh, helpKey, closeKey, binding("ctrl+c", "cancel/close")}
+	global := []key.Binding{binding("s", "status"), binding("p", "herdr plugin defaults"), binding("b", "status / Management"), diagnostics, dismiss, newAll, refresh, helpKey, closeKey, binding("ctrl+c", "close")}
 	short := m.shortHelpBindings(helpKey, closeKey, localKeys, dismiss, newAll)
 	return panelKeys{short, [][]key.Binding{navigation, local, global}}
 }

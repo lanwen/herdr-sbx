@@ -9,7 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-const quitHint = "Press esc, q or ctrl+c again to quit"
+const quitHint = "Press esc again to quit"
 
 type quitTimeoutMsg time.Time
 
@@ -40,9 +40,6 @@ func (m *model) popupQuitKey(k string) bool {
 	if !m.popup || m.input != nil || m.dialog != "" {
 		return false
 	}
-	if k == "q" || k == "ctrl+c" {
-		return true
-	}
 	return k == "esc" && !m.helpOpen &&
 		!(m.textSelection != nil && m.textSelection.pressed) &&
 		m.page == "Sandboxes" && m.focus == "table" && m.queries[m.page] == ""
@@ -62,7 +59,7 @@ func (m *model) confirmQuit() tea.Cmd {
 func (m *model) quit() tea.Cmd {
 	if len(m.pending) > 0 {
 		m.closing = true
-		m.notice = "Finishing active work and cleanup before closing… Press Ctrl+C again to force close. External work may continue."
+		m.notice = "Finishing active work and cleanup before closing… Press Ctrl+C to close immediately. External work may continue."
 		return nil
 	}
 	return tea.Quit
