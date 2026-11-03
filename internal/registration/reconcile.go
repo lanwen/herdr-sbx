@@ -184,7 +184,10 @@ func (r *reconciliation) load() error {
 		return err
 	}
 	r.syncAssociations(rows)
-	return store.SaveState(r.state)
+	if err := store.SaveState(r.state); err != nil {
+		return err
+	}
+	return r.resolveAbsentAddFailures()
 }
 
 func (r *reconciliation) observeInventory() error {

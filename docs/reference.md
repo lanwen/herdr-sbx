@@ -157,6 +157,8 @@ Checks are read-only and stop promptly on cancellation; they never open a guest 
 Immediately after an add, only a trusted acknowledged machine ID with the expected target and default session confirms that operation.
 On a later reconciliation with Management ON, the plugin also adopts a unique unclaimed connection with the exact sandbox target and default session, even if the previous attempt had no acknowledgement.
 It rechecks the exact sandbox UUID/name after reading connections, imports the actual native Enabled state and observed label, and clears the pending request without another add or native enable.
+After a confirmed connection is saved, resolve its earlier explicit-add failure that specifically reported the entry absent after setup.
+Keep that failure in resolved Events and retain unrelated Rename, Remove, or Disable errors.
 A conflicting nonempty acknowledgement, competing owner, duplicate candidate, wrong session, or unreadable observation prevents adoption.
 Management OFF permits this association change only through explicit Enable.
 Save an unverified acknowledgement as optional `pending_profile_id`, separate from confirmed `profile_id`.
