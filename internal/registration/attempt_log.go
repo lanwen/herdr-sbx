@@ -1,6 +1,7 @@
 package registration
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -75,9 +76,21 @@ func (s *Service) logRegistration(ctx context.Context, entry registrationLog) {
 		attributes = append(attributes, slog.Int(logKeyExitCode, exit.ExitCode()))
 	}
 	s.logger.LogAttrs(ctx, slog.LevelInfo, "Registration operation", attributes...)
+	output = registrationEventEvidence(ctx, attributes, output)
 	if err := store.RecordEvent(store.EventRecord{Code: store.CodeRegistration, Scope: store.StatusKey(entry.Scope, entry.Sandbox.ID), Name: entry.Sandbox.Name, Detail: detail, Output: output, Resolved: entry.Err == nil, At: time.Now()}); err != nil {
 		s.logger.WarnContext(ctx, "Save registration evidence", slog.Any(logKeyError, err))
 	}
+}
+
+func registrationEventEvidence(ctx context.Context, attributes []slog.Attr, fallback string) string {
+	var output bytes.Buffer
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, "Registration operation", 0)
+	record.AddAttrs(attributes...)
+	// The in-memory handler retains the same structured evidence without a terminal sink.
+	if err := slog.NewJSONHandler(&output, nil).Handle(ctx, record); err != nil {
+		return fallback
+	}
+	return output.String()
 }
 
 func registrationEvidence(output string) string {

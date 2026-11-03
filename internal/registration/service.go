@@ -36,9 +36,12 @@ type Service struct {
 func New(sandboxClient *sbx.Client, herdrClient *herdr.Client, inspector *precheck.Inspector, runner process.Runner) *Service {
 	return &Service{
 		sbx: sandboxClient, herdr: herdrClient, inspector: inspector, runner: runner,
-		logger: slog.New(slog.Default().Handler()), releaseTransport: http.DefaultTransport, preparationRetryDelay: 5 * time.Minute,
+		logger: slog.New(slog.DiscardHandler), releaseTransport: http.DefaultTransport, preparationRetryDelay: 5 * time.Minute,
 	}
 }
+
+// SetLogger binds diagnostics to an owned sink; inline operations retain Events only.
+func (s *Service) SetLogger(logger *slog.Logger) { s.logger = logger }
 
 // Inspect returns the passive prerequisite snapshot used before registration.
 func (s *Service) Inspect() precheck.Result { return s.inspector.Inspect() }

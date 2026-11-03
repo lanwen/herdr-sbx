@@ -184,8 +184,10 @@ The directory holds stable association and enabled-choice records, daemon status
 Registration records bounded structured evidence at remote probe, add, failed identity check, and catalog verification boundaries.
 Records identify the stage, stable sandbox ID, attempt, elapsed time, effective deadline and cancellation, acknowledged machine ID, command error, and sanitized combined output.
 The concise UI explanation is separate from this evidence.
-Detailed registration events remain in the bounded history inside `state.json.status`, and structured logger output uses `state.json.worker.log` and its `.1` and `.2` archives below.
-Output is limited to 16 KiB per evidence record; terminal control sequences are removed, and Authorization header values and token, password, secret, or api_key assignments are redacted.
+Detailed registration events retain the structured stage evidence in the bounded history inside `state.json.status`.
+Inline panel actions do not write registration diagnostics to process stdout or stderr, including evidence-save failures.
+The dedicated worker binds registration diagnostics to its existing owned logger in `state.json.worker.log` and its `.1` and `.2` archives below.
+Each captured command output or error is limited to 16 KiB; terminal control sequences are removed, and Authorization header values and token, password, secret, or api_key assignments are redacted.
 The plugin does not claim to reconstruct command output that an earlier executable did not record.
 
 The daemon writes timestamped text events with severity and short details, including startup, reconnects, shutdown, prerequisite changes, and sandbox outcomes.
