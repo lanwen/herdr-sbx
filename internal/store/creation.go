@@ -37,7 +37,7 @@ func ClearCreationRequest(scope, id string) error {
 }
 
 // HandoffCreationRequest serializes add authorization with explicit cancellation.
-// Once it succeeds, durable Pending owns verification of the external attempt.
+// Pending keeps the retained request inert until the attempt is verified.
 func HandoffCreationRequest(scope, id, name string, requireRequest bool) (bool, error) {
 	allowed := false
 	err := UpdateStatusStore(func(s *StatusStore) {
@@ -52,8 +52,14 @@ func HandoffCreationRequest(scope, id, name string, requireRequest bool) (bool, 
 		if present && (request.Scope != scope || request.SandboxID != id || request.Name != name) {
 			return
 		}
-		delete(s.CreationRequests, key)
 		allowed = true
 	})
 	return allowed, err
+}
+
+// HasCreationRequest identifies accepted positive intent for one exact identity.
+// Explicit Disable removes this proof atomically before observation can settle.
+func (s *StatusStore) HasCreationRequest(scope, id, name string) bool {
+	request, ok := s.CreationRequests[StatusKey(scope, id)]
+	return ok && name != "" && request.Scope == scope && request.SandboxID == id && request.Name == name
 }

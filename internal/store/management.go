@@ -109,9 +109,18 @@ func SetEnabledIfRevision(scope, id string, choice EnabledChoice, revision uint6
 	return applied, err
 }
 
-// SettleEnabledChoice records the actual or last confirmed state after a command.
+// EnabledSettlement keeps accepted registration intent separate from native observations.
+type EnabledSettlement struct {
+	Choice  EnabledChoice
+	Pending bool
+	// RegistrationName preserves accepted positive intent only for an unverified add.
+	RegistrationName string
+}
+
+// SettleEnabledChoice records observed state without cancelling an accepted add request.
 // Pending observations pause automatic work until a fresh catalog verifies it.
-func SettleEnabledChoice(scope, id string, choice EnabledChoice, revision uint64, pending bool) (bool, error) {
+func SettleEnabledChoice(scope, id string, revision uint64, settlement EnabledSettlement) (bool, error) {
+	choice, pending, requestedName := settlement.Choice, settlement.Pending, settlement.RegistrationName
 	if scope == "" || id == "" || (choice != Enabled && choice != Disabled) {
 		return false, errors.New("invalid sandbox enabled choice")
 	}
@@ -120,6 +129,9 @@ func SettleEnabledChoice(scope, id string, choice EnabledChoice, revision uint64
 		key := StatusKey(scope, id)
 		if s.EnabledRevisions[key] != revision {
 			return
+		}
+		if s.HasCreationRequest(scope, id, requestedName) {
+			choice = Enabled
 		}
 		s.EnabledChoices[key] = choice
 		s.EnabledRevisions[key]++

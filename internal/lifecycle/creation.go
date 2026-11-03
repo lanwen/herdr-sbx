@@ -41,7 +41,7 @@ func (s *lifecycleScheduler) clearCreation(id string) bool {
 	return true
 }
 
-// Pending owns the uncertain add from here; a creation request must never replay it.
+// Retain the request while Pending owns verification; it grants no replay.
 func (s *lifecycleScheduler) creationHandedOff(event sbx.LifecycleEvent) bool {
 	if !strings.EqualFold(event.Action, "created") {
 		return false
@@ -54,7 +54,6 @@ func (s *lifecycleScheduler) creationHandedOff(event sbx.LifecycleEvent) bool {
 	}
 	for _, item := range state.Scopes[s.scope] {
 		if item.SandboxID == event.SandboxID && item.Pending {
-			s.clearCreation(event.SandboxID)
 			return true
 		}
 	}

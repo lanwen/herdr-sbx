@@ -25,6 +25,7 @@ type addCatalogObservation struct {
 
 // Verification never repeats add or opens a guest connection.
 func (a *registrationAttempt) verifyAddedEntry() *result {
+	a.catalogAbsent = false
 	ctx, cancel := context.WithTimeout(a.ctx, addVerificationTimeout)
 	defer cancel()
 	observed := addCatalogObservation{}

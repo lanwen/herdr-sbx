@@ -231,8 +231,11 @@ func (observation entryObservation) sandboxEntry(status *store.StatusStore, sb s
 	}
 	row := SandboxRow{Scope: scope, Sandbox: sb, Enabled: choice}
 	machine, issue := associatedMachine(scope, sb, machines, state)
+	if machine != nil {
+		delete(status.CreationRequests, key)
+	}
 	row.AssociationIssue = issue
-	row.Enabled = observation.settleEnabled(status, key, choice, machine, issue)
+	row.Enabled = observation.settleEnabled(status, row, machine)
 	row.ObservationPending = status.EnabledObservationPending[key]
 	if issue == "" && machine == nil && strings.EqualFold(sb.Status, "stopped") {
 		row.Enabled = store.Disabled
@@ -245,7 +248,6 @@ func (observation entryObservation) sandboxEntry(status *store.StatusStore, sb s
 	collision := entryLabelCollision(row, machine, machines)
 	clearAssociationDiagnostics(status, key, issue, collision)
 	if machine != nil {
-		delete(status.CreationRequests, key)
 		row.EntryPresent = true
 		row.Label = machine.Label
 		row.ProfileID = machine.ID
@@ -266,19 +268,25 @@ func supersededSandboxRow(status *store.StatusStore, scope string, sb sbx.Sandbo
 	cached.Enabled, cached.Stale = choice, true
 	return SandboxRow{Scope: scope, Sandbox: sb, Enabled: choice, EntryPresent: cached.EntryPresent, NativeEnabled: cached.NativeEnabled, Label: cached.Label, ProfileID: cached.ProfileID, AssociationIssue: cached.AssociationIssue, ObservationPending: true, Status: cached}
 }
-func (observation entryObservation) settleEnabled(status *store.StatusStore, key string, choice store.EnabledChoice, machine *herdr.Machine, issue string) store.EnabledChoice {
+func (observation entryObservation) settleEnabled(status *store.StatusStore, row SandboxRow, machine *herdr.Machine) store.EnabledChoice {
+	key, choice := store.StatusKey(row.Scope, row.Sandbox.ID), row.Enabled
 	revisions := observation.Revisions
 	fresh := false
 	if len(revisions) > 0 {
 		before, known := revisions[0][key]
 		fresh = known && before == status.EnabledRevisions[key]
 	}
-	if !status.EnabledObservationPending[key] || !fresh || issue != "" || (machine != nil && machine.Enabled == nil) {
+	if !status.EnabledObservationPending[key] || !fresh || row.AssociationIssue != "" || (machine != nil && machine.Enabled == nil) {
 		return choice
 	}
 	choice = store.Disabled
 	if machine != nil && *machine.Enabled {
 		choice = store.Enabled
+	}
+	if machine == nil {
+		if status.HasCreationRequest(row.Scope, row.Sandbox.ID, row.Sandbox.Name) {
+			choice = store.Enabled
+		}
 	}
 	status.EnabledChoices[key] = choice
 	status.EnabledRevisions[key]++
@@ -369,19 +377,20 @@ func (s *Service) CaptureBaseline(ctx context.Context, socket string) error {
 // SetEnabled changes durable intent and the native connection without removing an entry.
 // enabledChange owns one accepted connection command through observation and settlement.
 type enabledChange struct {
-	service   *Service
-	ctx       context.Context
-	scope, id string
-	choice    store.EnabledChoice
-	state     store.State
-	sb        sbx.Sandbox
-	machines  []herdr.Machine
-	machine   *herdr.Machine
-	observed  bool
-	unlock    func()
-	revision  uint64
-	confirmed store.EnabledChoice
-	pending   bool
+	service               *Service
+	ctx                   context.Context
+	scope, id             string
+	choice                store.EnabledChoice
+	state                 store.State
+	sb                    sbx.Sandbox
+	machines              []herdr.Machine
+	machine               *herdr.Machine
+	observed              bool
+	registrationRequested bool
+	unlock                func()
+	revision              uint64
+	confirmed             store.EnabledChoice
+	pending               bool
 }
 
 func (s *Service) SetEnabled(ctx context.Context, scope, id string, choice store.EnabledChoice) (returnErr error) {
@@ -401,7 +410,11 @@ func (c *enabledChange) settle() error {
 	if c.unlock != nil {
 		defer c.unlock()
 	}
-	applied, settleErr := store.SettleEnabledChoice(c.scope, c.id, c.confirmed, c.revision, c.pending)
+	requestedName := ""
+	if c.registrationRequested && c.machine == nil && c.choice == store.Enabled {
+		requestedName = c.sb.Name
+	}
+	applied, settleErr := store.SettleEnabledChoice(c.scope, c.id, c.revision, store.EnabledSettlement{Choice: c.confirmed, Pending: c.pending, RegistrationName: requestedName})
 	if !applied || !c.observed {
 		return settleErr
 	}
@@ -482,6 +495,17 @@ func (c *enabledChange) addEntry() error {
 		}
 		return true
 	}
+	if !current() {
+		return currentError
+	}
+	accepted, err := store.RequestCreation(c.scope, c.id, c.sb.Name)
+	if err != nil {
+		return fmt.Errorf("save registration request: %w", err)
+	}
+	if !accepted {
+		return supersededEnabledChange()
+	}
+	c.registrationRequested = true
 	c.pending = true
 	outcome, _ := c.service.registerWithInstallation(c.ctx, registrationWork{Scope: c.scope, State: &c.state, Sandbox: c.sb, Current: current, CurrentError: func() error { return currentError }}, c.machines, installationOptions{}, nil)
 	if err := store.RecordSandboxStatus(c.scope, c.sb, outcome.Status, outcome.Detail, false); err != nil {
@@ -505,6 +529,9 @@ func (c *enabledChange) verifyAddedEntry(outcome result) error {
 	} else {
 		c.machines = after
 		actual, issue := associatedMachine(c.scope, c.sb, after, c.state)
+		if issue == "" && actual != nil {
+			c.machine = actual
+		}
 		switch {
 		case issue != "":
 			verificationErr = errors.New(issue)
@@ -806,7 +833,9 @@ func captureSandboxBaseline(scope string, sb sbx.Sandbox, machines []herdr.Machi
 		if initial.EnabledRevisions[key] == 0 && !initial.EnabledObservationPending[key] {
 			return nil
 		}
-		if initial.EnabledObservationPending[key] {
+		if initial.HasCreationRequest(scope, sb.ID, sb.Name) {
+			choice = store.Enabled
+		} else if initial.EnabledObservationPending[key] {
 			choice = store.Disabled
 		}
 	} else if initial.EnabledObservationPending[key] && machine.Enabled == nil {

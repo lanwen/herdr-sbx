@@ -164,7 +164,7 @@ func TestCreatedRequestDoesNotReplayUncertainAddAfterRestart(t *testing.T) {
 	require.Equal(t, 1, *adds)
 	before, err := store.ReadStatusStore()
 	require.NoError(t, err)
-	require.Empty(t, before.CreationRequests)
+	require.Contains(t, before.CreationRequests, store.StatusKey(fixture.scope, "new"))
 	saved, err := store.LoadState()
 	require.NoError(t, err)
 	require.True(t, saved.Scopes[fixture.scope][0].Pending)

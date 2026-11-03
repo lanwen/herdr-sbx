@@ -264,6 +264,10 @@ func (r *reconciliation) process(sb sbx.Sandbox) (*result, error) {
 		return nil, nil
 	}
 	row := r.rows[sb.ID]
+	explicit, _ := r.ctx.Value(explicitActionKey{}).(bool)
+	if row.CreationRequested && createdSandboxID(r.ctx) != sb.ID && !explicit {
+		return &result{Name: sb.Name, Status: "waiting for provisioning", Detail: row.Status.Detail}, nil
+	}
 	if row.ObservationPending {
 		return nil, nil
 	}
@@ -496,21 +500,20 @@ func (s *Service) registerWithInstallation(ctx context.Context, work registratio
 }
 
 type registrationAttempt struct {
-	service           *Service
-	ctx               context.Context
-	scope             string
-	state             *store.State
-	machines          []herdr.Machine
-	sandbox           sbx.Sandbox
-	current           func() bool
-	currentError      func() error
-	installation      installationOptions
-	progress          func(string)
-	target            string
-	pending           store.Tracked
-	catalogAbsent     bool
-	repairRetried     bool
-	creationHandedOff bool
+	service       *Service
+	ctx           context.Context
+	scope         string
+	state         *store.State
+	machines      []herdr.Machine
+	sandbox       sbx.Sandbox
+	current       func() bool
+	currentError  func() error
+	installation  installationOptions
+	progress      func(string)
+	target        string
+	pending       store.Tracked
+	catalogAbsent bool
+	repairRetried bool
 }
 
 func (a *registrationAttempt) collision() *result {
@@ -649,10 +652,9 @@ func (a *registrationAttempt) add() (result, *store.Tracked) {
 
 // Keep pre-add permission until the last identity guard has allowed the command.
 func (a *registrationAttempt) handoffCreation() *result {
-	requireRequest := createdSandboxID(a.ctx) == a.sandbox.ID && !a.creationHandedOff
+	requireRequest := createdSandboxID(a.ctx) == a.sandbox.ID
 	allowed, err := store.HandoffCreationRequest(a.scope, a.sandbox.ID, a.sandbox.Name, requireRequest)
 	if err == nil && allowed {
-		a.creationHandedOff = true
 		return nil
 	}
 	clearErr := clearUnperformedAdd(a.state, a.scope, a.sandbox.ID)
@@ -683,6 +685,9 @@ func (a *registrationAttempt) addCurrent() (result, *store.Tracked) {
 	if err := saveTracked(a.state, a.scope, a.pending); err != nil {
 		return result{Name: a.sandbox.Name, Status: "association warning", Detail: "machine was registered but association could not be saved"}, &a.pending
 	}
+	if err := store.ClearCreationRequest(a.scope, a.sandbox.ID); err != nil {
+		return result{Name: a.sandbox.Name, Status: "association warning", Detail: "The saved connection was verified, but its completed registration request could not be cleared: " + err.Error()}, &a.pending
+	}
 	if a.current != nil && !a.current() {
 		return a.currentResult("sandbox changed after machine registration; cleanup is pending"), &a.pending
 	}
@@ -696,13 +701,16 @@ func (a *registrationAttempt) unverifiedAdd(outcome result, output string, err e
 		}
 		return outcome, &a.pending
 	}
-	if a.catalogAbsent && !a.repairRetried {
+	if a.catalogAbsent && !a.repairRetried && a.pending.PendingProfileID == "" {
 		if strings.Contains(output, "remote server is not ready for saved machines") {
 			return a.retryAfterRepair()
 		}
 		if transientAddFailure(output, err) {
 			return a.retryTransient()
 		}
+	}
+	if settled := a.settleKnownUnsaved(output, err); settled != nil {
+		return *settled, nil
 	}
 	failure, _ := a.addFailure(output, err)
 	outcome.Detail = failure.Detail + ". " + outcome.Detail

@@ -11,6 +11,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lanwen/herdr-sbx/internal/process"
+	"github.com/lanwen/herdr-sbx/internal/sbx"
 	"github.com/lanwen/herdr-sbx/internal/store"
 	"github.com/stretchr/testify/require"
 )
@@ -183,4 +184,28 @@ func (f *registrationRecoveryCommands) other(command process.Command, call strin
 		return "{}", nil
 	}
 	return "", fmt.Errorf("unexpected call %s", call)
+}
+
+func TestCreatedRetryCannotUseClearedRequest(t *testing.T) {
+	fixture := newRegistrationFixture(t, `[]`)
+	adds := 0
+	fixture.runner.Execute = func(_ context.Context, command process.Command) (string, error) {
+		if command.Name == "herdr" && strings.HasPrefix(strings.Join(command.Args, " "), "machine add ") {
+			adds++
+		}
+		return `[]`, nil
+	}
+	fixture.rebuildClients()
+	pending := store.Tracked{SandboxID: "sandbox-1", Target: "demo.sbx", Label: "sbx · demo", Pending: true}
+	state := store.State{Version: 1, Scopes: map[string][]store.Tracked{"scope": {pending}}}
+	require.NoError(t, store.SaveState(state))
+	accepted, err := store.RequestCreation("scope", "sandbox-1", "demo")
+	require.NoError(t, err)
+	require.True(t, accepted)
+	attempt := registrationAttempt{service: fixture.service, ctx: context.WithValue(context.Background(), createdSandboxKey{}, "sandbox-1"), scope: "scope", sandbox: sbx.Sandbox{ID: "sandbox-1", Name: "demo"}, state: &state, pending: pending, target: "demo.sbx"}
+	require.Nil(t, attempt.handoffCreation())
+	require.NoError(t, store.ClearCreationRequest("scope", "sandbox-1"))
+	outcome, _ := attempt.addCurrent()
+	require.Zero(t, adds, "the retry must not outlive retained permission")
+	require.Equal(t, "disabled", outcome.Status)
 }
