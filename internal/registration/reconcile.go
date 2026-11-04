@@ -187,7 +187,10 @@ func (r *reconciliation) load() error {
 	if err := store.SaveState(r.state); err != nil {
 		return err
 	}
-	return r.resolveAbsentAddFailures()
+	if err := r.resolveAbsentAddFailures(); err != nil {
+		return err
+	}
+	return r.resolveReplacedSetupFailures()
 }
 
 func (r *reconciliation) observeInventory() error {

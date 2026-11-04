@@ -161,6 +161,11 @@ After a confirmed connection is saved, resolve its earlier explicit-add failure 
 Keep that failure in resolved Events and retain unrelated Rename, Remove, or Disable errors.
 A conflicting nonempty acknowledgement, competing owner, duplicate candidate, wrong session, or unreadable observation prevents adoption.
 Management OFF permits this association change only through explicit Enable.
+
+A complete successful inventory also resolves guest setup errors (`R0007`) for an older sandbox UUID when that UUID is absent and exactly one different UUID in the same daemon scope now has its recorded name.
+Keep those errors in resolved Events; preserve current-instance errors, other scopes, ambiguous or unavailable inventory, and absence without a same-name replacement.
+A UUID-only error without its daemon scope does not prove this association.
+
 Save an unverified acknowledgement as optional `pending_profile_id`, separate from confirmed `profile_id`.
 Readable final absence and unavailable final verification have distinct sandbox explanations.
 An unresolved attempt never automatically repeats an add; an explicit eligible retry requires a fresh successful catalog read with unambiguous absence.
