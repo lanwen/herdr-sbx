@@ -35,7 +35,7 @@ const guestExecutable = `set -eu; if command -v herdr >/dev/null 2>&1; then h=$(
 // unexpected startup behavior cannot silently add a home workspace followed
 // by a second project workspace.
 func (c *Client) StartProjectServer(ctx context.Context, target, cwd string) error {
-	script := guestExecutable + `HERDR_STARTUP_CWD=` + quoteShell(cwd) + ` nohup "$h" --session default server </dev/null >/dev/null 2>&1 &
+	script := guestExecutable + `SHELL=/bin/bash HERDR_STARTUP_CWD=` + quoteShell(cwd) + ` nohup "$h" --session default server </dev/null >/dev/null 2>&1 &
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
  if output=$("$h" --session default pane list 2>/dev/null); then printf '%s\n' "$output"; exit 0; fi
  sleep 1
