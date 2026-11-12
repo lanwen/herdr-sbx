@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -196,4 +197,24 @@ func TestEmptyInventoryIsNotReady(t *testing.T) {
 	f := newCheckFixture(t)
 	f.inventory = `[]`
 	assertCheck(t, f.inspector.Inspect(), "Sandbox inventory", Unknown)
+}
+
+func TestSBXPrerequisiteUsesClientDiscoveryOutsidePATH(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	calls := 0
+	runner := process.Runner{Execute: func(_ context.Context, cmd process.Command) (string, error) {
+		calls++
+		require.Equal(t, "sbx", cmd.Name)
+		require.Equal(t, []string{"version"}, cmd.Args)
+		return "sbx version: v0.50.1", nil
+	}}
+	inspector := New(sbx.New(runner), herdr.New(runner), runner)
+	require.Equal(t, Ready, inspector.sbxBinary().Level)
+	require.Equal(t, 1, calls)
+}
+
+func TestSBXPrerequisiteReportsMissingCLI(t *testing.T) {
+	runner := process.Runner{Execute: func(context.Context, process.Command) (string, error) { return "", exec.ErrNotFound }}
+	inspector := New(sbx.New(runner), herdr.New(runner), runner)
+	require.Equal(t, Blocked, inspector.sbxBinary().Level)
 }

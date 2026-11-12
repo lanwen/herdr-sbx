@@ -2,6 +2,7 @@ package precheck
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 
@@ -93,7 +94,14 @@ func (i *Inspector) executable(name, binary, minimum string, versionFunc func(co
 	if _, err := exec.LookPath(binary); err != nil {
 		return Check{name, Blocked, "not found", "Install " + name + ", then check again."}
 	}
+	return i.commandVersion(name, minimum, versionFunc)
+}
+
+func (i *Inspector) commandVersion(name, minimum string, versionFunc func(context.Context) (string, error)) Check {
 	output, err := versionFunc(context.Background())
+	if errors.Is(err, exec.ErrNotFound) {
+		return Check{name, Blocked, "not found", "Install " + name + ", then check again."}
+	}
 	if err != nil {
 		return Check{name, Unknown, commandError(err, output), "Check the installed " + name + " command."}
 	}

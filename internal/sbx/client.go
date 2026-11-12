@@ -52,6 +52,7 @@ type AuthenticationDiagnostic struct {
 type Client struct {
 	runner    process.Runner
 	transport http.RoundTripper
+	discovery *discoveryOptions
 }
 
 var ErrInvalidDaemonStatus = errors.New("unrecognised daemon status response")
@@ -91,10 +92,17 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 
 // DaemonStatus reads the JSON status and resolves its reported socket.
 func (c *Client) DaemonStatus(ctx context.Context) (Daemon, error) {
-	output, err := c.cli(ctx, 5*time.Second, true, "daemon", "status", "--json")
+	output, err := c.runner.CombinedOutput(ctx, process.Command{Name: "sbx", Args: c.appScopedArgs("daemon", "status", "--json"), Timeout: 5 * time.Second})
+	if c.missingPATHExecutable(err) {
+		return c.discoverDaemon(ctx)
+	}
 	if err != nil {
 		return Daemon{}, &CLIError{Err: err, Output: output}
 	}
+	return parseDaemonStatus(output)
+}
+
+func parseDaemonStatus(output string) (Daemon, error) {
 	var value map[string]any
 	if err := decodeJSON(output, &value); err != nil {
 		return Daemon{}, fmt.Errorf("%w: %v", ErrInvalidDaemonStatus, err)
@@ -143,7 +151,16 @@ func (c *Client) WorkspaceDirectory(ctx context.Context, name string) (string, e
 
 // SetupSSHInteractive configures sandbox SSH through the user's terminal.
 func (c *Client) SetupSSHInteractive(ctx context.Context) error {
-	return c.runner.RunInteractive(ctx, "sbx", c.appScopedArgs("setup", "ssh")...)
+	args := c.appScopedArgs("setup", "ssh")
+	err := c.runner.RunInteractive(ctx, "sbx", args...)
+	if !c.missingPATHExecutable(err) {
+		return err
+	}
+	binary, err := c.homebrewExecutable()
+	if err != nil {
+		return err
+	}
+	return c.runner.RunInteractive(ctx, binary, args...)
 }
 
 func (c *Client) guestExec(ctx context.Context, args ...string) (string, error) {
@@ -154,14 +171,14 @@ func (c *Client) guestExec(ctx context.Context, args ...string) (string, error) 
 		// Preserve the saved forwarding target; Windows unsetting selects a native agent fallback.
 		command.Unset = []string{"SSH_AUTH_SOCK"}
 	}
-	return c.runner.CombinedOutput(ctx, command)
+	return c.runCLI(ctx, command)
 }
 
 func (c *Client) cli(ctx context.Context, timeout time.Duration, scoped bool, args ...string) (string, error) {
 	if scoped {
 		args = c.appScopedArgs(args...)
 	}
-	return c.runner.CombinedOutput(ctx, process.Command{Name: "sbx", Args: args, Timeout: timeout})
+	return c.runCLI(ctx, process.Command{Name: "sbx", Args: args, Timeout: timeout})
 }
 
 func (c *Client) appScopedArgs(args ...string) []string {
