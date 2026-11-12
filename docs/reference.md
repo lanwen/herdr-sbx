@@ -217,6 +217,25 @@ An already-running daemon keeps its earlier executable and `daemon start` alone 
 A mixed-version daemon can rewrite the shared status journal without fields introduced by the new binary, including diagnostic references and dismissals.
 Run `mise run link` to build and relink the checkout after manifest changes.
 
+### Sandbox daemon discovery
+
+On macOS, observation first runs `sbx daemon status --json` using `PATH`.
+If that executable is missing and no custom `HERDR_SANDBOXES_SBX_APP_NAME` is set, it reads the existing `/sandbox` API through `~/Library/Application Support/com.docker.sandboxes/sandboxes/sandboxd/sandboxd.sock`.
+A successful, valid inventory response, including an empty inventory, establishes a running daemon and that socket.
+
+| Starting state | Action | Immediate feedback | External effect | Settlement and failure |
+| --- | --- | --- | --- | --- |
+| PATH CLI available | Observe daemon status | Normal status or diagnostic | Run the status command | Preserve command errors, timeouts, and invalid responses |
+| PATH CLI missing, default macOS socket reachable | Read `/sandbox` | Running daemon and socket after validation | Read existing inventory | Accept a valid response, including an empty inventory; retain API, permission, and timeout errors |
+| Default socket missing or refusing connections | Find a Homebrew CLI | Normal status or diagnostic | Try `/opt/homebrew/bin/sbx`, then `/usr/local/bin/sbx`, skipping unavailable executables | Run the first usable CLI and preserve its errors |
+| Custom app name set, PATH CLI missing | Skip the default socket and find a Homebrew CLI | Status or diagnostic for the custom app | Retain the app-name arguments | Never infer a custom daemon from the default socket |
+| CLI and eligible socket unavailable | Report discovery failure | Diagnostic | No daemon is started | Later observations repeat discovery and can recover after installation |
+
+CLI-only commands also use `PATH`, then the Homebrew locations on macOS.
+Socket discovery can observe a running daemon while CLI prerequisites remain unavailable.
+Discovery never starts a daemon or changes `PATH`.
+Other platforms retain their existing discovery behavior.
+
 ## Sandbox SSH agent
 
 Guest preparation installs a `herdr-sbx SSH agent` block in `~/.bashrc` and the first existing Bash login file: `~/.bash_profile`, `~/.bash_login`, or `~/.profile`.
